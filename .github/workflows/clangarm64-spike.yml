@@ -18,6 +18,7 @@ jobs:
             mingw-w64-clang-aarch64-protobuf
             mingw-w64-clang-aarch64-zlib
             mingw-w64-clang-aarch64-ncurses
+            mingw-w64-clang-aarch64-pkgconf
             make
 
       - name: Build native ARM64 engine spike
