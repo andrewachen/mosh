@@ -30,17 +30,18 @@ remains `-mcpu=oryon-1` for local and product builds; only CI overrides it.
 
 ## Result
 
-**Status: PENDING authoritative CI evidence.** `make -f win32/Makefile.win
-check` succeeds in the `mosh-arm64` Docker image (local cross-compile), but that
-image is an ABI-divergent smoke test (msvcrt, not the target UCRT — see
-Toolchain) and is explicitly *not* target-runtime evidence. The authoritative
-check is the MSYS2 CLANGARM64 CI job (`windows-11-arm`) — authoritative for the
-native-ARM64 build, link, UCRT ABI boundary, import deny-list, and baseline
-liveness run, **but not** for Oryon-ISA correctness (that is M5; see the CI-build
-note above). Until the authoritative run is recorded in the import-set section
-below, with its durable evidence bundle (SHA, effective flags, full `pacman -Q`
-closure, PE machine type, import + undefined-symbol reports, artifact checksum,
-runtime command + exit status) attached, **M0 is not closed.**
+**Status: M0 CLOSED — authoritative CI evidence recorded** (run `29928638939`
+on `ba642de`; see the evidence table in the import-set section below).
+`make -f win32/Makefile.win check` succeeds in the `mosh-arm64` Docker image
+(local cross-compile), but that image is an ABI-divergent smoke test (msvcrt,
+not the target UCRT — see Toolchain) and is explicitly *not* target-runtime
+evidence. The authoritative check is the MSYS2 CLANGARM64 CI job
+(`windows-11-arm`) — authoritative for the native-ARM64 build, link, UCRT ABI
+boundary, import deny-list, and baseline liveness run, **but not** for Oryon-ISA
+correctness (that is M5; see the CI-build note above). That run has now recorded
+its durable evidence bundle (SHA, effective flags, full `pacman -Q` closure, PE
+machine type, import + undefined-symbol reports, artifact checksum, runtime
+command + exit status), so M0's closure contract is satisfied.
 
 *Closure keys to the build inputs, not the literal HEAD SHA.* The authoritative
 run is the CI run whose checked-out **build inputs** (sources, makefile,
@@ -154,9 +155,8 @@ per non-system DLL) is an M4 item.
 Two toolchains produce `mosh.exe`; their import sets differ because the local
 image links OpenSSL statically while the CLANGARM64 package may link it
 dynamically. The static-fold requirement (no C++-runtime/protobuf DLL) is
-**observed to hold** for the local image; for the CLANGARM64 target it is
-**expected but not yet confirmed** — that confirmation is the pending CI
-evidence recorded below, on which M0 closure blocks.
+**confirmed to hold on both**: observed for the local image, and confirmed on
+the CLANGARM64 target by the authoritative CI run recorded below.
 
 **Local dockcross image** (`aarch64-w64-mingw32-objdump -p`, observed on the
 crypto-linked build):
@@ -167,25 +167,45 @@ crypto-linked build):
 - absent: no C++-runtime DLL (`-static-libstdc++ -static-libgcc` folded
   libstdc++/libgcc), no libcrypto/tinfo/zlib DLL (all static in this image)
 
-**CLANGARM64 CI runner** (`windows-11-arm`, `llvm-objdump -p`): the base64-only
-predecessor build (before this commit added the AES-OCB round-trip) imported
-only `api-ms-win-crt-*.dll` (UCRT), `KERNEL32.dll`, `ADVAPI32.dll`,
-`dbghelp.dll`, and `libncursesw6.dll` — no C++-runtime/protobuf DLL. The
-crypto-linked build in this commit additionally pulls the OpenSSL cipher path,
-so it will import the OpenSSL runtime — either a dynamic `libcrypto-*.dll` (a
-bundled C library) or, if the CLANGARM64 package links OpenSSL statically,
-`crypt32.dll` directly, as observed locally. The exact resolved CLANGARM64
-crypto-linked import set will be recorded here from the authoritative CI run on
-this commit (this is the pending evidence the Result section blocks M0 closure
-on):
+**CLANGARM64 CI runner** (`windows-11-arm` = Azure Cobalt 100 / Neoverse N2,
+`llvm-objdump -p`): the authoritative crypto-linked import set, recorded from the
+CI run on this commit (evidence below), is:
 
-> _(PENDING — to be filled from the authoritative CI run on this commit)_
+- UCRT API-set DLLs: `api-ms-win-crt-{stdio,runtime,locale,heap,private,string,
+  convert,environment,math,time,multibyte,filesystem,utility}-l1-1-0.dll`
+- Windows system: `KERNEL32.dll`, `ADVAPI32.dll`, `dbghelp.dll`
+- bundled C libraries (dynamic, ship beside the exe): `libncursesw6.dll` and
+  `libcrypto-3-arm64.dll`
+
+This resolves the earlier static/dynamic-OpenSSL question: the CLANGARM64
+package links **OpenSSL dynamically** (`libcrypto-3-arm64.dll`), so — unlike the
+static-libcrypto local image — there is **no direct `crypt32.dll` import** (that
+was a local-static artifact). Absent, as required: no `msvcrt.dll` (UCRT
+confirmed), no C++-runtime DLL (`libc++`/`libunwind`/`libgcc`/`libstdc++`/
+`libwinpthread`), no protobuf/Abseil/`utf8` DLL (static-fold confirmed with
+protobuf 35.0 + abseil 20260526.0), and no MSYS/Cygwin runtime.
+
+**Authoritative CI evidence** (fills the former placeholder; this is an
+evidence-only documentation record, exempt from re-gating per the build-input
+closure rule in Result):
+
+| Field | Value |
+| --- | --- |
+| Commit (build inputs) | `ba642de0424217f2a517d9417949d8ff8bfd0917` |
+| CI run | `andrewachen/mosh` Actions run `29928638939` (job `spike`, 2m49s, success) |
+| Effective flags | `ARM_MCPU=-march=armv8-a -mtune=oryon-1` (baseline; product `-mcpu=oryon-1` validated at M5) |
+| PE machine type | `coff-arm64` / `architecture: aarch64` (native ARM64, not emulated) |
+| Undefined symbols | 0 (no C++-runtime undefs) |
+| Runtime | `./mosh.exe` exit status `0` on native ARM64 (Cobalt N2) |
+| `mosh.exe` SHA-256 | `19f9dba59ec6040214a9fef6f69fb10a4b87aadd29215f14b1e11331d58cb404` |
+| Toolchain | clang 22.1.7 (`aarch64-w64-windows-gnu`), openssl 3.6.3, protobuf 35.0, abseil 20260526.0, ncurses 6.6, zlib 1.3.2 |
 
 The deny-list requirement — no `libc++`, `libunwind`, `libgcc_s`, `libstdc++`,
 `libwinpthread`, `libprotobuf`, or Abseil DLL — is an **acceptance requirement**
-the gate enforces on every build; it is confirmed *observed* for the local image
-and is *required but not yet confirmed* for the CLANGARM64 target pending the CI
-run above. On MSYS2 clang the `-static-libstdc++ -static-libgcc` flags fold the
+the gate enforces on every build; it is confirmed *observed* both for the local
+image and, for the CLANGARM64 target, by authoritative CI run `29928638939`
+on parent commit `ba642de` (import set recorded above). On MSYS2 clang the
+`-static-libstdc++ -static-libgcc` flags fold the
 LLVM C++ runtime
 (libc++ / compiler-rt / libunwind) into the executable; a plain `-static` is
 deliberately *not* used because it would also statically absorb the C libraries
@@ -410,10 +430,11 @@ and the baseline override `ARM_MCPU="-march=armv8-a -mtune=oryon-1"` (so the gat
 binary runs on the Cobalt N2 runner). Beyond the makefile `check`, CI adds the
 native-ARM64-PE assertion, the UCRT ABI check (reject `msvcrt.dll`, require
 `api-ms-win-crt-*`), the baseline liveness run, and a durable evidence-bundle
-upload. The `check` target is expected to pass with the UCRT-based toolchain;
-the base64-only predecessor build passed, and the crypto-linked build in this
-commit is validated by the pending authoritative CI run recorded in the
-import-set section above (not yet by a run of this exact commit — see Result).
+upload. The `check` target passes with the UCRT-based toolchain: the crypto-linked
+build is validated by authoritative CI run `29928638939` on parent commit
+`ba642de`, recorded in the import-set section above. This evidence-only commit
+changes only that evidence record and therefore shares `ba642de`'s build inputs
+(see the build-input-digest closure rule in Result).
 
 ## Deferred to M1/M2
 
