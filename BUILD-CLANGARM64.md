@@ -35,7 +35,7 @@ The M0a Docker image provides:
 | C++ compiler | `aarch64-w64-mingw32-clang++`, clang 14.0.0, target `aarch64-w64-windows-gnu` |
 | Protocol compiler | `protoc 3.21.12` (`/opt/protobuf-host/bin`) |
 | Protocol runtime | protobuf 3.21.12 (`/opt/mosh-arm64/lib/libprotobuf.a`) |
-| OpenSSL | 3.0.20 |
+| OpenSSL target headers and library | 3.0.16 |
 | zlib | 1.3.1 |
 | terminal database | `/opt/mosh-arm64/lib/libtinfo.a` |
 
