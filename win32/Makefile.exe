@@ -9,7 +9,20 @@ NM ?= llvm-nm
 OBJDUMP ?= llvm-objdump
 
 PREFIX ?= /opt/mosh-arm64
-CPPFLAGS = -I. -Isrc/include -I$(PREFIX)/include -DNCURSES_STATIC -include win32/config.h.clangarm64
+
+# ncurses/terminfo discovery. MSYS2 CLANGARM64 ships ncursesw: headers live
+# under an ncursesw/ subdir, terminfo is folded into libncursesw, and both are
+# described by ncursesw.pc. The local dockcross image instead has a flat
+# curses.h plus a hand-built static libtinfo.a and no .pc file, so fall back to
+# -ltinfo there and define NCURSES_STATIC to suppress dllimport against the
+# static archive.
+NCURSES_CFLAGS := $(shell pkg-config --cflags ncursesw 2>/dev/null)
+NCURSES_LIBS := $(shell pkg-config --libs ncursesw 2>/dev/null)
+ifeq ($(strip $(NCURSES_LIBS)),)
+NCURSES_CFLAGS := -DNCURSES_STATIC
+NCURSES_LIBS := -ltinfo
+endif
+CPPFLAGS = -I. -Isrc/include -I$(PREFIX)/include $(NCURSES_CFLAGS) -include win32/config.h.clangarm64
 CXXFLAGS = -std=c++17 -O2 $(ARM_MCPU)
 LDFLAGS = -L$(PREFIX)/lib
 
@@ -66,7 +79,7 @@ src/statesync/libmoshstatesync.a: $(STATESYNC_OBJS)
 	$(AR) rcs $@ $^
 
 mosh.exe: win32/spike.cc src/crypto/libmoshcrypto.a src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ win32/spike.cc -Wl,--start-group src/crypto/libmoshcrypto.a -Wl,-Bstatic $(shell pkg-config --libs --static protobuf) -Wl,-Bdynamic src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a -Wl,--end-group $(LDFLAGS) -lcrypto -lz -ltinfo -lws2_32 -luser32 -static-libstdc++ -static-libgcc
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ win32/spike.cc -Wl,--start-group src/crypto/libmoshcrypto.a -Wl,-Bstatic $(shell pkg-config --libs --static protobuf) -Wl,-Bdynamic src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a -Wl,--end-group $(LDFLAGS) -lcrypto -lz $(NCURSES_LIBS) -lws2_32 -luser32 -static-libstdc++ -static-libgcc
 
 $(BUILD)/%.o: %.cc src/include/config.h
 	@mkdir -p $(dir $@)
