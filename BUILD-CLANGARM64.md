@@ -4,10 +4,55 @@ This log records the Milestone 0 native-Windows ARM64 build spike. The target is
 `aarch64-w64-mingw32` using the UCRT-family MinGW runtime; it is not Cygwin,
 WSL, or MSYS.
 
+**Target CPU: Qualcomm Oryon (Snapdragon X-class).** This port intentionally
+targets Oryon-class Windows-on-ARM hardware — the makefile default is
+`ARM_MCPU ?= -mcpu=oryon-1`, and `-mcpu` may emit ISA that faults on older
+Windows-on-ARM parts (e.g. SQ1/SQ2, Ampere). Baseline portability to non-Oryon
+ARM64 is an explicit **non-goal** for now (the deliverable is validated on
+Snapdragon X hardware at M5). Consequence: this `-mcpu=oryon-1` default must
+**not** silently become a general-release build configuration — a
+broadly-distributable artifact would first require choosing a conservative
+`-march` baseline (with `-mtune=oryon-1` for tuning) and validating on a
+non-Oryon environment. See Toolchain for the `ARM_MCPU` override mechanics.
+
+**CI build vs product build.** The hosted `windows-11-arm` runner is Azure
+Cobalt 100 (Arm Neoverse N2), **not** Oryon. Executing an `-mcpu=oryon-1` binary
+there would be nondiagnostic — a failure could mean a port defect *or* an
+Oryon-only instruction the N2 runner lacks, and a pass would only mean the
+spike's reached code happened to avoid such an instruction. So the CI gate
+**builds a conservative baseline** (`ARM_MCPU=-march=armv8-a -mtune=oryon-1`;
+`-mtune` is scheduling-only and does not change the ISA) that genuinely runs on
+the Cobalt runner. This makes CI a *diagnostic* native-ARM64 build/link/ABI/
+liveness gate: a failure is a real port defect, not an incompatible runner. It
+deliberately does **not** validate the `-mcpu=oryon-1` product ISA — that is
+owned by **M5** (execution on Snapdragon X hardware). The makefile default
+remains `-mcpu=oryon-1` for local and product builds; only CI overrides it.
+
 ## Result
 
-`make -f win32/Makefile.exe check` succeeds in the `mosh-arm64` Docker image.
-It regenerates the protocol sources and archives all five engine libraries:
+**Status: PENDING authoritative CI evidence.** `make -f win32/Makefile.win
+check` succeeds in the `mosh-arm64` Docker image (local cross-compile), but that
+image is an ABI-divergent smoke test (msvcrt, not the target UCRT — see
+Toolchain) and is explicitly *not* target-runtime evidence. The authoritative
+check is the MSYS2 CLANGARM64 CI job (`windows-11-arm`) — authoritative for the
+native-ARM64 build, link, UCRT ABI boundary, import deny-list, and baseline
+liveness run, **but not** for Oryon-ISA correctness (that is M5; see the CI-build
+note above). Until the authoritative run is recorded in the import-set section
+below, with its durable evidence bundle (SHA, effective flags, full `pacman -Q`
+closure, PE machine type, import + undefined-symbol reports, artifact checksum,
+runtime command + exit status) attached, **M0 is not closed.**
+
+*Closure keys to the build inputs, not the literal HEAD SHA.* The authoritative
+run is the CI run whose checked-out **build inputs** (sources, makefile,
+workflow, config, `.proto` — everything except this document's evidence text)
+match this commit. Recording that run's results is an **evidence-only
+documentation commit** that changes no build input, so it does not itself
+require a fresh run — this avoids the otherwise self-referential loop where
+writing the evidence creates a new commit lacking evidence. The recorded
+evidence names the CI run's own head SHA and run ID for traceability.
+
+The local build regenerates the protocol sources and archives all five engine
+libraries:
 
 - `src/crypto/libmoshcrypto.a`
 - `src/protobufs/libmoshprotos.a`
@@ -18,7 +63,8 @@ It regenerates the protocol sources and archives all five engine libraries:
 `mosh.exe` links from a standalone-exe spike body that references one entry
 point from each archive:
 
-- `base64_encode()` from `libmoshcrypto.a`
+- an AES-OCB `Crypto::Session` encrypt/decrypt round-trip from `libmoshcrypto.a`
+  (also pulls the OpenSSL cipher path — see below)
 - `ClientBuffers::UserMessage` from `libmoshprotos.a`
 - `freeze_timestamp()` / `frozen_timestamp()` from `libmoshutil.a`
 - `Terminal::Framebuffer` constructor from `libmoshterminal.a`
@@ -30,15 +76,184 @@ being on PATH. The exe MAY dynamically import the C libraries it needs
 (libcrypto, tinfo/ncurses, zlib), which are bundled alongside the exe in the
 distribution (NOT "provided by a host runtime").
 
-Self-containment is proven by the portable `objdump -p` import-table deny-list
-(see below), not by `nm -u` (which cannot see PE import table entries) and not
-by CRT-name matching.
+### Scope of the M0 claim
+
+What M0 establishes: all five engine `.cc` sets **compile** into archives under
+clang++ CLANGARM64, and a spike that references a **representative entry point
+from each archive** links into a native ARM64 `mosh.exe` that carries **no
+dynamic import of any deny-listed C++-runtime or protobuf/Abseil DLL** (strong
+evidence the static-fold worked — the single most important thing this spike
+exists to catch), and runs to a clean exit inside the provisioned MSYS2
+CLANGARM64 environment. Precisely: the gate is a **deny-list**, so it proves the
+absence of the named C++-runtime and protobuf/Abseil DLLs (see the check target
+for the exact list, which includes the Abseil `utf8` helpers), not the positive
+statement that every remaining import is approved. A positive direct-import
+allowlist is deferred to M4 (packaging) per the scope decision below. Because static
+archive members link lazily, this proves the referenced closure links — not
+that every unreferenced member (e.g. `statesync/user.cc`, unused terminal
+objects) is free of unresolved Windows symbols. Members become reachable as M1+
+uses them; a member that fails to link then is M1's finding, consistent with
+the spike's representative-subset design. To close this gap deliberately rather
+than let it surface late, M1's first gate is an **automated whole-archive/
+force-link diagnostic** (e.g. `--whole-archive`, or an equivalent per-object
+link audit) that enumerates every production archive — including
+`libmoshnetwork.a` once the M1 WinSock port lands — and every member, using the
+production flags and backend, and reports explicit pass/fail. Each member —
+e.g. `statesync/user.cc` — is thereby checked for unresolved Windows symbols up
+front, and the link map is preserved as evidence. The link map alone cannot
+catch a `.cc` that was omitted from an archive's source list (an absent member
+leaves no trace), so the gate must also treat the production build manifest as
+the single source of truth and compare the intended source inventory against
+the archive members before force-linking. Merely linking the first complete
+executable is insufficient: members it does not reference stay unlinked and
+their Windows-symbol gaps stay hidden. This must be an enforced target, not a
+prose promise skipped when the first integrated executable happens to link.
+
+What M0 does **not** establish, deferred to M4 (packaging): that the exe runs
+from a clean environment with the toolchain directories removed from `PATH`,
+that its full non-system DLL closure (including the transitive dependencies of
+`libncursesw6`/`libcrypto`) is resolved and shipped, and that the staged bundle
+is self-sufficient. The import check below is a **deny-list**, not a positive
+allowlist: it proves the absence of named C++/protobuf runtime DLLs, not that
+every remaining import is on an approved list. M4 owns the bundle contract, and
+that contract must cover DLL-loading *security*, not just file presence: a
+trusted install location with appropriate ACLs, safe Windows DLL-search
+behavior (so a writable working directory cannot substitute a bundled
+`libcrypto`/terminal DLL), code signing, a bundled-OpenSSL update policy, and
+SBOM/licensing/provenance for every shipped DLL.
+
+The import check is done via the portable `objdump -p` import table, not via
+`nm -u` (which cannot see PE import-table entries) and not by CRT-name matching.
 
 The check target is parameterized via `NM` and `OBJDUMP` variables and
 CRT-agnostic. It verifies:
 1. The built `mosh.exe` file exists.
 2. No unresolved C++ runtime symbols (via `$(NM) -u`).
-3. No dynamic imports of C++ runtime or protobuf DLLs (via `$(OBJDUMP) -p`).
+3. No dynamic imports of C++-runtime or protobuf DLLs (via `$(OBJDUMP) -p`),
+   matched against a deny-list that includes `libstdc++`, `libc++`, `libgcc`,
+   `libunwind`, `libwinpthread`, `libssp`, `libatomic`, protobuf/abseil, and the
+   Abseil `utf8` helpers (`utf8_range`/`utf8_validity`).
+4. No dependency on the MSYS/Cygwin POSIX-emulation runtime (`msys-2.0.dll`,
+   `cygwin1.dll`). This enforces the native-MinGW target boundary and matters
+   specifically because `check` runs inside the MSYS2 environment, where such a
+   dependency would otherwise resolve silently and pass unnoticed.
+
+The makefile `check` is intentionally CRT-agnostic because it serves both the
+msvcrt local smoke build and the UCRT CI build. The **target UCRT ABI boundary**
+is therefore enforced by a **CI-only step** (`Verify UCRT ABI`) that rejects a
+direct `msvcrt.dll` import and requires the UCRT `api-ms-win-crt-*` API-set
+imports — catching a build that silently linked the wrong CRT, which every
+CRT-agnostic check would otherwise pass. This proves the executable's **direct**
+CRT boundary only; it does not establish that dynamically-loaded `libcrypto`,
+ncurses, or their transitive DLLs use the intended CRT or architecture — that
+recursive DLL-graph inventory (machine type + CRT family + resolved path/hash
+per non-system DLL) is an M4 item.
+
+### Import sets (observed)
+
+Two toolchains produce `mosh.exe`; their import sets differ because the local
+image links OpenSSL statically while the CLANGARM64 package may link it
+dynamically. The static-fold requirement (no C++-runtime/protobuf DLL) is
+**observed to hold** for the local image; for the CLANGARM64 target it is
+**expected but not yet confirmed** — that confirmation is the pending CI
+evidence recorded below, on which M0 closure blocks.
+
+**Local dockcross image** (`aarch64-w64-mingw32-objdump -p`, observed on the
+crypto-linked build):
+
+- `msvcrt.dll`, `KERNEL32.dll`, `USER32.dll`, `ADVAPI32.dll`, `WS2_32.dll`
+- `CRYPT32.dll` — OpenSSL's certificate-store dependency; because this image
+  links libcrypto statically, `crypt32` surfaces as a direct import of the exe
+- absent: no C++-runtime DLL (`-static-libstdc++ -static-libgcc` folded
+  libstdc++/libgcc), no libcrypto/tinfo/zlib DLL (all static in this image)
+
+**CLANGARM64 CI runner** (`windows-11-arm`, `llvm-objdump -p`): the base64-only
+predecessor build (before this commit added the AES-OCB round-trip) imported
+only `api-ms-win-crt-*.dll` (UCRT), `KERNEL32.dll`, `ADVAPI32.dll`,
+`dbghelp.dll`, and `libncursesw6.dll` — no C++-runtime/protobuf DLL. The
+crypto-linked build in this commit additionally pulls the OpenSSL cipher path,
+so it will import the OpenSSL runtime — either a dynamic `libcrypto-*.dll` (a
+bundled C library) or, if the CLANGARM64 package links OpenSSL statically,
+`crypt32.dll` directly, as observed locally. The exact resolved CLANGARM64
+crypto-linked import set will be recorded here from the authoritative CI run on
+this commit (this is the pending evidence the Result section blocks M0 closure
+on):
+
+> _(PENDING — to be filled from the authoritative CI run on this commit)_
+
+The deny-list requirement — no `libc++`, `libunwind`, `libgcc_s`, `libstdc++`,
+`libwinpthread`, `libprotobuf`, or Abseil DLL — is an **acceptance requirement**
+the gate enforces on every build; it is confirmed *observed* for the local image
+and is *required but not yet confirmed* for the CLANGARM64 target pending the CI
+run above. On MSYS2 clang the `-static-libstdc++ -static-libgcc` flags fold the
+LLVM C++ runtime
+(libc++ / compiler-rt / libunwind) into the executable; a plain `-static` is
+deliberately *not* used because it would also statically absorb the C libraries
+that must stay dynamic and bundled.
+
+### Runtime gate
+
+Because `windows-11-arm` is native ARM64, CI *executes* the built `mosh.exe`
+after the build (`./mosh.exe`), asserting a clean (0) exit, and first asserts
+via `llvm-objdump -f` that the PE is a native ARM64 image (`coff-arm64` /
+`aarch64`) rather than an x64 binary running under Windows-on-ARM emulation. The
+executed binary is the **baseline `-march=armv8-a` CI build** (not the
+`-mcpu=oryon-1` product build), which is what makes running it on the Cobalt N2
+runner sound — see the CI-build note above. Together these exercise the AES-OCB
+round-trip and the terminal/statesync construction at runtime on genuine ARM64.
+This is a **linkage/liveness gate**: it proves the selected crypto backend
+links, initializes, and round-trips one message on baseline ARM64. It is explicitly **not** a wire-compatibility or authentication
+conformance test — this CI does not run mosh's crypto test suite, and a
+self-consistent ARM64-specific cipher error could pass it. Crypto conformance
+splits across two gates because the CI runner (baseline N2) and the product
+build (Oryon) differ:
+
+- **M1 entry gate (baseline, CI):** before any networking integration or
+  production credentials, crypto conformance MUST run on the native CLANGARM64
+  runner against the **baseline CI build** with the production-selected backend.
+  A single known-answer vector plus one tamper case is insufficient for an
+  authenticated wire protocol; this gate MUST run the full upstream mosh crypto
+  test suite, plus standardized OCB known-answer vectors (e.g. the RFC 7253 OCB
+  vectors at mosh's 128-bit key / 96-bit nonce / 128-bit tag parameters)
+  covering empty, partial-block, block-boundary, and multi-block messages, plus
+  negative cases for a modified nonce, ciphertext, tag, and truncated input, and
+  MUST demonstrate **bidirectional** wire interoperability against a pinned,
+  known-good mosh implementation (Windows-produced ciphertext decrypts there,
+  and its ciphertext decrypts on Windows), with the fixtures/harness stored
+  rather than pulled from an unspecified external install.
+- **M5 release gate (Oryon, hardware):** the same full conformance suite MUST be
+  re-run on the **exact `-mcpu=oryon-1` product binary** on Snapdragon X
+  hardware before release eligibility. **Accepted residual risk:** because the
+  M1 gate exercises the baseline codegen, a crypto defect specific to Oryon code
+  generation would not be caught until M5. This risk is the deliberate cost of
+  the Oryon-product / baseline-CI split; if it is unacceptable, an Oryon runner
+  must be introduced at M1 to run this suite on the exact product binary
+  (carrying that binary's digest unchanged through packaging to M5). The local dockcross
+image cannot run the ARM64 binary, so the runtime gate is CI-only; the local
+build stops at the link and import checks.
+
+### Crypto backend selection
+
+`win32/Makefile.win` compiles `src/crypto/ocb_internal.cc`: mosh's own OCB
+mode construction, whose AES-128 block operations run through OpenSSL's EVP
+interface (`EVP_CIPHER_CTX` with `EVP_aes_128_ecb()`) under `USE_OPENSSL_AES`.
+The low-level `AES_*` primitives this file once used were replaced by EVP in
+upstream commit `1416e9a`, so both engine backends are EVP-based today; the
+distinction is *where* OCB comes from. Upstream ships a second backend in
+`src/crypto/ocb_openssl.cc` that delegates the entire OCB mode to OpenSSL
+(`EVP_aes_128_ocb()`). The two define the same `ae_*` interface, only one may
+be linked, and both are wire-compatible OCB-AES128.
+
+This choice **matches the upstream default**. `configure.ac` defaults
+`--with-crypto-library` to `openssl`, whose case sets
+`AM_CONDITIONAL(USE_AES_OCB_FROM_OPENSSL, false)` and describes itself as
+"internal OCB, OpenSSL AES" — i.e. `ocb_internal.cc` (internal OCB over OpenSSL
+EVP-ECB), exactly what the spike links. The OpenSSL EVP-OCB backend
+(`ocb_openssl.cc`) is selected only by the explicit non-default
+`--with-crypto-library=openssl-with-openssl-ocb`. So no M1 re-decision is needed
+to match upstream; a future switch to the OpenSSL-provided EVP-OCB backend would
+be an intentional divergence to document then. No crypto source was modified
+either way.
 
 `libmoshnetwork.a` is intentionally not attempted. Its POSIX socket and
 networking implementation needs the M1 WinSock port.
@@ -56,6 +271,32 @@ The M0a Docker image provides:
 | zlib | 1.3.1 |
 | terminal database | `/opt/mosh-arm64/lib/libtinfo.a` |
 
+**ABI caveat:** the local image is a GCC/mingw `aarch64-w64-mingw32` toolchain
+whose runtime is the legacy `msvcrt.dll` CRT and libstdc++/libgcc — *not* the
+target's UCRT + libc++/compiler-rt. Its import set therefore lists `msvcrt.dll`
+where the CLANGARM64 target lists the UCRT `api-ms-win-crt-*` API-set DLLs. Treat
+the local image as an ABI-divergent **compile/link smoke test** that gives fast
+feedback on source portability and the static-fold; it is not target-runtime
+evidence. The CLANGARM64 CI job is the authoritative target check for the UCRT
+ABI, build, link, imports, and baseline liveness (Oryon-ISA correctness remains
+M5). The resolved
+CLANGARM64 package/compiler versions are captured per-run by the workflow's
+"Record toolchain and dependency versions" step (MSYS2 packages are rolling, so
+a later run may use a materially different OpenSSL link mode or protobuf/abseil
+closure). This is an **auditable snapshot, not a reproducible lock**: it records
+the top-level package versions a given run validated, but does not capture the
+full transitive closure (independently-versioned Abseil, utf8, compiler runtime)
+and does not guarantee those exact package builds are re-obtainable later. The
+per-run **evidence bundle** additionally captures the *full* `pacman -Q` closure
+(not just the top-level packages) to files, so the exact Abseil/utf8/compiler-
+runtime builds a run tested are recorded. Two durability limits remain: the
+bundle is retained only for the repository's artifact-retention window, and its
+`sha256` sits beside the binary rather than being an independent signed
+attestation. A reproducible/release build would additionally pin a
+package-repository snapshot (or a versioned build image), store the bundle in a
+retention-independent location, and emit an SBOM + a provenance attestation
+signed outside the artifact — deferred to release engineering / M4.
+
 The current MSYS2 CLANGARM64 repository contains the CI package names
 `mingw-w64-clang-aarch64-{openssl,protobuf,ncurses,zlib}`. The CI workflow
 installs exactly those packages plus `mingw-w64-clang-aarch64-clang` and
@@ -65,8 +306,13 @@ The direct build uses:
 
 ```text
 -I/opt/mosh-arm64/include -L/opt/mosh-arm64/lib
--lcrypto -lprotobuf -lz -ltinfo -lws2_32 -luser32 -DNCURSES_STATIC
+-lcrypto -lprotobuf -lz -ltinfo -lws2_32 -luser32 -lcrypt32 -DNCURSES_STATIC
 ```
+
+`-lcrypt32` is required because the AES-OCB round-trip pulls OpenSSL's cipher
+path, and OpenSSL's Windows build references the `crypt32.dll` certificate-store
+API (`CertOpenStore` and friends). The local image links OpenSSL statically, so
+those references resolve at the `mosh.exe` link and must be satisfied explicitly.
 
 `protobuf.pc` advertises only `-lprotobuf`; `-lz` is therefore explicit. It is
 also required by the mosh compressor code. The host `protoc` and target runtime
@@ -76,9 +322,15 @@ On CI with protobuf v22+ (which uses Abseil), `pkg-config --libs --static
 protobuf` expands to include the Abseil and utf8-cpp closure. The local
 dockcross toolchain's protobuf 3.21.12 has no such closure.
 
-The local image's clang 14 rejects `-mcpu=oryon-1`. `win32/Makefile.exe` has
-`ARM_MCPU ?= -mcpu=oryon-1`; local invocations use `ARM_MCPU=`. CI can retain
-the default when its clang supports Oryon tuning.
+`ARM_MCPU` override matrix. `win32/Makefile.win` defaults to
+`ARM_MCPU ?= -mcpu=oryon-1` (the Oryon product target). The local dockcross
+image's clang 14 rejects that flag, so local invocations pass `ARM_MCPU=`
+(empty → clang's generic aarch64 baseline). CI passes
+`ARM_MCPU="-march=armv8-a -mtune=oryon-1"` so the gate binary runs on the Cobalt
+N2 runner (see the CI-build note at the top). As stated there, `-mcpu=oryon-1`
+establishes an Oryon-class hardware target; it is *not* a portable
+Windows-ARM64 default, is validated only at M5 on Snapdragon X hardware, and
+must not silently ship as a general-release build.
 
 M0a version-policy note: local protobuf is 3.21.12, while CI's MSYS2
 CLANGARM64 environment uses its own package version. Each environment
@@ -144,26 +396,42 @@ From the wsltty repository, run:
 It runs the M0a dependency smoke test first, then invokes:
 
 ```sh
-make -f win32/Makefile.exe clean
-make -f win32/Makefile.exe CXX=aarch64-w64-mingw32-clang++ AR=aarch64-w64-mingw32-ar NM=aarch64-w64-mingw32-nm OBJDUMP=aarch64-w64-mingw32-objdump ARM_MCPU= check
+make -f win32/Makefile.win clean
+make -f win32/Makefile.win CXX=aarch64-w64-mingw32-clang++ AR=aarch64-w64-mingw32-ar NM=aarch64-w64-mingw32-nm OBJDUMP=aarch64-w64-mingw32-objdump ARM_MCPU= check
 ```
 
 inside the mounted mosh checkout. The check verifies the five archives, the
 executable, its absence of unresolved C++ runtime symbols, and absence of
 dynamic imports of C++/protobuf runtime DLLs (via the `objdump -p` deny-list).
 
-For the MSYS2 CLANGARM64 CI build, the same makefile is used with the default
-`NM=llvm-nm` and `OBJDUMP=llvm-objdump`, and the `check` target passes with the
-UCRT-based toolchain.
+For the MSYS2 CLANGARM64 CI build (`.github/workflows/clangarm64-spike.yml`),
+the same makefile runs with the default `NM=llvm-nm` and `OBJDUMP=llvm-objdump`
+and the baseline override `ARM_MCPU="-march=armv8-a -mtune=oryon-1"` (so the gate
+binary runs on the Cobalt N2 runner). Beyond the makefile `check`, CI adds the
+native-ARM64-PE assertion, the UCRT ABI check (reject `msvcrt.dll`, require
+`api-ms-win-crt-*`), the baseline liveness run, and a durable evidence-bundle
+upload. The `check` target is expected to pass with the UCRT-based toolchain;
+the base64-only predecessor build passed, and the crypto-linked build in this
+commit is validated by the pending authoritative CI run recorded in the
+import-set section above (not yet by a run of this exact commit — see Result).
 
 ## Deferred to M1/M2
 
 The following runtime findings were identified during the M0 spike and are
-deferred to Milestone 1/2:
+deferred to Milestone 1/2. They split into two classes: **production release
+blockers** — the PRNG, timestamp monotonicity, and elimination of the spike-only
+shims — which MUST pass before any production/release target is built, and
+**compatibility/fidelity** items — wcwidth and locale behavior — which can land
+independently. A build-time mechanism (see Spike-only shims) must prevent the
+spike configuration and compatibility shims from silently entering a production
+build.
 
-- **PRNG**: `/dev/urandom`/`getrandom`/`getentropy` are unavailable on Windows;
-  key generation will throw at runtime until a Windows CSPRNG (`CryptGenRandom`
-  or `BCryptGenRandom`) is wired in.
+- **PRNG** (release blocker): `/dev/urandom`/`getrandom`/`getentropy` are unavailable on Windows;
+  key generation will throw at runtime until a Windows CSPRNG is wired in. Use
+  `BCryptGenRandom` with `BCRYPT_USE_SYSTEM_PREFERRED_RNG` (the modern CNG API);
+  the legacy `CryptGenRandom` is deprecated and should not be used for new code.
+  Required invariant: a `BCryptGenRandom` failure MUST **fail closed** (abort key
+  generation) with no fallback entropy source — never degrade to a weaker RNG.
 
 - **wcwidth combining marks**: The BMP-only fallback in `src/terminal/terminal.cc`
   returns 1 for combining marks; it should return 0.
@@ -172,12 +440,18 @@ deferred to Milestone 1/2:
   `LOCALE_IDEFAULTANSICODEPAGE`, and locale-variable clearing should use
   `_putenv_s` to sync the CRT environment.
 
-- **Timestamp monotonicity**: The `gettimeofday` fallback selected in
+- **Timestamp monotonicity** (release blocker): The `gettimeofday` fallback selected in
   `src/util/timestamp.cc:113` is non-monotonic. M1 must choose between MinGW
   `clock_gettime(CLOCK_MONOTONIC)` with runtime probing, or a
   `QueryPerformanceCounter` / `GetTickCount64` shim.
 
-- **Spike-only shims**: The no-op signal handlers, non-monotonic clock, and
-  no-op core-dump shims in `win32/posix_compat.h`, `src/util/timestamp.cc`,
-  and `src/crypto/crypto.cc` should later be gated so they cannot leak into a
-  production build.
+- **Spike-only shims** (release blocker): The no-op signal handlers,
+  non-monotonic clock, and no-op core-dump shims in `win32/posix_compat.h`,
+  `src/util/timestamp.cc`, and `src/crypto/crypto.cc` MUST be gated behind an
+  explicit build-time mechanism (e.g. a spike-only define that a production
+  target refuses) so they cannot leak into a production build. The build-time
+  refusal is necessary but not sufficient: the production build must also define
+  the *required Windows behavior* the shims stand in for — in particular the
+  Windows counterpart of `disable_dumping_core()`, i.e. preventing Windows Error
+  Reporting / crash dumps from persisting session keys or other secrets — not
+  merely remove the no-op.

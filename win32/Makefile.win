@@ -48,10 +48,23 @@ all: $(LIBS) mosh.exe
 
 check: all
 	test -f mosh.exe
-	if $(NM) -u mosh.exe | grep -Eq "__cxa|_Z|_Unwind"; then exit 1; fi
-	$(OBJDUMP) -p mosh.exe | grep -i "DLL Name:" || true
-	if $(OBJDUMP) -p mosh.exe | grep -Eiq "libstdc\+\+|libc\+\+|libgcc|libunwind|protobuf|abseil|absl"; then \
+	# Run each inspector as its own command so a missing/crashing tool aborts the
+	# recipe (make stops on the non-zero exit) instead of feeding an empty stream
+	# to grep and silently passing. Grep then reads the saved output.
+	$(NM) -u mosh.exe > $(BUILD)/nm-undef.txt
+	if grep -Eq "__cxa|_Z|_Unwind" $(BUILD)/nm-undef.txt; then \
+	  echo "ERROR: mosh.exe has unresolved C++ runtime symbols"; exit 1; fi
+	$(OBJDUMP) -p mosh.exe > $(BUILD)/objdump-p.txt
+	# Assert the import table parsed and is non-empty (grep fails the recipe if
+	# no "DLL Name:" line exists, catching an inspection that did not happen).
+	grep -i "DLL Name:" $(BUILD)/objdump-p.txt
+	if grep -Eiq "libstdc\+\+|libc\+\+|libgcc|libunwind|libwinpthread|libssp|libatomic|protobuf|abseil|absl|utf8" $(BUILD)/objdump-p.txt; then \
 	  echo "ERROR: mosh.exe dynamically imports a C++/protobuf runtime DLL"; exit 1; fi
+	# Enforce the native target boundary: the exe must not depend on the MSYS or
+	# Cygwin POSIX-emulation runtime. This matters because check runs inside the
+	# MSYS2 environment, where such a dependency would otherwise resolve silently.
+	if grep -Eiq "msys-2\.0|cygwin" $(BUILD)/objdump-p.txt; then \
+	  echo "ERROR: mosh.exe imports the MSYS/Cygwin runtime (target is native MinGW, not MSYS/Cygwin)"; exit 1; fi
 
 config: src/include/config.h
 
@@ -79,7 +92,7 @@ src/statesync/libmoshstatesync.a: $(STATESYNC_OBJS)
 	$(AR) rcs $@ $^
 
 mosh.exe: win32/spike.cc src/crypto/libmoshcrypto.a src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ win32/spike.cc -Wl,--start-group src/crypto/libmoshcrypto.a -Wl,-Bstatic $(shell pkg-config --libs --static protobuf) -Wl,-Bdynamic src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a -Wl,--end-group $(LDFLAGS) -lcrypto -lz $(NCURSES_LIBS) -lws2_32 -luser32 -static-libstdc++ -static-libgcc
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ win32/spike.cc -Wl,--start-group src/crypto/libmoshcrypto.a -Wl,-Bstatic $(shell pkg-config --libs --static protobuf) -Wl,-Bdynamic src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a -Wl,--end-group $(LDFLAGS) -lcrypto -lz $(NCURSES_LIBS) -lws2_32 -luser32 -lcrypt32 -static-libstdc++ -static-libgcc
 
 $(BUILD)/%.o: %.cc src/include/config.h
 	@mkdir -p $(dir $@)

@@ -31,9 +31,9 @@
 */
 
 // ABOUTME: Build-spike stub proving the mosh engine links into a native ARM64 standalone exe.
-// ABOUTME: Uses statesync out-of-line method to prove link; no extern-C façade.
+// ABOUTME: Exercises the AES-OCB crypto core (real libcrypto link) plus one symbol per engine archive.
 
-#include "src/crypto/base64.h"
+#include "src/crypto/crypto.h"
 #include "src/protobufs/userinput.pb.h"
 #include "src/util/timestamp.h"
 #include "src/terminal/terminalframebuffer.h"
@@ -41,10 +41,20 @@
 
 int main( void )
 {
-  const uint8_t raw[] = { 0 };
-  char encoded[5];
-  base64_encode( raw, sizeof( raw ), encoded, sizeof( encoded ) );
   ClientBuffers::UserMessage message;
+
+  /* crypto: real AES-OCB round-trip. The fixed 128-bit key (all zero, 22 'A's
+     in printable form) avoids the PRNG, which cannot draw entropy on Windows
+     until the M1 CSPRNG port; the caller-supplied Nonce means encrypt/decrypt
+     need no entropy either. This forces ae_init/ae_encrypt/ae_decrypt — the
+     OpenSSL-backed cipher path — to link and run, and also exercises base64.cc
+     through Base64Key. The crypto core is called, never modified. */
+  Crypto::Base64Key key( std::string( 22, 'A' ) );
+  Crypto::Session session( key );
+  const std::string secret( "mosh" );
+  const Crypto::Message plaintext( Crypto::Nonce( uint64_t( 1 ) ), secret );
+  const std::string ciphertext = session.encrypt( plaintext );
+  const Crypto::Message decrypted = session.decrypt( ciphertext );
 
   /* util: frozen_timestamp() */
   freeze_timestamp();
@@ -58,6 +68,9 @@ int main( void )
   Terminal::Complete comp( 1, 1 );
   const int wait = comp.wait_time( frozen );
 
-  /* Fold all results into return value to prevent elision */
-  return encoded[0] == 'A' && message.ByteSizeLong() == 0 && frozen > 0 && fb_width == 1 && wait >= 0 ? 42 : 0;
+  /* Fold all results into a clean-exit (0) success code; any mismatch is a
+     link or runtime failure. The external archive calls cannot be elided. */
+  const bool ok = message.ByteSizeLong() == 0 && decrypted.text == secret
+    && frozen > 0 && fb_width == 1 && wait >= 0;
+  return ok ? 0 : 1;
 }

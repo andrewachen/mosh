@@ -2,6 +2,10 @@ name: CLANGARM64 build spike
 
 on: [push, pull_request, workflow_dispatch]
 
+# Least privilege: the spike only reads the repo and uploads an artifact.
+permissions:
+  contents: read
+
 jobs:
   spike:
     runs-on: windows-11-arm
@@ -21,11 +25,85 @@ jobs:
             mingw-w64-clang-aarch64-pkgconf
             make
 
-      - name: Build native ARM64 engine spike
+      - name: Record toolchain and dependency versions
         shell: msys2 {0}
-        run: make -f win32/Makefile.exe check
+        run: |
+          clang++ --version
+          pacman -Q mingw-w64-clang-aarch64-clang mingw-w64-clang-aarch64-openssl \
+            mingw-w64-clang-aarch64-protobuf mingw-w64-clang-aarch64-zlib \
+            mingw-w64-clang-aarch64-ncurses mingw-w64-clang-aarch64-pkgconf
+
+      - name: Build native ARM64 engine spike (baseline ARM64 for the Cobalt runner)
+        shell: msys2 {0}
+        # The hosted windows-11-arm runner is Azure Cobalt 100 (Arm Neoverse N2),
+        # NOT Qualcomm Oryon. Build the CI gate against a conservative armv8-a
+        # baseline (Oryon tuning only, which does not change the ISA) so the binary
+        # genuinely runs on the runner and the liveness/ABI gate is diagnostic — a
+        # failure means a real port defect, not an incompatible runner. The
+        # -mcpu=oryon-1 product build (the makefile default) is validated on
+        # Snapdragon X hardware at M5.
+        run: make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" check
+
+      - name: Verify mosh.exe is a native ARM64 PE
+        shell: msys2 {0}
+        run: |
+          llvm-objdump -f mosh.exe
+          llvm-objdump -f mosh.exe | grep -qiE 'coff-arm64|aarch64' \
+            || { echo "ERROR: mosh.exe is not a native ARM64 PE"; exit 1; }
+
+      - name: Verify UCRT ABI (reject msvcrt, require UCRT)
+        shell: msys2 {0}
+        # The target ABI is UCRT (api-ms-win-crt-*), not the legacy msvcrt.dll. A
+        # build that silently linked msvcrt — or pulled mixed-CRT inputs — would
+        # pass every other gate, so assert the exact target-CRT boundary that makes
+        # the msvcrt local smoke build non-authoritative for the target.
+        run: |
+          llvm-objdump -p mosh.exe > objdump-p.txt
+          if grep -qi 'msvcrt\.dll' objdump-p.txt; then \
+            echo "ERROR: mosh.exe imports legacy msvcrt.dll (target ABI is UCRT)"; exit 1; fi
+          grep -qi 'api-ms-win-crt' objdump-p.txt \
+            || { echo "ERROR: mosh.exe has no UCRT (api-ms-win-crt-*) import"; exit 1; }
+
+      - name: Run native ARM64 engine spike
+        shell: msys2 {0}
+        # Capture the runtime output and exit status into the evidence bundle
+        # (so the M0 runtime result survives after logs expire) while still
+        # propagating a nonzero status to fail the job.
+        run: |
+          mkdir -p evidence
+          set +e
+          ./mosh.exe >evidence/runtime-output.txt 2>&1
+          rc=$?
+          set -e
+          printf 'command=./mosh.exe\nexit_status=%s\n' "$rc" >evidence/runtime-result.txt
+          cat evidence/runtime-output.txt
+          cat evidence/runtime-result.txt
+          if [ "$rc" -eq 0 ]; then \
+            echo "mosh.exe ran and exited 0 on native ARM64"; \
+          else \
+            echo "ERROR: mosh.exe exited $rc on native ARM64"; exit "$rc"; fi
+
+      - name: Collect durable evidence bundle
+        if: always()
+        shell: msys2 {0}
+        # Capture M0 closure evidence to files so it does not live only in expiring
+        # workflow logs. Each probe is guarded so the bundle is produced even when
+        # an earlier gate failed.
+        run: |
+          mkdir -p evidence
+          echo "${GITHUB_SHA:-unknown}" > evidence/commit-sha.txt
+          echo 'CI baseline: ARM_MCPU=-march=armv8-a -mtune=oryon-1 (product default: -mcpu=oryon-1, validated at M5)' > evidence/effective-flags.txt
+          clang++ --version > evidence/compiler.txt 2>&1 || true
+          pacman -Q > evidence/packages.txt 2>&1 || true
+          llvm-objdump -f mosh.exe > evidence/pe-machine.txt 2>&1 || true
+          llvm-objdump -p mosh.exe > evidence/imports.txt 2>&1 || true
+          llvm-nm -u mosh.exe > evidence/undefined-symbols.txt 2>&1 || true
+          sha256sum mosh.exe > evidence/mosh.exe.sha256 2>&1 || true
 
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: mosh-clangarm64-spike
-          path: mosh.exe
+          path: |
+            mosh.exe
+            evidence/
