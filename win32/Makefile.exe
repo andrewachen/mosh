@@ -1,5 +1,5 @@
 # ABOUTME: Builds the portable mosh engine libraries for native Windows ARM64.
-# ABOUTME: Provides the standalone DLL build spike without running autotools.
+# ABOUTME: Provides the standalone EXE build spike without running autotools.
 
 CXX = clang++
 AR = ar
@@ -12,7 +12,6 @@ PREFIX ?= /opt/mosh-arm64
 CPPFLAGS = -I. -Isrc/include -I$(PREFIX)/include -DNCURSES_STATIC -include win32/config.h.clangarm64
 CXXFLAGS = -std=c++17 -O2 $(ARM_MCPU)
 LDFLAGS = -L$(PREFIX)/lib
-LDLIBS = -lcrypto -lprotobuf -lz -ltinfo -lws2_32 -luser32
 
 BUILD = win32/build
 
@@ -32,11 +31,14 @@ LIBS = src/crypto/libmoshcrypto.a src/protobufs/libmoshprotos.a src/util/libmosh
 
 .PHONY: all clean protobufs check config
 
-all: $(LIBS) mosh.dll
+all: $(LIBS) mosh.exe
 
 check: all
-	$(NM) -g mosh.dll | grep -q mosh_spike_ok
-	if $(NM) -u mosh.dll | grep -Eq "__cxa|_Z|_Unwind"; then exit 1; fi
+	test -f mosh.exe
+	if $(NM) -u mosh.exe | grep -Eq "__cxa|_Z|_Unwind"; then exit 1; fi
+	$(OBJDUMP) -p mosh.exe | grep -i "DLL Name:" || true
+	if $(OBJDUMP) -p mosh.exe | grep -Eiq "libstdc\+\+|libc\+\+|libgcc|libunwind|protobuf|abseil|absl"; then \
+	  echo "ERROR: mosh.exe dynamically imports a C++/protobuf runtime DLL"; exit 1; fi
 
 config: src/include/config.h
 
@@ -63,12 +65,12 @@ src/terminal/libmoshterminal.a: $(TERMINAL_OBJS)
 src/statesync/libmoshstatesync.a: $(STATESYNC_OBJS)
 	$(AR) rcs $@ $^
 
-mosh.dll: win32/spike.cc src/crypto/libmoshcrypto.a src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -shared -o $@ win32/spike.cc -Wl,--start-group src/crypto/libmoshcrypto.a -Wl,-Bstatic -lprotobuf -Wl,-Bdynamic src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a -Wl,--end-group $(LDFLAGS) -lcrypto -lz -ltinfo -lws2_32 -luser32 -static-libstdc++ -static-libgcc
+mosh.exe: win32/spike.cc src/crypto/libmoshcrypto.a src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ win32/spike.cc -Wl,--start-group src/crypto/libmoshcrypto.a -Wl,-Bstatic $(shell pkg-config --libs --static protobuf) -Wl,-Bdynamic src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a -Wl,--end-group $(LDFLAGS) -lcrypto -lz -ltinfo -lws2_32 -luser32 -static-libstdc++ -static-libgcc
 
 $(BUILD)/%.o: %.cc src/include/config.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
 
 clean:
-	rm -rf $(BUILD) $(LIBS) mosh.dll src/protobufs/*.pb.cc src/protobufs/*.pb.h src/include/config.h
+	rm -rf $(BUILD) $(LIBS) mosh.exe src/protobufs/*.pb.cc src/protobufs/*.pb.h src/include/config.h

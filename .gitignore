@@ -39,3 +39,6 @@ src/include/stamp-h1
 /VERSION.stamp
 /scripts/mosh
 src/include/version.h
+
+# Native Windows ARM64 build-spike artifact (win32/Makefile.exe)
+/mosh.exe

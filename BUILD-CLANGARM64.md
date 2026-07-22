@@ -6,7 +6,7 @@ WSL, or MSYS.
 
 ## Result
 
-`make -f win32/Makefile.dll check` succeeds in the `mosh-arm64` Docker image.
+`make -f win32/Makefile.exe check` succeeds in the `mosh-arm64` Docker image.
 It regenerates the protocol sources and archives all five engine libraries:
 
 - `src/crypto/libmoshcrypto.a`
@@ -15,29 +15,30 @@ It regenerates the protocol sources and archives all five engine libraries:
 - `src/terminal/libmoshterminal.a`
 - `src/statesync/libmoshstatesync.a`
 
-`mosh.dll` links from a spike body that references one entry point from each
-archive:
+`mosh.exe` links from a standalone-exe spike body that references one entry
+point from each archive:
+
 - `base64_encode()` from `libmoshcrypto.a`
 - `ClientBuffers::UserMessage` from `libmoshprotos.a`
 - `freeze_timestamp()` / `frozen_timestamp()` from `libmoshutil.a`
 - `Terminal::Framebuffer` constructor from `libmoshterminal.a`
-- `Terminal::Complete` constructor from `libmoshstatesync.a`
+- `Terminal::Complete::wait_time()` out-of-line method from `libmoshstatesync.a`
 
-The link uses `-Wl,--start-group ... -Wl,--end-group` around all five archives
-to handle cross-archive dependencies. For the CI artifact, `-Wl,-Bstatic` forces
-protobuf linkage to the static archive to ensure the DLL is self-contained.
-Self-containment is proven by the portable `nm -u` gate (see below), not by
-CRT-name inspection.
+The C++ runtime and protobuf (with Abseil/utf8 closure on CI) are statically
+linked into `mosh.exe` so the binary does not depend on those runtime DLLs
+being on PATH. The exe MAY dynamically import the C libraries it needs
+(libcrypto, tinfo/ncurses, zlib), which are bundled alongside the exe in the
+distribution (NOT "provided by a host runtime").
+
+Self-containment is proven by the portable `objdump -p` import-table deny-list
+(see below), not by `nm -u` (which cannot see PE import table entries) and not
+by CRT-name matching.
 
 The check target is parameterized via `NM` and `OBJDUMP` variables and
-CRT-agnostic. The original `objdump -p | grep msvcrt.dll` assertion was removed
-because CRT choice is toolchain-dependent:
-- The local dockcross toolchain targets `msvcrt.dll`
-- The MSYS2 CLANGARM64 CI target uses `ucrtbase.dll` (UCRT)
-
-Both toolchains prove self-containment with `$(NM) -u mosh.dll | grep -Eq
-"__cxa|_Z|_Unwind"` — an exit code of 1 means unresolved C++ runtime symbols
-would leak into a dynamically-linked library.
+CRT-agnostic. It verifies:
+1. The built `mosh.exe` file exists.
+2. No unresolved C++ runtime symbols (via `$(NM) -u`).
+3. No dynamic imports of C++ runtime or protobuf DLLs (via `$(OBJDUMP) -p`).
 
 `libmoshnetwork.a` is intentionally not attempted. Its POSIX socket and
 networking implementation needs the M1 WinSock port.
@@ -71,7 +72,11 @@ The direct build uses:
 also required by the mosh compressor code. The host `protoc` and target runtime
 both report 3.21.12.
 
-The local image's clang 14 rejects `-mcpu=oryon-1`. `win32/Makefile.dll` has
+On CI with protobuf v22+ (which uses Abseil), `pkg-config --libs --static
+protobuf` expands to include the Abseil and utf8-cpp closure. The local
+dockcross toolchain's protobuf 3.21.12 has no such closure.
+
+The local image's clang 14 rejects `-mcpu=oryon-1`. `win32/Makefile.exe` has
 `ARM_MCPU ?= -mcpu=oryon-1`; local invocations use `ARM_MCPU=`. CI can retain
 the default when its clang supports Oryon tuning.
 
@@ -139,13 +144,13 @@ From the wsltty repository, run:
 It runs the M0a dependency smoke test first, then invokes:
 
 ```sh
-make -f win32/Makefile.dll clean
-make -f win32/Makefile.dll CXX=aarch64-w64-mingw32-clang++ AR=aarch64-w64-mingw32-ar NM=aarch64-w64-mingw32-nm OBJDUMP=aarch64-w64-mingw32-objdump ARM_MCPU= check
+make -f win32/Makefile.exe clean
+make -f win32/Makefile.exe CXX=aarch64-w64-mingw32-clang++ AR=aarch64-w64-mingw32-ar NM=aarch64-w64-mingw32-nm OBJDUMP=aarch64-w64-mingw32-objdump ARM_MCPU= check
 ```
 
 inside the mounted mosh checkout. The check verifies the five archives, the
-DLL, its exported `mosh_spike_ok` symbol, and absence of unresolved C++ runtime
-symbols (via the portable `nm -u` gate).
+executable, its absence of unresolved C++ runtime symbols, and absence of
+dynamic imports of C++/protobuf runtime DLLs (via the `objdump -p` deny-list).
 
 For the MSYS2 CLANGARM64 CI build, the same makefile is used with the default
 `NM=llvm-nm` and `OBJDUMP=llvm-objdump`, and the `check` target passes with the

@@ -30,8 +30,8 @@
     also delete it here.
 */
 
-// ABOUTME: Build-spike stub proving the mosh engine links into a native ARM64 DLL.
-// ABOUTME: Exports one symbol; replaced by the real facade in Milestone 2.
+// ABOUTME: Build-spike stub proving the mosh engine links into a native ARM64 standalone exe.
+// ABOUTME: Uses statesync out-of-line method to prove link; no extern-C façade.
 
 #include "src/crypto/base64.h"
 #include "src/protobufs/userinput.pb.h"
@@ -39,7 +39,7 @@
 #include "src/terminal/terminalframebuffer.h"
 #include "src/statesync/completeterminal.h"
 
-extern "C" __declspec( dllexport ) int mosh_spike_ok( void )
+int main( void )
 {
   const uint8_t raw[] = { 0 };
   char encoded[5];
@@ -54,10 +54,10 @@ extern "C" __declspec( dllexport ) int mosh_spike_ok( void )
   Terminal::Framebuffer fb( 1, 1 );
   const int fb_width = (int)fb.ds.get_width();
 
-  /* statesync: Complete */
+  /* statesync: Complete - use out-of-line wait_time() method to prove link */
   Terminal::Complete comp( 1, 1 );
-  (void)comp;
+  const int wait = comp.wait_time( frozen );
 
   /* Fold all results into return value to prevent elision */
-  return encoded[0] == 'A' && message.ByteSizeLong() == 0 && frozen > 0 && fb_width == 1 ? 42 : 0;
+  return encoded[0] == 'A' && message.ByteSizeLong() == 0 && frozen > 0 && fb_width == 1 && wait >= 0 ? 42 : 0;
 }
