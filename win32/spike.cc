@@ -35,6 +35,9 @@
 
 #include "src/crypto/base64.h"
 #include "src/protobufs/userinput.pb.h"
+#include "src/util/timestamp.h"
+#include "src/terminal/terminalframebuffer.h"
+#include "src/statesync/completeterminal.h"
 
 extern "C" __declspec( dllexport ) int mosh_spike_ok( void )
 {
@@ -42,5 +45,19 @@ extern "C" __declspec( dllexport ) int mosh_spike_ok( void )
   char encoded[5];
   base64_encode( raw, sizeof( raw ), encoded, sizeof( encoded ) );
   ClientBuffers::UserMessage message;
-  return encoded[0] == 'A' && message.ByteSizeLong() == 0 ? 42 : 0;
+
+  /* util: frozen_timestamp() */
+  freeze_timestamp();
+  const uint64_t frozen = frozen_timestamp();
+
+  /* terminal: Framebuffer */
+  Terminal::Framebuffer fb( 1, 1 );
+  const int fb_width = (int)fb.ds.get_width();
+
+  /* statesync: Complete */
+  Terminal::Complete comp( 1, 1 );
+  (void)comp;
+
+  /* Fold all results into return value to prevent elision */
+  return encoded[0] == 'A' && message.ByteSizeLong() == 0 && frozen > 0 && fb_width == 1 ? 42 : 0;
 }

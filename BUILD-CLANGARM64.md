@@ -6,9 +6,8 @@ WSL, or MSYS.
 
 ## Result
 
-`make -f win32/Makefile.dll ARM_MCPU= check` succeeds in the `mosh-arm64`
-Docker image. It regenerates the protocol sources and archives all five engine
-libraries:
+`make -f win32/Makefile.dll check` succeeds in the `mosh-arm64` Docker image.
+It regenerates the protocol sources and archives all five engine libraries:
 
 - `src/crypto/libmoshcrypto.a`
 - `src/protobufs/libmoshprotos.a`
@@ -16,12 +15,29 @@ libraries:
 - `src/terminal/libmoshterminal.a`
 - `src/statesync/libmoshstatesync.a`
 
-`mosh.dll` links from a one-symbol spike body that calls `base64_encode()` from
-`libmoshcrypto.a` and constructs a generated `ClientBuffers::UserMessage` from
-`libmoshprotos.a`. The successful link uses `-static-libstdc++ -static-libgcc`.
-`aarch64-w64-mingw32-nm -u mosh.dll` reports no unresolved C++ runtime symbols
-(`__cxa`, `_Z`, `_Unwind`, `_Zn`, or `_Zdl`); `objdump -p` lists only
-`msvcrt.dll` and `KERNEL32.dll` as DLL imports.
+`mosh.dll` links from a spike body that references one entry point from each
+archive:
+- `base64_encode()` from `libmoshcrypto.a`
+- `ClientBuffers::UserMessage` from `libmoshprotos.a`
+- `freeze_timestamp()` / `frozen_timestamp()` from `libmoshutil.a`
+- `Terminal::Framebuffer` constructor from `libmoshterminal.a`
+- `Terminal::Complete` constructor from `libmoshstatesync.a`
+
+The link uses `-Wl,--start-group ... -Wl,--end-group` around all five archives
+to handle cross-archive dependencies. For the CI artifact, `-Wl,-Bstatic` forces
+protobuf linkage to the static archive to ensure the DLL is self-contained.
+Self-containment is proven by the portable `nm -u` gate (see below), not by
+CRT-name inspection.
+
+The check target is parameterized via `NM` and `OBJDUMP` variables and
+CRT-agnostic. The original `objdump -p | grep msvcrt.dll` assertion was removed
+because CRT choice is toolchain-dependent:
+- The local dockcross toolchain targets `msvcrt.dll`
+- The MSYS2 CLANGARM64 CI target uses `ucrtbase.dll` (UCRT)
+
+Both toolchains prove self-containment with `$(NM) -u mosh.dll | grep -Eq
+"__cxa|_Z|_Unwind"` — an exit code of 1 means unresolved C++ runtime symbols
+would leak into a dynamically-linked library.
 
 `libmoshnetwork.a` is intentionally not attempted. Its POSIX socket and
 networking implementation needs the M1 WinSock port.
@@ -124,9 +140,39 @@ It runs the M0a dependency smoke test first, then invokes:
 
 ```sh
 make -f win32/Makefile.dll clean
-make -f win32/Makefile.dll CXX=aarch64-w64-mingw32-clang++ AR=aarch64-w64-mingw32-ar ARM_MCPU= check
+make -f win32/Makefile.dll CXX=aarch64-w64-mingw32-clang++ AR=aarch64-w64-mingw32-ar NM=aarch64-w64-mingw32-nm OBJDUMP=aarch64-w64-mingw32-objdump ARM_MCPU= check
 ```
 
 inside the mounted mosh checkout. The check verifies the five archives, the
 DLL, its exported `mosh_spike_ok` symbol, and absence of unresolved C++ runtime
-symbols.
+symbols (via the portable `nm -u` gate).
+
+For the MSYS2 CLANGARM64 CI build, the same makefile is used with the default
+`NM=llvm-nm` and `OBJDUMP=llvm-objdump`, and the `check` target passes with the
+UCRT-based toolchain.
+
+## Deferred to M1/M2
+
+The following runtime findings were identified during the M0 spike and are
+deferred to Milestone 1/2:
+
+- **PRNG**: `/dev/urandom`/`getrandom`/`getentropy` are unavailable on Windows;
+  key generation will throw at runtime until a Windows CSPRNG (`CryptGenRandom`
+  or `BCryptGenRandom`) is wired in.
+
+- **wcwidth combining marks**: The BMP-only fallback in `src/terminal/terminal.cc`
+  returns 1 for combining marks; it should return 0.
+
+- **Locale API**: `src/util/locale_utils.cc` should use `GetACP()` instead of
+  `LOCALE_IDEFAULTANSICODEPAGE`, and locale-variable clearing should use
+  `_putenv_s` to sync the CRT environment.
+
+- **Timestamp monotonicity**: The `gettimeofday` fallback selected in
+  `src/util/timestamp.cc:113` is non-monotonic. M1 must choose between MinGW
+  `clock_gettime(CLOCK_MONOTONIC)` with runtime probing, or a
+  `QueryPerformanceCounter` / `GetTickCount64` shim.
+
+- **Spike-only shims**: The no-op signal handlers, non-monotonic clock, and
+  no-op core-dump shims in `win32/posix_compat.h`, `src/util/timestamp.cc`,
+  and `src/crypto/crypto.cc` should later be gated so they cannot leak into a
+  production build.
