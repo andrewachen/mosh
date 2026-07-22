@@ -1,0 +1,72 @@
+# ABOUTME: Builds the portable mosh engine libraries for native Windows ARM64.
+# ABOUTME: Provides the standalone DLL build spike without running autotools.
+
+CXX = clang++
+AR = ar
+ARM_MCPU ?= -mcpu=oryon-1
+
+PREFIX ?= /opt/mosh-arm64
+CPPFLAGS = -I. -Isrc/include -I$(PREFIX)/include -DNCURSES_STATIC -include win32/config.h.clangarm64
+CXXFLAGS = -std=c++17 -O2 $(ARM_MCPU)
+LDFLAGS = -L$(PREFIX)/lib
+LDLIBS = -lcrypto -lprotobuf -lz -ltinfo -lws2_32 -luser32
+
+BUILD = win32/build
+
+CRYPTO_SRCS = src/crypto/ocb_internal.cc src/crypto/base64.cc src/crypto/crypto.cc
+PROTO_SRCS = src/protobufs/userinput.pb.cc src/protobufs/hostinput.pb.cc src/protobufs/transportinstruction.pb.cc
+UTIL_SRCS = src/util/locale_utils.cc src/util/swrite.cc src/util/select.cc src/util/timestamp.cc src/util/pty_compat.cc
+TERMINAL_SRCS = src/terminal/parseraction.cc src/terminal/parser.cc src/terminal/parserstate.cc src/terminal/terminal.cc src/terminal/terminaldispatcher.cc src/terminal/terminaldisplay.cc src/terminal/terminaldisplayinit.cc src/terminal/terminalframebuffer.cc src/terminal/terminalfunctions.cc src/terminal/terminaluserinput.cc
+STATESYNC_SRCS = src/statesync/completeterminal.cc src/statesync/user.cc
+
+CRYPTO_OBJS = $(patsubst %.cc,$(BUILD)/%.o,$(CRYPTO_SRCS))
+PROTO_OBJS = $(patsubst %.cc,$(BUILD)/%.o,$(PROTO_SRCS))
+UTIL_OBJS = $(patsubst %.cc,$(BUILD)/%.o,$(UTIL_SRCS))
+TERMINAL_OBJS = $(patsubst %.cc,$(BUILD)/%.o,$(TERMINAL_SRCS))
+STATESYNC_OBJS = $(patsubst %.cc,$(BUILD)/%.o,$(STATESYNC_SRCS))
+
+LIBS = src/crypto/libmoshcrypto.a src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a
+
+.PHONY: all clean protobufs
+
+all: $(LIBS) mosh.dll
+
+check: all
+	aarch64-w64-mingw32-nm -g mosh.dll | grep -q mosh_spike_ok
+	if aarch64-w64-mingw32-nm -u mosh.dll | grep -Eq "__cxa|_Z|_Unwind|_Zn|_Zdl"; then exit 1; fi
+	aarch64-w64-mingw32-objdump -p mosh.dll | grep -q "DLL Name: msvcrt.dll"
+
+config: src/include/config.h
+
+src/include/config.h: win32/config.h.clangarm64
+	cp $< $@
+
+protobufs: src/protobufs/userinput.pb.h src/protobufs/hostinput.pb.h src/protobufs/transportinstruction.pb.h
+
+src/protobufs/%.pb.h src/protobufs/%.pb.cc: src/protobufs/%.proto
+	protoc --cpp_out=src/protobufs -Isrc/protobufs $<
+
+src/crypto/libmoshcrypto.a: $(CRYPTO_OBJS)
+	$(AR) rcs $@ $^
+
+src/protobufs/libmoshprotos.a: protobufs $(PROTO_OBJS)
+	$(AR) rcs $@ $(PROTO_OBJS)
+
+src/util/libmoshutil.a: $(UTIL_OBJS)
+	$(AR) rcs $@ $^
+
+src/terminal/libmoshterminal.a: $(TERMINAL_OBJS)
+	$(AR) rcs $@ $^
+
+src/statesync/libmoshstatesync.a: $(STATESYNC_OBJS)
+	$(AR) rcs $@ $^
+
+mosh.dll: win32/spike.cc src/crypto/libmoshcrypto.a src/protobufs/libmoshprotos.a
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -shared -o $@ win32/spike.cc src/crypto/libmoshcrypto.a src/protobufs/libmoshprotos.a $(LDFLAGS) $(LDLIBS) -static-libstdc++ -static-libgcc
+
+$(BUILD)/%.o: %.cc src/include/config.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
+
+clean:
+	rm -rf $(BUILD) $(LIBS) mosh.dll src/protobufs/*.pb.cc src/protobufs/*.pb.h

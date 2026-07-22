@@ -1,0 +1,30 @@
+name: CLANGARM64 build spike
+
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  spike:
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          install: >-
+            mingw-w64-clang-aarch64-clang
+            mingw-w64-clang-aarch64-openssl
+            mingw-w64-clang-aarch64-protobuf
+            mingw-w64-clang-aarch64-zlib
+            mingw-w64-clang-aarch64-ncurses
+            make
+
+      - name: Build native ARM64 engine spike
+        shell: msys2 {0}
+        run: make -f win32/Makefile.dll check
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mosh-clangarm64-spike
+          path: mosh.dll

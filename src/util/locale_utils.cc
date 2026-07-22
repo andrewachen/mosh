@@ -39,6 +39,10 @@
 #include <cstring>
 #include <string>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #if HAVE_LANGINFO_H
 #include <langinfo.h>
 #endif
@@ -71,6 +75,14 @@ const char* locale_charset( void )
   static const char ASCII_name[] = "US-ASCII";
 
   /* Produce more pleasant name of US-ASCII */
+#ifdef _WIN32
+  static char charset[16];
+  const int length = GetLocaleInfoA( LOCALE_USER_DEFAULT, LOCALE_IDEFAULTANSICODEPAGE, charset, sizeof( charset ) );
+  if ( length == 0 || strcmp( charset, "65001" ) != 0 ) {
+    return ASCII_name;
+  }
+  return "UTF-8";
+#else
   const char* ret = nl_langinfo( CODESET );
 
   if ( strcmp( ret, "ANSI_X3.4-1968" ) == 0 ) {
@@ -78,6 +90,7 @@ const char* locale_charset( void )
   }
 
   return ret;
+#endif
 }
 
 bool is_utf8_locale( void )
@@ -109,6 +122,15 @@ void set_native_locale( void )
 
 void clear_locale_variables( void )
 {
+#ifdef _WIN32
+  const char* locale_variables[] = { "LANG",       "LANGUAGE",       "LC_CTYPE",       "LC_NUMERIC",
+                                     "LC_TIME",    "LC_COLLATE",     "LC_MONETARY",    "LC_MESSAGES",
+                                     "LC_PAPER",   "LC_NAME",        "LC_ADDRESS",     "LC_TELEPHONE",
+                                     "LC_MEASUREMENT", "LC_IDENTIFICATION", "LC_ALL" };
+  for ( const char* variable : locale_variables ) {
+    SetEnvironmentVariableA( variable, NULL );
+  }
+#else
   unsetenv( "LANG" );
   unsetenv( "LANGUAGE" );
   unsetenv( "LC_CTYPE" );
@@ -124,4 +146,5 @@ void clear_locale_variables( void )
   unsetenv( "LC_MEASUREMENT" );
   unsetenv( "LC_IDENTIFICATION" );
   unsetenv( "LC_ALL" );
+#endif
 }

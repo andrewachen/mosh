@@ -32,6 +32,7 @@
 
 #include "src/include/config.h"
 
+#ifndef _WIN32
 #if !defined( HAVE_FORKPTY ) || !defined( HAVE_CFMAKERAW )
 #include <cstdio>
 #include <cstdlib>
@@ -178,5 +179,6 @@ void my_cfmakeraw( struct termios* termios_p )
   termios_p->c_cc[VMIN] = 1;  // read() is satisfied after 1 char
   termios_p->c_cc[VTIME] = 0; // No timer
 }
+#endif
 #endif
 #endif

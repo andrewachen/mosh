@@ -37,7 +37,9 @@
 #include <cstring>
 #include <fstream>
 
+#ifndef _WIN32
 #include <sys/resource.h>
+#endif
 
 #include "src/crypto/base64.h"
 #include "src/crypto/byteorder.h"
@@ -281,12 +283,15 @@ const Message Session::decrypt( const char* str, size_t len )
   return ret;
 }
 
+#ifndef _WIN32
 static rlim_t saved_core_rlimit;
+#endif
 
 /* Disable dumping core, as a precaution to avoid saving sensitive data
    to disk. */
 void Crypto::disable_dumping_core( void )
 {
+#ifndef _WIN32
   struct rlimit limit;
   if ( 0 != getrlimit( RLIMIT_CORE, &limit ) ) {
     /* We don't throw CryptoException because this is called very early
@@ -301,14 +306,17 @@ void Crypto::disable_dumping_core( void )
     perror( "setrlimit(RLIMIT_CORE)" );
     exit( 1 );
   }
+#endif
 }
 
 void Crypto::reenable_dumping_core( void )
 {
+#ifndef _WIN32
   /* Silent failure is safe. */
   struct rlimit limit;
   if ( 0 == getrlimit( RLIMIT_CORE, &limit ) ) {
     limit.rlim_cur = saved_core_rlimit;
     setrlimit( RLIMIT_CORE, &limit );
   }
+#endif
 }

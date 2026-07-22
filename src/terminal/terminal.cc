@@ -37,6 +37,18 @@
 
 #include <unistd.h>
 
+#ifdef _WIN32
+static int wcwidth( wchar_t ch )
+{
+  return ( ch >= 0x1100 && ( ch <= 0x115f || ch == 0x2329 || ch == 0x232a || ( ch >= 0x2e80 && ch <= 0xa4cf )
+                            || ( ch >= 0xac00 && ch <= 0xd7a3 ) || ( ch >= 0xf900 && ch <= 0xfaff )
+                            || ( ch >= 0xfe10 && ch <= 0xfe19 ) || ( ch >= 0xfe30 && ch <= 0xfe6f )
+                            || ( ch >= 0xff00 && ch <= 0xff60 ) || ( ch >= 0xffe0 && ch <= 0xffe6 ) ) )
+           ? 2
+           : 1;
+}
+#endif
+
 #include "src/terminal/terminal.h"
 
 using namespace Terminal;

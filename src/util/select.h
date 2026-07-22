@@ -38,7 +38,11 @@
 #include <csignal>
 #include <cstring>
 
+#ifdef _WIN32
+#include "win32/posix_compat.h"
+#else
 #include <sys/select.h>
+#endif
 
 #include "src/util/fatal_assert.h"
 #include "src/util/timestamp.h"
