@@ -42,8 +42,13 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include "win32/wincompat.h"
+#else
+typedef int mosh_socket_t;
 #include <netinet/in.h>
 #include <sys/socket.h>
+#endif
 
 #include "src/crypto/crypto.h"
 
@@ -67,7 +72,11 @@ private:
 
 public:
   NetworkException( std::string s_function = "<none>", int s_errno = 0 )
+#ifdef _WIN32
+    : function( s_function ), the_errno( s_errno ), my_what( function + ": " + wsa_strerror( the_errno ) )
+#else
     : function( s_function ), the_errno( s_errno ), my_what( function + ": " + strerror( the_errno ) )
+#endif
   {}
   const char* what() const throw() { return my_what.c_str(); }
   ~NetworkException() throw() {}
@@ -155,15 +164,32 @@ private:
   class Socket
   {
   private:
-    int _fd;
+    mosh_socket_t _fd;
+
+#ifdef _WIN32
+    /* Move-only on Windows (no dup for sockets) */
+    Socket( const Socket& other ) = delete;
+    Socket& operator=( const Socket& other ) = delete;
 
   public:
-    int fd( void ) const { return _fd; }
+    mosh_socket_t fd( void ) const { return _fd; }
+    Socket( int family );
+    ~Socket();
+    Socket( Socket&& other ) noexcept : _fd( other._fd ) { other._fd = INVALID_SOCKET; }
+    Socket& operator=( Socket&& other ) noexcept {
+      if ( this != &other ) { if ( _fd != INVALID_SOCKET ) closesocket( _fd );
+                              _fd = other._fd; other._fd = INVALID_SOCKET; }
+      return *this;
+    }
+#else
+  public:
+    int fd( void ) const { return (int)_fd; }
     Socket( int family );
     ~Socket();
 
     Socket( const Socket& other );
     Socket& operator=( const Socket& other );
+#endif
   };
 
   std::deque<Socket> socks;
@@ -200,15 +226,23 @@ private:
 
   void hop_port( void );
 
-  int sock( void ) const
+#ifdef _WIN32
+  mosh_socket_t sock( void ) const
   {
     assert( !socks.empty() );
     return socks.back().fd();
   }
+#else
+  int sock( void ) const
+  {
+    assert( !socks.empty() );
+    return (int)socks.back().fd();
+  }
+#endif
 
   void prune_sockets( void );
 
-  std::string recv_one( int sock_to_recv );
+  std::string recv_one( mosh_socket_t sock_to_recv );
 
   void set_MTU( int family );
 
@@ -221,7 +255,11 @@ public:
 
   void send( const std::string& s );
   std::string recv( void );
+#ifdef _WIN32
+  const std::vector<mosh_socket_t> fds( void ) const;
+#else
   const std::vector<int> fds( void ) const;
+#endif
   int get_MTU( void ) const { return MTU; }
 
   std::string port( void ) const;

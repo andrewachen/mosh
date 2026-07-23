@@ -30,40 +30,18 @@
     also delete it here.
 */
 
-/* ABOUTME: Hand-authored feature configuration for native Windows ARM64 builds. */
-/* ABOUTME: Replaces cross-target autotools probing for the standalone DLL spike. */
-#ifndef MOSH_WIN32_CONFIG_H_CLANGARM64
-#define MOSH_WIN32_CONFIG_H_CLANGARM64
+/* ABOUTME: WinSock2 includes, mosh_socket_t, and errno-mapping shims for the mosh network port. */
+/* ABOUTME: Included only on _WIN32; POSIX builds are unaffected. */
+#pragma once
 
-#define HAVE_CLOCK_GETTIME 1
-#define HAVE_CURSES_H 1
-#define HAVE_GETTIMEOFDAY 1
-#define HAVE_STD_SHARED_PTR 1
-#define HAVE_UNISTD_H 1
-#define HAVE_WCHAR_H 1
-#define HAVE_WCTYPE_H 1
-#define USE_OPENSSL_AES 1
+#ifdef _WIN32
 
-#define HAVE_DECL_BE64TOH 0
-#define HAVE_DECL_BETOH64 0
-#define HAVE_DECL_BSWAP64 0
-#define HAVE_DECL___BUILTIN_BSWAP64 1
-#define HAVE_DECL___BUILTIN_CTZ 1
-#define HAVE_DECL_FFS 0
+#include <winsock2.h>
+#include <ws2tcpip.h>
 
-/* #undef HAVE_CFMAKERAW */
-/* #undef HAVE_FORKPTY */
-/* #undef HAVE_GETENTROPY */
-/* #undef HAVE_GETRANDOM */
-/* #undef HAVE_MACH_ABSOLUTE_TIME */
-/* #undef HAVE_POSIX_MEMALIGN */
-/* #undef HAVE_PSELECT */
-/* #undef HAVE_SYS_ENDIAN_H */
-/* #undef HAVE_SYS_RANDOM_H */
-/* #undef HAVE_SYS_UIO_H */
-/* #undef HAVE_PTY_H */
-/* #undef HAVE_IP_MTU_DISCOVER */
-/* #undef HAVE_IP_RECVTOS */
-/* #undef HAVE_PLEDGE */
+typedef SOCKET mosh_socket_t;               /* pointer-sized; POSIX side uses int */
+const char* wsa_strerror( int err );        /* defined in wincompat.cc */
+void mosh_winsock_init( void );             /* idempotent WSAStartup */
 
-#endif
+
+#endif /* _WIN32 */

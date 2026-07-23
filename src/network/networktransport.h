@@ -108,7 +108,11 @@ public:
 
   const TimestampedState<RemoteState>& get_latest_remote_state( void ) const { return received_states.back(); }
 
+#ifdef _WIN32
+  const std::vector<mosh_socket_t> fds( void ) const { return connection.fds(); }
+#else
   const std::vector<int> fds( void ) const { return connection.fds(); }
+#endif
 
   void set_verbose( unsigned int s_verbose )
   {

@@ -44,6 +44,15 @@ jobs:
         # Snapdragon X hardware at M5.
         run: make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" check
 
+      - name: Build and run loopback test
+        shell: msys2 {0}
+        # The loopback test verifies the WinSock port of network.cc works correctly
+        # on native ARM64. It drives two Connection objects over localhost UDP and
+        # verifies payload round-trips in both directions.
+        run: |
+          make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" protobufs test_loopback
+          ./test_loopback.exe
+
       - name: Verify mosh.exe is a native ARM64 PE
         shell: msys2 {0}
         run: |

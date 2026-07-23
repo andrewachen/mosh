@@ -35,10 +35,21 @@
 
 #include "config.h"
 
-#if !defined( HAVE_GETENTROPY ) && !defined( HAVE_GETRANDOM )
+#if !defined( HAVE_GETENTROPY ) && !defined( HAVE_GETRANDOM ) && !defined( _WIN32 )
 #define HAVE_URANDOM 1
 #else
 #undef HAVE_URANDOM
+#endif
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN /* keep windows.h from pulling legacy winsock.h before winsock2.h */
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX /* don't leak min/max macros into consumers of this header */
+#endif
+#include <windows.h>
+#include <bcrypt.h>
 #endif
 
 #include <unistd.h>
@@ -98,6 +109,19 @@ public:
       size_t this_size = std::min( max_read, size );
       if ( getentropy( dest, this_size ) ) {
         throw CryptoException( "getentropy fell short" );
+      }
+      size -= this_size;
+      dest = static_cast<char*>( dest ) + this_size;
+    }
+#elif defined( _WIN32 )
+    // BCryptGenRandom's length is a 32-bit ULONG; chunk the size_t request so a
+    // value > ULONG_MAX cannot wrap and silently under-fill. Fail closed per chunk.
+    const size_t max_chunk = 0xFFFFFFFFu; /* ULONG_MAX */
+    while ( size ) {
+      ULONG this_size = static_cast<ULONG>( std::min( size, max_chunk ) );
+      if ( BCryptGenRandom( NULL, static_cast<PUCHAR>( dest ), this_size,
+                            BCRYPT_USE_SYSTEM_PREFERRED_RNG ) != 0 ) {
+        throw CryptoException( "BCryptGenRandom failed" );
       }
       size -= this_size;
       dest = static_cast<char*>( dest ) + this_size;

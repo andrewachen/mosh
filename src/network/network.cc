@@ -32,10 +32,10 @@
 
 #include "src/include/config.h"
 
-#include <cassert>
-#include <cerrno>
-#include <cstring>
-
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <sys/socket.h>
 #include <sys/types.h>
 #ifdef HAVE_SYS_UIO_H
@@ -44,6 +44,11 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <unistd.h>
+#endif
+
+#include <cassert>
+#include <cerrno>
+#include <cstring>
 
 #include "src/crypto/byteorder.h"
 #include "src/crypto/crypto.h"
@@ -147,6 +152,46 @@ void Connection::prune_sockets( void )
   }
 }
 
+#ifdef _WIN32
+Connection::Socket::Socket( int family ) : _fd( socket( family, SOCK_DGRAM, 0 ) )
+{
+  if ( _fd == INVALID_SOCKET ) {
+    throw NetworkException( "socket", WSAGetLastError() );
+  }
+
+  /* Set non-blocking mode */
+  u_long nonblocking = 1;
+  if ( ioctlsocket( _fd, FIONBIO, &nonblocking ) != 0 ) {
+    int err = WSAGetLastError();
+    closesocket( _fd ); /* ctor is throwing, so ~Socket won't run -- don't leak the handle */
+    throw NetworkException( "ioctlsocket", err );
+  }
+
+  /* Disable path MTU discovery */
+#ifdef HAVE_IP_MTU_DISCOVER
+  int flag = IP_PMTUDISC_DONT;
+  if ( setsockopt( _fd, IPPROTO_IP, IP_MTU_DISCOVER, (const char*)&flag, sizeof flag ) < 0 ) {
+    throw NetworkException( "setsockopt", WSAGetLastError() );
+  }
+#endif
+
+  /* Do not advertise ECN (ECT) on Windows. IP_RECVTOS/recvmsg is unavailable
+     here, so CE marks on received datagrams cannot be read and
+     congestion_experienced stays false. Setting ECT(0) would ask the network
+     to mark rather than drop under congestion, then silently ignore those
+     marks -- defeating congestion response on a Windows-to-Windows path.
+     Leave the datagram at Not-ECT so loss remains the congestion signal. */
+
+  /* request explicit congestion notification on received datagrams */
+#ifdef HAVE_IP_RECVTOS
+  int tosflag = true;
+  if ( setsockopt( _fd, IPPROTO_IP, IP_RECVTOS, (const char*)&tosflag, sizeof tosflag ) < 0
+       && family == IPPROTO_IP ) { /* FreeBSD disallows this option on IPv6 sockets. */
+    perror( "setsockopt( IP_RECVTOS )" );
+  }
+#endif
+}
+#else
 Connection::Socket::Socket( int family ) : _fd( socket( family, SOCK_DGRAM, 0 ) )
 {
   if ( _fd < 0 ) {
@@ -176,12 +221,25 @@ Connection::Socket::Socket( int family ) : _fd( socket( family, SOCK_DGRAM, 0 ) 
   }
 #endif
 }
+#endif
 
 void Connection::setup( void )
 {
   last_port_choice = timestamp();
 }
 
+#ifdef _WIN32
+const std::vector<mosh_socket_t> Connection::fds( void ) const
+{
+  std::vector<mosh_socket_t> ret;
+
+  for ( std::deque<Socket>::const_iterator it = socks.begin(); it != socks.end(); it++ ) {
+    ret.push_back( it->fd() );
+  }
+
+  return ret;
+}
+#else
 const std::vector<int> Connection::fds( void ) const
 {
   std::vector<int> ret;
@@ -192,6 +250,7 @@ const std::vector<int> Connection::fds( void ) const
 
   return ret;
 }
+#endif
 
 void Connection::set_MTU( int family )
 {
@@ -270,7 +329,11 @@ Connection::Connection( const char* desired_ip, const char* desired_port ) /* se
     throw; /* this time it's fatal */
   }
 
+#ifdef _WIN32
+  throw NetworkException( "Could not bind", WSAGetLastError() );
+#else
   throw NetworkException( "Could not bind", errno );
+#endif
 }
 
 bool Connection::try_bind( const char* addr, int port_low, int port_high )
@@ -311,9 +374,15 @@ bool Connection::try_bind( const char* addr, int port_low, int port_high )
     if ( local_addr.sa.sa_family == AF_INET6
          && memcmp( &local_addr.sin6.sin6_addr, &in6addr_any, sizeof( in6addr_any ) ) == 0 ) {
       const int off = 0;
+#ifdef _WIN32
+      if ( setsockopt( sock(), IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&off, sizeof( off ) ) ) {
+        fprintf( stderr, "setsockopt( IPV6_V6ONLY, off ): %s\n", wsa_strerror( WSAGetLastError() ) );
+      }
+#else
       if ( setsockopt( sock(), IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof( off ) ) ) {
         perror( "setsockopt( IPV6_V6ONLY, off )" );
       }
+#endif
     }
 
     if ( ::bind( sock(), &local_addr.sa, local_addr_len ) == 0 ) {
@@ -321,7 +390,11 @@ bool Connection::try_bind( const char* addr, int port_low, int port_high )
       return true;
     } // else fallthrough to below code, on last iteration.
   }
+#ifdef _WIN32
+  int saved_errno = WSAGetLastError();
+#else
   int saved_errno = errno;
+#endif
   socks.pop_back();
   char host[NI_MAXHOST], serv[NI_MAXSERV];
   int errcode = getnameinfo( &local_addr.sa,
@@ -374,16 +447,30 @@ void Connection::send( const std::string& s )
 
   std::string p = session.encrypt( px.toMessage() );
 
+#ifdef _WIN32
+  ssize_t bytes_sent = sendto( sock(), p.data(), p.size(), 0, &remote_addr.sa, remote_addr_len );
+#else
   ssize_t bytes_sent = sendto( sock(), p.data(), p.size(), MSG_DONTWAIT, &remote_addr.sa, remote_addr_len );
+#endif
 
   if ( bytes_sent != static_cast<ssize_t>( p.size() ) ) {
     /* Make sendto() failure available to the frontend. */
+#ifdef _WIN32
+    int wserr = WSAGetLastError();
+    send_error = "sendto: ";
+    send_error += wsa_strerror( wserr );
+
+    if ( wserr == WSAEMSGSIZE ) {
+      MTU = DEFAULT_SEND_MTU; /* payload MTU of last resort */
+    }
+#else
     send_error = "sendto: ";
     send_error += strerror( errno );
 
     if ( errno == EMSGSIZE ) {
       MTU = DEFAULT_SEND_MTU; /* payload MTU of last resort */
     }
+#endif
   }
 
   uint64_t now = timestamp();
@@ -407,11 +494,20 @@ std::string Connection::recv( void )
     try {
       payload = recv_one( it->fd() );
     } catch ( NetworkException& e ) {
+#ifdef _WIN32
+      /* WinSock has no EAGAIN - treat both WSAEWOULDBLOCK and WSAEMSGSIZE as continue */
+      if ( e.the_errno == WSAEWOULDBLOCK || e.the_errno == WSAEMSGSIZE ) {
+        continue;
+      } else {
+        throw;
+      }
+#else
       if ( ( e.the_errno == EAGAIN ) || ( e.the_errno == EWOULDBLOCK ) ) {
         continue;
       } else {
         throw;
       }
+#endif
     }
 
     /* succeeded */
@@ -421,6 +517,98 @@ std::string Connection::recv( void )
   throw NetworkException( "No packet received" );
 }
 
+#ifdef _WIN32
+std::string Connection::recv_one( mosh_socket_t sock_to_recv )
+{
+  /* receive source address and payload via recvfrom (ECN dropped per YAGNI) */
+  Addr packet_remote_addr;
+  socklen_t addrlen = sizeof( packet_remote_addr );
+
+  char msg_payload[Session::RECEIVE_MTU];
+
+  ssize_t received_len = recvfrom( sock_to_recv, msg_payload, Session::RECEIVE_MTU, 0,
+                                   &packet_remote_addr.sa, &addrlen );
+
+  if ( received_len < 0 ) {
+    int wserr = WSAGetLastError();
+    if ( wserr == WSAEMSGSIZE ) {
+      throw NetworkException( "Received oversize datagram", WSAEMSGSIZE );
+    }
+    throw NetworkException( "recvfrom", wserr );
+  }
+
+  /* ECN support dropped - per brief, WireGuard/Windows won't carry it */
+  bool congestion_experienced = false;
+
+  Packet p( session.decrypt( msg_payload, received_len ) );
+
+  dos_assert( p.direction == ( server ? TO_SERVER : TO_CLIENT ) ); /* prevent malicious playback to sender */
+
+  if ( p.seq
+       < expected_receiver_seq ) { /* don't use (but do return) out-of-order packets for timestamp or targeting */
+    return p.payload;
+  }
+  expected_receiver_seq = p.seq + 1; /* this is security-sensitive because a replay attack could otherwise
+                                        screw up the timestamp and targeting */
+
+  if ( p.timestamp != uint16_t( -1 ) ) {
+    saved_timestamp = p.timestamp;
+    saved_timestamp_received_at = timestamp();
+
+    if ( congestion_experienced ) {
+      /* signal counterparty to slow down */
+      /* this will gradually slow the counterparty down to the minimum frame rate */
+      saved_timestamp -= CONGESTION_TIMESTAMP_PENALTY;
+      if ( server ) {
+        fprintf( stderr, "Received explicit congestion notification.\n" );
+      }
+    }
+  }
+
+  if ( p.timestamp_reply != uint16_t( -1 ) ) {
+    uint16_t now = timestamp16();
+    double R = timestamp_diff( now, p.timestamp_reply );
+
+    if ( R < 5000 ) {   /* ignore large values, e.g. server was Ctrl-Zed */
+      if ( !RTT_hit ) { /* first measurement */
+        SRTT = R;
+        RTTVAR = R / 2;
+        RTT_hit = true;
+      } else {
+        const double alpha = 1.0 / 8.0;
+        const double beta = 1.0 / 4.0;
+
+        RTTVAR = ( 1 - beta ) * RTTVAR + ( beta * fabs( SRTT - R ) );
+        SRTT = ( 1 - alpha ) * SRTT + ( alpha * R );
+      }
+    }
+  }
+
+  /* auto-adjust to remote host */
+  has_remote_addr = true;
+  last_heard = timestamp();
+
+  if ( server && /* only client can roam */
+       ( remote_addr_len != addrlen
+         || memcmp( &remote_addr, &packet_remote_addr, remote_addr_len ) != 0 ) ) {
+    remote_addr = packet_remote_addr;
+    remote_addr_len = addrlen;
+    char host[NI_MAXHOST], serv[NI_MAXSERV];
+    int errcode = getnameinfo( &remote_addr.sa,
+                               remote_addr_len,
+                               host,
+                               sizeof( host ),
+                               serv,
+                               sizeof( serv ),
+                               NI_DGRAM | NI_NUMERICHOST | NI_NUMERICSERV );
+    if ( errcode != 0 ) {
+      throw NetworkException( std::string( "recv_one: getnameinfo: " ) + wsa_strerror( errcode ), 0 );
+    }
+    fprintf( stderr, "Server now attached to client at %s:%s\n", host, serv );
+  }
+  return p.payload;
+}
+#else
 std::string Connection::recv_one( int sock_to_recv )
 {
   /* receive source address, ECN, and payload in msghdr structure */
@@ -543,12 +731,24 @@ std::string Connection::recv_one( int sock_to_recv )
   }
   return p.payload;
 }
+#endif
 
 std::string Connection::port( void ) const
 {
   Addr local_addr;
   socklen_t addrlen = sizeof( local_addr );
 
+#ifdef _WIN32
+  if ( getsockname( sock(), &local_addr.sa, &addrlen ) < 0 ) {
+    throw NetworkException( "getsockname", WSAGetLastError() );
+  }
+
+  char serv[NI_MAXSERV];
+  int errcode = getnameinfo( &local_addr.sa, addrlen, NULL, 0, serv, sizeof( serv ), NI_DGRAM | NI_NUMERICSERV );
+  if ( errcode != 0 ) {
+    throw NetworkException( std::string( "port: getnameinfo: " ) + wsa_strerror( errcode ), 0 );
+  }
+#else
   if ( getsockname( sock(), &local_addr.sa, &addrlen ) < 0 ) {
     throw NetworkException( "getsockname", errno );
   }
@@ -558,6 +758,7 @@ std::string Connection::port( void ) const
   if ( errcode != 0 ) {
     throw NetworkException( std::string( "port: getnameinfo: " ) + gai_strerror( errcode ), 0 );
   }
+#endif
 
   return std::string( serv );
 }
@@ -600,6 +801,16 @@ uint64_t Connection::timeout( void ) const
   return RTO;
 }
 
+#ifdef _WIN32
+Connection::Socket::~Socket()
+{
+  if ( _fd != INVALID_SOCKET ) {
+    fatal_assert( closesocket( _fd ) == 0 );
+  }
+}
+
+/* Move-only on Windows - copy-ctor and operator= are deleted in header */
+#else
 Connection::Socket::~Socket()
 {
   fatal_assert( close( _fd ) == 0 );
@@ -620,6 +831,7 @@ Connection::Socket& Connection::Socket::operator=( const Socket& other )
 
   return *this;
 }
+#endif
 
 bool Connection::parse_portrange( const char* desired_port, int& desired_port_low, int& desired_port_high )
 {
