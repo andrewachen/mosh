@@ -35,6 +35,29 @@
 #ifndef MOSH_WIN32_CONFIG_H_CLANGARM64
 #define MOSH_WIN32_CONFIG_H_CLANGARM64
 
+/* Prevent <windows.h> from defining DrawState, which collides with mosh's
+   Terminal::DrawState. This header is force-included before all Win32 headers. */
+#ifndef NODRAWTEXT
+#define NODRAWTEXT 1
+#endif
+#ifdef _WIN32
+#include <winsock2.h>
+#include <windows.h>
+#ifdef DrawState
+#undef DrawState
+#endif
+#ifdef GetMessage
+#undef GetMessage
+#endif
+#endif
+
+/* terminaloverlay.cc uses POSIX wcwidth(), which MinGW does not provide.
+   Limit this declaration to that translation unit: terminal.cc has its own
+   file-local implementation, so a global declaration there would conflict. */
+#ifdef MOSH_NEEDS_WCWIDTH
+int wcwidth( wchar_t ch );
+#endif
+
 #define HAVE_CLOCK_GETTIME 1
 #define HAVE_CURSES_H 1
 #define HAVE_GETTIMEOFDAY 1

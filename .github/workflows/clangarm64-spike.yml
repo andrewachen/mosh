@@ -53,6 +53,15 @@ jobs:
           make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" protobufs test_loopback
           ./test_loopback.exe
 
+      - name: Build and run core lifecycle test
+        shell: msys2 {0}
+        timeout-minutes: 2
+        # A bounded native test catches stalled cached timestamps, locale setup,
+        # transport round-trips, frame generation, and shutdown acknowledgements.
+        run: |
+          make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" protobufs test_core
+          ./test_core.exe
+
       - name: Verify mosh.exe is a native ARM64 PE
         shell: msys2 {0}
         run: |
