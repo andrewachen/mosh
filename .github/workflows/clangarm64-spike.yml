@@ -53,6 +53,17 @@ jobs:
           make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" protobufs test_loopback
           ./test_loopback.exe
 
+      - name: Build and run console input probe
+        shell: msys2 {0}
+        # This self-contained probe allocates a console when Actions gives the
+        # shell redirected standard handles, then injects input records. A
+        # reader-thread/cancellation regression is bounded by this explicit
+        # step timeout, making it a deterministic CI failure.
+        timeout-minutes: 1
+        run: |
+          make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" console_probe.exe
+          ./console_probe.exe
+
       - name: Verify mosh.exe is a native ARM64 PE
         shell: msys2 {0}
         run: |
