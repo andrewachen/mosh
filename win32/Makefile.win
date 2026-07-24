@@ -52,11 +52,12 @@ LIBS = src/crypto/libmoshcrypto.a src/protobufs/libmoshprotos.a src/util/libmosh
 
 .PHONY: all clean protobufs check config
 
-all: $(LIBS) mosh.exe test_loopback test_core $(BUILD)/win32/console_io_include_check.o
+all: $(LIBS) mosh.exe test_loopback test_core test_bootstrap $(BUILD)/win32/console_io_include_check.o
 
 check: all
 	test -f mosh.exe
 	test -f test_core.exe
+	test -f test_bootstrap.exe
 	# Run each inspector as its own command so a missing/crashing tool aborts the
 	# recipe (make stops on the non-zero exit) instead of feeding an empty stream
 	# to grep and silently passing. Grep then reads the saved output.
@@ -147,11 +148,20 @@ $(BUILD)/win32/mosh_core.o: win32/mosh_core.cc src/include/config.h src/network/
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
 
 $(BUILD)/win32/test_core.o: win32/test_core.cc src/include/config.h win32/mosh_core.h win32/test_server.h $(BUILD)/win32/mosh_core.o $(BUILD)/win32/test_server.o src/network/libmoshnetwork.a src/crypto/libmoshcrypto.a $(BUILD)/win32/wincompat.o src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a
+
+$(BUILD)/win32/mosh_bootstrap.o: win32/mosh_bootstrap.cc win32/mosh_bootstrap.h src/include/config.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD)/win32/test_bootstrap.o: win32/test_bootstrap.cc win32/mosh_bootstrap.h src/include/config.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
 
 test_core: $(BUILD)/win32/test_core.o $(BUILD)/win32/mosh_core.o $(BUILD)/win32/test_server.o src/network/libmoshnetwork.a src/crypto/libmoshcrypto.a $(BUILD)/win32/wincompat.o src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a src/frontend/libmoshfrontend.a
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ $(BUILD)/win32/test_core.o $(BUILD)/win32/mosh_core.o $(BUILD)/win32/test_server.o -Wl,--start-group src/network/libmoshnetwork.a src/crypto/libmoshcrypto.a $(BUILD)/win32/wincompat.o src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a src/frontend/libmoshfrontend.a -Wl,--end-group -Wl,-Bstatic $(shell pkg-config --libs --static protobuf) -Wl,-Bdynamic -Wl,--start-group $(LDFLAGS) -lcrypto -lz $(NCURSES_LIBS) -lws2_32 -luser32 -lcrypt32 -lbcrypt -l:libwinpthread.a -Wl,--end-group
+
+test_bootstrap: $(BUILD)/win32/test_bootstrap.o $(BUILD)/win32/mosh_bootstrap.o $(BUILD)/win32/wincompat.o
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ $(BUILD)/win32/test_bootstrap.o $(BUILD)/win32/mosh_bootstrap.o $(BUILD)/win32/wincompat.o $(LDFLAGS) -lws2_32 -luser32 -l:libwinpthread.a -static-libstdc++ -static-libgcc
 
 $(BUILD)/%.o: %.cc src/include/config.h
 	@mkdir -p $(dir $@)
@@ -162,4 +172,4 @@ $(BUILD)/src/frontend/terminaloverlay.o: src/frontend/terminaloverlay.cc src/inc
 	$(CXX) $(CPPFLAGS) -DMOSH_NEEDS_WCWIDTH $(CXXFLAGS) -c -o $@ $<
 
 clean:
-	rm -rf $(BUILD) $(LIBS) mosh.exe test_loopback test_loopback.exe test_core test_core.exe src/protobufs/*.pb.cc src/protobufs/*.pb.h src/include/config.h
+	rm -rf $(BUILD) $(LIBS) mosh.exe test_loopback test_loopback.exe test_core test_core.exe test_bootstrap test_bootstrap.exe src/protobufs/*.pb.cc src/protobufs/*.pb.h src/include/config.h
