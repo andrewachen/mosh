@@ -1,6 +1,25 @@
-# Mosh CLANGARM64 build spike
+# Mosh CLANGARM64 build and frontend record
 
-This log records the Milestone 0 native-Windows ARM64 build spike. The target is
+## Current M2 status
+
+`mosh.exe` is now the native Windows console frontend, not the M0 standalone
+engine spike. It accepts the development form
+`mosh.exe <ip> <port> <key> [predict]`; the CI bare invocation verifies the
+well-defined usage exit code `2`. That invocation returns before it opens a
+console or constructs `MoshCore`, so it is not console, core, or crypto runtime
+evidence. Console/session runtime validation remains native Windows ARM64 work.
+
+### Known limitations (M2, dev)
+
+The M2 development invocation passes the session key on the command line,
+where process listings can expose it. This is an accepted development-only
+limitation; M3 replaces it with the SSH bootstrap's secure in-process key
+channel.
+
+## Historical M0 standalone-engine spike record
+
+The remainder of this log records the Milestone 0 native-Windows ARM64 build
+spike and its evidence at the historical commits it names. The target is
 `aarch64-w64-mingw32` using the UCRT-family MinGW runtime; it is not Cygwin,
 WSL, or MSYS.
 
@@ -61,8 +80,8 @@ libraries:
 - `src/terminal/libmoshterminal.a`
 - `src/statesync/libmoshstatesync.a`
 
-`mosh.exe` links from a standalone-exe spike body that references one entry
-point from each archive:
+At the historical M0 commit, `mosh.exe` linked from a standalone-exe spike body
+that referenced one entry point from each archive:
 
 - an AES-OCB `Crypto::Session` encrypt/decrypt round-trip from `libmoshcrypto.a`
   (also pulls the OpenSSL cipher path — see below)
@@ -213,20 +232,21 @@ that must stay dynamic and bundled.
 
 ### Runtime gate
 
-Because `windows-11-arm` is native ARM64, CI *executes* the built `mosh.exe`
-after the build (`./mosh.exe`), asserting a clean (0) exit, and first asserts
-via `llvm-objdump -f` that the PE is a native ARM64 image (`coff-arm64` /
-`aarch64`) rather than an x64 binary running under Windows-on-ARM emulation. The
-executed binary is the **baseline `-march=armv8-a` CI build** (not the
-`-mcpu=oryon-1` product build), which is what makes running it on the Cobalt N2
-runner sound — see the CI-build note above. Together these exercise the AES-OCB
-round-trip and the terminal/statesync construction at runtime on genuine ARM64.
-This is a **linkage/liveness gate**: it proves the selected crypto backend
-links, initializes, and round-trips one message on baseline ARM64. It is explicitly **not** a wire-compatibility or authentication
-conformance test — this CI does not run mosh's crypto test suite, and a
-self-consistent ARM64-specific cipher error could pass it. Crypto conformance
-splits across two gates because the CI runner (baseline N2) and the product
-build (Oryon) differ:
+At the historical M0 commit, CI executed the standalone spike `mosh.exe` after
+building it, asserting a clean (0) exit and first asserting via `llvm-objdump
+-f` that the PE was a native ARM64 image (`coff-arm64` / `aarch64`) rather than
+an x64 binary running under Windows-on-ARM emulation. The executed binary was
+the **baseline `-march=armv8-a` CI build** (not the `-mcpu=oryon-1` product
+build), which made running it on the Cobalt N2 runner sound — see the CI-build
+note above. That historical spike run exercised its AES-OCB round-trip and
+terminal/statesync construction at runtime on genuine ARM64.
+
+Today, CI's bare `./mosh.exe` invocation is deliberately the console frontend's
+usage gate: it exits `2` before opening a console or constructing `MoshCore`.
+It is neither a console/client runtime test nor crypto evidence. The historical
+M0 runtime result was a **linkage/liveness gate**, not wire-compatibility or
+authentication conformance evidence. Crypto conformance splits across two gates
+because the CI runner (baseline N2) and the product build (Oryon) differ:
 
 - **M1 entry gate (baseline, CI):** before any networking integration or
   production credentials, crypto conformance MUST run on the native CLANGARM64
@@ -426,15 +446,20 @@ dynamic imports of C++/protobuf runtime DLLs (via the `objdump -p` deny-list).
 
 For the MSYS2 CLANGARM64 CI build (`.github/workflows/clangarm64-spike.yml`),
 the same makefile runs with the default `NM=llvm-nm` and `OBJDUMP=llvm-objdump`
-and the baseline override `ARM_MCPU="-march=armv8-a -mtune=oryon-1"` (so the gate
-binary runs on the Cobalt N2 runner). Beyond the makefile `check`, CI adds the
-native-ARM64-PE assertion, the UCRT ABI check (reject `msvcrt.dll`, require
-`api-ms-win-crt-*`), the baseline liveness run, and a durable evidence-bundle
-upload. The `check` target passes with the UCRT-based toolchain: the crypto-linked
-build is validated by authoritative CI run `29928638939` on parent commit
-`ba642de`, recorded in the import-set section above. This evidence-only commit
-changes only that evidence record and therefore shares `ba642de`'s build inputs
-(see the build-input-digest closure rule in Result).
+and the baseline override `ARM_MCPU="-march=armv8-a -mtune=oryon-1"`. Beyond the
+makefile `check`, CI adds the native-ARM64-PE assertion, the UCRT ABI check
+(reject `msvcrt.dll`, require `api-ms-win-crt-*`), a bare frontend invocation
+that asserts usage exit code `2`, and a durable evidence-bundle upload. The
+bare invocation occurs before console setup and `MoshCore` construction, so it
+is not a console, client-core, or crypto runtime gate. The historical
+crypto-linked spike build is validated by authoritative CI run `29928638939` on
+parent commit `ba642de`, recorded in the import-set section above. This
+evidence-only commit changes only that evidence record and therefore shares
+`ba642de`'s build inputs (see the build-input-digest closure rule in Result).
+
+M2 console/session runtime validation requires a real console and session on
+the native Windows ARM64 runner or hardware; local Docker validation is
+compile/link-only.
 
 ## Deferred to M1/M2
 
@@ -476,3 +501,37 @@ build.
   Windows counterpart of `disable_dumping_core()`, i.e. preventing Windows Error
   Reporting / crash dumps from persisting session keys or other secrets — not
   merely remove the no-op.
+
+## M2 Steps 6-8: Windows console frontend
+
+`mosh.exe` now uses `win32/mosh_main.cc`, `win32/console_io.cc`, and the
+OS-agnostic `MoshCore` rather than the build spike entry point. The console
+frontend captures and restores its input/output modes and code pages, enables
+VT input/output with UTF-8 code pages, and owns the alternate-screen lifecycle
+with a scope guard so the terminal is restored before diagnostics are printed.
+
+The event loop has a dedicated blocking `ReadFile` reader thread. It queues
+conhost's VT bytes behind an auto-reset event, converts CESU-8 surrogate pairs
+to UTF-8 across read boundaries, polls screen dimensions at most 100 ms apart,
+and reconciles `WSAEVENT` registrations after every mutating core tick. Reader
+and socket-event RAII owners cancel/join and release resources on normal and
+exceptional exits. The raw development argument form is
+`mosh.exe <ip> <port> <key> [predict]`; missing or malformed arguments print
+usage and return exit code 2.
+
+The makefile links `mosh_main.o`, `console_io.o`, and `mosh_core.o` into
+`mosh.exe`, and compiles `console_io_include_check.cc` through both `all` and
+`check`. That translation unit includes `console_io.h` before every other
+project header, preserving the `winsock2.h`-before-`windows.h` constraint.
+The CI bare invocation asserts usage exit code `2`; it does not exercise the
+console frontend or `MoshCore`. The local Docker gate is compile/link-only, and
+real console/session validation remains native Windows ARM64 work.
+
+Local verification command (from the wsltty repository):
+
+```sh
+./build-mosh-arm64-local.sh
+```
+
+The command completed successfully on this revision (exit 0, with no
+`error:` or `fatal error:` diagnostics).

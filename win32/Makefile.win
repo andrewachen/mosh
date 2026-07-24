@@ -52,7 +52,7 @@ LIBS = src/crypto/libmoshcrypto.a src/protobufs/libmoshprotos.a src/util/libmosh
 
 .PHONY: all clean protobufs check config
 
-all: $(LIBS) mosh.exe test_loopback test_core
+all: $(LIBS) mosh.exe test_loopback test_core $(BUILD)/win32/console_io_include_check.o
 
 check: all
 	test -f mosh.exe
@@ -106,8 +106,21 @@ src/network/libmoshnetwork.a: $(NETWORK_OBJS)
 src/frontend/libmoshfrontend.a: $(FRONTEND_OBJS)
 	$(AR) rcs $@ $^
 
-mosh.exe: win32/spike.cc src/crypto/libmoshcrypto.a src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a src/network/libmoshnetwork.a $(BUILD)/win32/wincompat.o
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ win32/spike.cc -Wl,--start-group src/crypto/libmoshcrypto.a $(BUILD)/win32/wincompat.o -Wl,-Bstatic $(shell pkg-config --libs --static protobuf) src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a src/network/libmoshnetwork.a -Wl,-Bdynamic -Wl,--end-group $(LDFLAGS) -lcrypto -lz $(NCURSES_LIBS) -lws2_32 -luser32 -lcrypt32 -lbcrypt -l:libwinpthread.a -static-libstdc++ -static-libgcc
+mosh.exe: $(BUILD)/win32/mosh_main.o $(BUILD)/win32/console_io.o $(BUILD)/win32/mosh_core.o src/crypto/libmoshcrypto.a src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a src/frontend/libmoshfrontend.a src/network/libmoshnetwork.a $(BUILD)/win32/wincompat.o
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ $(BUILD)/win32/mosh_main.o $(BUILD)/win32/console_io.o $(BUILD)/win32/mosh_core.o -Wl,--start-group src/crypto/libmoshcrypto.a $(BUILD)/win32/wincompat.o -Wl,-Bstatic $(shell pkg-config --libs --static protobuf) src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a src/frontend/libmoshfrontend.a src/network/libmoshnetwork.a -Wl,-Bdynamic -Wl,--end-group $(LDFLAGS) -lcrypto -lz $(NCURSES_LIBS) -lws2_32 -luser32 -lcrypt32 -lbcrypt -l:libwinpthread.a -static-libstdc++ -static-libgcc
+
+$(BUILD)/win32/console_io.o: win32/console_io.cc win32/console_io.h win32/mosh_core.h src/include/config.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD)/win32/mosh_main.o: win32/mosh_main.cc win32/console_io.h win32/mosh_core.h src/include/config.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD)/win32/console_io_include_check.o: win32/console_io_include_check.cc win32/console_io.h win32/mosh_core.h src/include/config.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
+
 
 # Network sources need protobuf files
 win32/build/src/network/network.o: src/protobufs/transportinstruction.pb.h

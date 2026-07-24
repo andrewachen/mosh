@@ -82,24 +82,30 @@ jobs:
           grep -qi 'api-ms-win-crt' objdump-p.txt \
             || { echo "ERROR: mosh.exe has no UCRT (api-ms-win-crt-*) import"; exit 1; }
 
-      - name: Run native ARM64 engine spike
+      - name: Verify mosh.exe runs on native ARM64 (usage/liveness)
         shell: msys2 {0}
-        # Capture the runtime output and exit status into the evidence bundle
-        # (so the M0 runtime result survives after logs expire) while still
-        # propagating a nonzero status to fail the job.
+        # mosh.exe is now the real Windows-console client, not the standalone
+        # engine spike. A bare invocation cannot open a session (no target
+        # args), so it prints usage and exits with the defined usage code (2 —
+        # USAGE_EXIT_CODE in win32/mosh_main.cc). Asserting that exact code
+        # proves the shipped binary loads, resolves its imports, runs C++
+        # static init, and reaches its entry path on native ARM64 — a signal
+        # distinct from the static PE/ABI checks and from the separate
+        # test_core.exe / test_loopback.exe binaries. Capture into evidence so
+        # the runtime result survives after logs expire.
         run: |
           mkdir -p evidence
           set +e
           ./mosh.exe >evidence/runtime-output.txt 2>&1
           rc=$?
           set -e
-          printf 'command=./mosh.exe\nexit_status=%s\n' "$rc" >evidence/runtime-result.txt
+          printf 'command=./mosh.exe\nexit_status=%s\nexpected=2\n' "$rc" >evidence/runtime-result.txt
           cat evidence/runtime-output.txt
           cat evidence/runtime-result.txt
-          if [ "$rc" -eq 0 ]; then \
-            echo "mosh.exe ran and exited 0 on native ARM64"; \
+          if [ "$rc" -eq 2 ]; then \
+            echo "mosh.exe ran and exited with the usage code (2) on native ARM64"; \
           else \
-            echo "ERROR: mosh.exe exited $rc on native ARM64"; exit "$rc"; fi
+            echo "ERROR: mosh.exe exited $rc on native ARM64 (expected usage code 2)"; exit 1; fi
 
       - name: Collect durable evidence bundle
         if: always()

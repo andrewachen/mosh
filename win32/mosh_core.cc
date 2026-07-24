@@ -62,6 +62,7 @@ using namespace Terminal;
 
 namespace {
 const unsigned int CONNECTION_TIMEOUT = 15000;
+const unsigned int MAX_DATAGRAMS_PER_READABLE = 32;
 
 bool no_packet_available( const NetworkException& error )
 {
@@ -195,7 +196,9 @@ public:
 
   void process_network_input()
   {
-    while ( true ) {
+    unsigned int datagrams = 0;
+    while ( datagrams < MAX_DATAGRAMS_PER_READABLE ) {
+      datagrams++;
       try {
         network->recv();
       } catch ( const NetworkException& error ) {
