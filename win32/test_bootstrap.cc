@@ -30,10 +30,11 @@
     also delete it here.
 */
 
-/* ABOUTME: Test target for Task 1 bootstrap pure functions (sh_quote, build_remote_command, win_quote_arg). */
-/* ABOUTME: Exercises argument quoting and remote-command assembly for the SSH bootstrap. */
+/* ABOUTME: Test target for Task 1-3 bootstrap functions: sh_quote, build_remote_command, win_quote_arg, drain, spawn. */
+/* ABOUTME: Exercises argument quoting, server output parsing, and Win32 spawn with pipe drain. */
 
 #include "win32/mosh_bootstrap.h"
+#include "win32/mosh_bootstrap_internal.h"
 #include "win32/wincompat.h"     /* mosh_winsock_init (used by later tasks) */
 #include <cassert>
 #include <cstdio>
@@ -120,6 +121,74 @@ static void test_resolve_endpoint()
   assert( !resolve_endpoint( f, "host", &out ).empty() );
 }
 
+static void make_pipe( HANDLE *rd, HANDLE *wr )
+{
+  SECURITY_ATTRIBUTES sa = {}; sa.nLength = sizeof sa; sa.bInheritHandle = FALSE;
+  assert( CreatePipe( rd, wr, &sa, 0 ) );
+}
+
+static void test_drain_over_pipe()
+{
+  HANDLE rd = NULL, wr = NULL;
+  make_pipe( &rd, &wr );
+  const char *canned =
+    "Last login: Tue ...\r\n"
+    "MOSH SSH_CONNECTION 10.0.0.2 51000 203.0.113.7 22\r\n"
+    "MOSH CONNECT 60001 ABCDEFGHIJKLMNOPQRSTUV\r\n";
+  DWORD wrote = 0; assert( WriteFile( wr, canned, (DWORD) strlen( canned ), &wrote, NULL ) );
+  CloseHandle( wr );
+  ServerReply r;
+  assert( drain_and_parse( rd, &r ).empty() );
+  CloseHandle( rd );
+  assert( r.have_connect && r.port == "60001" && r.key == "ABCDEFGHIJKLMNOPQRSTUV" && r.sship == "203.0.113.7" );
+}
+
+static void test_drain_eof_without_connect()
+{
+  HANDLE rd = NULL, wr = NULL;
+  make_pipe( &rd, &wr );
+  const char *canned = "some ssh diagnostic on stdout, no protocol\r\n";  /* comment: real ssh errors go to stderr/console, not this pipe */
+  DWORD wrote = 0; WriteFile( wr, canned, (DWORD) strlen( canned ), &wrote, NULL );
+  CloseHandle( wr );
+  ServerReply r;
+  assert( drain_and_parse( rd, &r ).empty() && !r.have_connect );  /* clean EOF, no fatal */
+  CloseHandle( rd );
+  BootstrapResult out;
+  assert( !resolve_endpoint( r, "host", &out ).empty() );
+}
+
+static void test_drain_fatal_line()
+{
+  HANDLE rd = NULL, wr = NULL;
+  make_pipe( &rd, &wr );
+  const char *canned = "MOSH CONNECT 60001 bad\r\n";  /* malformed -> fatal */
+  DWORD wrote = 0; WriteFile( wr, canned, (DWORD) strlen( canned ), &wrote, NULL );
+  CloseHandle( wr );
+  ServerReply r;
+  assert( !drain_and_parse( rd, &r ).empty() );  /* fatal error returned */
+  CloseHandle( rd );
+}
+
+static void test_build_ssh_command_line()
+{
+  const std::wstring ssh_path = L"C:\\Windows\\System32\\OpenSSH\\ssh.exe";
+  const std::wstring expected =
+    L"\"C:\\Windows\\System32\\OpenSSH\\ssh.exe\" -n -S none -o ProxyJump=none -o ProxyCommand=none user@host -- "
+    L"\"sh -c '[ -n \\\"$SSH_CONNECTION\\\" ] && printf \\\"\\nMOSH SSH_CONNECTION %s\\n\\\" \\\"$SSH_CONNECTION\\\"' && mosh-server 'new' '-c' '256' '-s' '-l' 'LC_ALL=C.UTF-8'\"";
+  assert( build_ssh_command_line( ssh_path, "user@host" ) == expected );
+}
+
+static void test_mosh_bootstrap_rejects_invalid_target()
+{
+  BootstrapResult out;
+  assert( !mosh_bootstrap( NULL, &out ).empty() );
+  assert( !mosh_bootstrap( "", &out ).empty() );
+  assert( !mosh_bootstrap( "-X", &out ).empty() );
+  assert( !mosh_bootstrap( "user\x01@host", &out ).empty() );  /* control char */
+  assert( !mosh_bootstrap( "user@h\x7fost", &out ).empty() );  /* DEL */
+  assert( !mosh_bootstrap( "user@\xC3\xA9host", &out ).empty() );  /* non-ASCII (eacute) */
+}
+
 int main()
 {
   test_sh_quote();
@@ -130,6 +199,11 @@ int main()
   test_parse_mosh_ip_banner_and_redefine();
   test_is_numeric_ip();
   test_resolve_endpoint();
+  test_drain_over_pipe();
+  test_drain_eof_without_connect();
+  test_drain_fatal_line();
+  test_build_ssh_command_line();
+  test_mosh_bootstrap_rejects_invalid_target();
   puts( "test_bootstrap: passed" );
   return 0;
 }

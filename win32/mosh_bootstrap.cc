@@ -34,12 +34,14 @@
 /* ABOUTME: Task 1 of M3 (SSH bootstrap) milestone - pure functions for argument quoting and remote-command assembly. */
 
 #include "win32/mosh_bootstrap.h"
+#include "win32/mosh_bootstrap_internal.h"
 
 #include <string>
 #include <regex>
 #include <sstream>
 #include <vector>
 #include <cstdlib>
+#include <cstdio>
 #include "win32/wincompat.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -133,4 +135,220 @@ std::string resolve_endpoint( const ServerReply &r, const std::string &target, B
     return "mosh: server reported a non-numeric address (" + ip + ")";
   out->ip = ip; out->port = r.port; out->key = r.key;
   return "";
+}
+
+std::wstring widen( const std::string &s )
+{
+  if ( s.empty() ) return std::wstring();
+  const int need = MultiByteToWideChar( CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), (int) s.size(), NULL, 0 );
+  if ( need <= 0 ) return std::wstring();   // caller treats empty result on non-empty input as failure
+  std::wstring w( need, L'\0' );
+  MultiByteToWideChar( CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), (int) s.size(), &w[0], need );
+  return w;
+}
+
+std::wstring build_ssh_command_line( const std::wstring &ssh_path, const std::string &target )
+{
+  return L"\"" + ssh_path + L"\""
+    + L" -n -S none -o ProxyJump=none -o ProxyCommand=none "
+    + widen( win_quote_arg( target ) ) + L" -- "
+    + widen( win_quote_arg( build_remote_command() ) );
+}
+
+static const size_t MAX_LINE = 64 * 1024;
+static const size_t MAX_TOTAL = 1024 * 1024;
+
+std::string drain_and_parse( HANDLE h, ServerReply *r )
+{
+  std::string pending; size_t total = 0; char buf[4096];
+  for ( ;; ) {
+    DWORD got = 0;
+    if ( !ReadFile( h, buf, sizeof buf, &got, NULL ) ) {
+      const DWORD e = GetLastError();
+      if ( e == ERROR_BROKEN_PIPE ) break;
+      return "mosh: failed reading ssh output (error " + std::to_string( e ) + ")";
+    }
+    if ( got == 0 ) break;
+    total += got;
+    if ( total > MAX_TOTAL ) return "mosh: ssh produced too much output before MOSH CONNECT";
+    pending.append( buf, got );
+    std::string::size_type nl;
+    while ( ( nl = pending.find( '\n' ) ) != std::string::npos ) {
+      std::string line = pending.substr( 0, nl );
+      pending.erase( 0, nl + 1 );
+      if ( !line.empty() && line.back() == '\r' ) line.pop_back();
+      if ( line.size() > MAX_LINE ) return "mosh: ssh produced an over-long line before MOSH CONNECT";
+      if ( line.find( '\0' ) != std::string::npos ) return "mosh: ssh output contained an embedded NUL before MOSH CONNECT";
+      const std::string err = parse_server_line( line, r );
+      if ( !err.empty() ) return err;
+      if ( r->have_connect ) return "";
+      if ( line.compare( 0, 5, "MOSH " ) != 0 ) std::fprintf( stdout, "%s\n", line.c_str() );
+    }
+    if ( pending.size() > MAX_LINE ) return "mosh: ssh produced an over-long line before MOSH CONNECT";
+  }
+  if ( !pending.empty() ) {
+    if ( pending.back() == '\r' ) pending.pop_back();
+    if ( pending.size() > MAX_LINE ) return "mosh: ssh produced an over-long line before MOSH CONNECT";
+    if ( pending.find( '\0' ) != std::string::npos ) return "mosh: ssh output contained an embedded NUL before MOSH CONNECT";
+    const std::string err = parse_server_line( pending, r );
+    if ( !err.empty() ) return err;
+  }
+  return "";
+}
+
+std::string resolve_on_path( const std::wstring &path_dirs, const std::wstring &name, std::wstring *out )
+{
+  // Size query, then resolve. lpPath is explicit (excludes implicit CWD/app-dir search).
+  const DWORD need = SearchPathW( path_dirs.c_str(), name.c_str(), L".exe", 0, NULL, NULL );
+  if ( need == 0 ) return "mosh: could not find " + std::string( name.begin(), name.end() ) + " on PATH";
+  std::wstring buf( need, L'\0' );
+  const DWORD n = SearchPathW( path_dirs.c_str(), name.c_str(), L".exe", need, &buf[0], NULL );
+  if ( n == 0 || n >= need ) return "mosh: could not resolve ssh path";
+  buf.resize( n );
+  *out = buf;
+  return "";
+}
+
+std::string resolve_ssh_path( std::wstring *out )
+{
+  const DWORD plen = GetEnvironmentVariableW( L"PATH", NULL, 0 );
+  if ( plen == 0 ) return "mosh: PATH is not set; cannot locate ssh.exe";   // fail closed, never NULL lpPath
+  std::wstring path_env( plen, L'\0' );
+  const DWORD got = GetEnvironmentVariableW( L"PATH", &path_env[0], plen );
+  path_env.resize( got );
+  return resolve_on_path( path_env, L"ssh", out );
+}
+
+namespace {
+/* Child-inheritable duplicate of a std handle. A VALID handle that fails to
+   duplicate is FATAL (never silently substitute NUL for a real console handle
+   — that would hide auth prompts). Only an absent/redirected handle falls back
+   to NUL. */
+std::string dup_or_nul( DWORD which, HANDLE *out )
+{
+  HANDLE src = GetStdHandle( which );
+  if ( src != NULL && src != INVALID_HANDLE_VALUE ) {
+    if ( DuplicateHandle( GetCurrentProcess(), src, GetCurrentProcess(), out, 0, TRUE, DUPLICATE_SAME_ACCESS ) )
+      return "";
+    return "mosh: DuplicateHandle failed for a standard handle";
+  }
+  SECURITY_ATTRIBUTES sa = {}; sa.nLength = sizeof sa; sa.bInheritHandle = TRUE;
+  *out = CreateFileW( L"NUL", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                      &sa, OPEN_EXISTING, 0, NULL );
+  if ( *out == INVALID_HANDLE_VALUE ) return "mosh: could not open NUL for a standard handle";
+  return "";
+}
+}
+
+/* Launch app_path with cmdline: whitelist only the 3 std handles, confine the
+   child to a kill-on-close Job Object ATOMICALLY at creation (no suspend/assign
+   window), then drain stdout on THIS thread (blocking — cancellation is the
+   termination-lifecycle owner's job, not M3's). Every setup call is checked and
+   fails closed (no CreateProcessW with an incomplete whitelist). Reaps the child. */
+std::string spawn_and_drain( const std::wstring &app_path, const std::wstring &cmdline, ServerReply *r )
+{
+  SECURITY_ATTRIBUTES sa = {}; sa.nLength = sizeof sa; sa.bInheritHandle = TRUE;
+  HANDLE rd = NULL, wr = NULL;
+  if ( !CreatePipe( &rd, &wr, &sa, 0 ) )
+    return "mosh: CreatePipe failed (error " + std::to_string( GetLastError() ) + ")";
+  if ( !SetHandleInformation( rd, HANDLE_FLAG_INHERIT, 0 ) ) {
+    CloseHandle( rd ); CloseHandle( wr ); return "mosh: SetHandleInformation failed";
+  }
+
+  HANDLE dupIn = NULL, dupErr = NULL;
+  std::string herr = dup_or_nul( STD_INPUT_HANDLE, &dupIn );
+  if ( herr.empty() ) herr = dup_or_nul( STD_ERROR_HANDLE, &dupErr );
+  if ( !herr.empty() ) {
+    if ( dupIn ) CloseHandle( dupIn );
+    CloseHandle( rd ); CloseHandle( wr ); return herr;
+  }
+
+  HANDLE job = CreateJobObjectW( NULL, NULL );
+  bool job_ok = job != NULL;
+  if ( job_ok ) {
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION ji = {};
+    ji.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    job_ok = SetInformationJobObject( job, JobObjectExtendedLimitInformation, &ji, sizeof ji );
+  }
+  if ( !job_ok ) {
+    if ( job ) CloseHandle( job );
+    CloseHandle( dupIn ); CloseHandle( dupErr ); CloseHandle( rd ); CloseHandle( wr );
+    return "mosh: could not create the ssh containment job";
+  }
+
+  HANDLE inherit[3] = { dupIn, wr, dupErr };
+  SIZE_T asz = 0;
+  InitializeProcThreadAttributeList( NULL, 2, 0, &asz );
+  std::vector<char> abuf( asz );
+  LPPROC_THREAD_ATTRIBUTE_LIST attr = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>( abuf.data() );
+  bool attr_ok = InitializeProcThreadAttributeList( attr, 2, 0, &asz )
+    && UpdateProcThreadAttribute( attr, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit, sizeof inherit, NULL, NULL )
+    && UpdateProcThreadAttribute( attr, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, &job, sizeof job, NULL, NULL );
+  if ( !attr_ok ) {
+    if ( attr ) DeleteProcThreadAttributeList( attr );
+    CloseHandle( job ); CloseHandle( dupIn ); CloseHandle( dupErr ); CloseHandle( rd ); CloseHandle( wr );
+    return "mosh: failed to build the spawn attribute list";   // fail closed, never spawn without the whitelist
+  }
+
+  STARTUPINFOEXW six = {}; six.StartupInfo.cb = sizeof six;
+  six.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+  six.StartupInfo.hStdInput = dupIn; six.StartupInfo.hStdOutput = wr; six.StartupInfo.hStdError = dupErr;
+  six.lpAttributeList = attr;
+
+  std::vector<wchar_t> mcmd( cmdline.begin(), cmdline.end() ); mcmd.push_back( L'\0' );
+  PROCESS_INFORMATION pi = {};
+  const BOOL ok = CreateProcessW( app_path.c_str(), mcmd.data(), NULL, NULL, TRUE,
+                                  EXTENDED_STARTUPINFO_PRESENT, NULL, NULL, &six.StartupInfo, &pi );
+  const DWORD spawn_err = GetLastError();
+  DeleteProcThreadAttributeList( attr );
+  CloseHandle( wr ); CloseHandle( dupIn ); CloseHandle( dupErr );
+  if ( !ok ) {
+    CloseHandle( rd ); CloseHandle( job );
+    return "mosh: could not launch ssh (error " + std::to_string( spawn_err ) + ")";
+  }
+  CloseHandle( pi.hThread );   // child is in the job atomically at creation; no suspend/assign window
+
+  const std::string derr = drain_and_parse( rd, r );
+  CloseHandle( rd );
+
+  DWORD exit_code = 0; bool have_exit = false;
+  if ( WaitForSingleObject( pi.hProcess, 10000 ) == WAIT_TIMEOUT ) {
+    TerminateProcess( pi.hProcess, 1 );
+    WaitForSingleObject( pi.hProcess, 5000 );        // wait for confirmed exit after terminate
+  }
+  have_exit = GetExitCodeProcess( pi.hProcess, &exit_code ) && exit_code != STILL_ACTIVE;
+  CloseHandle( job );                                 // kill-on-close reaps ssh if still alive
+  WaitForSingleObject( pi.hProcess, 2000 );           // confirm reap after job close
+  CloseHandle( pi.hProcess );
+
+  // Outcome precedence: read/fatal error > valid CONNECT (success even if ssh then exits nonzero)
+  //                     > nonzero ssh exit > missing startup (handled by resolve_endpoint).
+  if ( !derr.empty() ) return derr;
+  if ( r->have_connect ) return "";
+  if ( have_exit && exit_code != 0 ) return "mosh: ssh exited with status " + std::to_string( exit_code );
+  return "";
+}
+
+static bool is_clean_destination( const char *s )
+{
+  for ( ; *s; ++s ) { const unsigned char c = (unsigned char) *s; if ( c < 0x20 || c >= 0x7f ) return false; }
+  return true;
+}
+
+std::string mosh_bootstrap( const char *target, BootstrapResult *out )
+{
+  if ( target == NULL || target[0] == '\0' || target[0] == '-' )
+    return "mosh: invalid destination";
+  if ( !is_clean_destination( target ) ) return "mosh: destination must be printable ASCII (no control characters or non-ASCII)";
+  mosh_winsock_init();
+
+  std::wstring ssh_path;
+  const std::string rerr = resolve_ssh_path( &ssh_path );
+  if ( !rerr.empty() ) return rerr;
+
+  const std::wstring cmdline = build_ssh_command_line( ssh_path, target );
+  ServerReply reply;
+  const std::string serr = spawn_and_drain( ssh_path, cmdline, &reply );
+  if ( !serr.empty() ) return serr;
+  return resolve_endpoint( reply, std::string( target ), out );
 }
