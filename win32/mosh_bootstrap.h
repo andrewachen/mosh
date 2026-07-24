@@ -40,6 +40,22 @@
 
 struct BootstrapResult { std::string ip; std::string port; std::string key; };
 
+struct ServerReply {
+  std::string mosh_ip;    // from `MOSH IP`
+  std::string sship;      // server IP from `MOSH SSH_CONNECTION` token 4
+  std::string port;       // from `MOSH CONNECT`
+  std::string key;        // 22-char base64 key from `MOSH CONNECT`
+  bool have_connect = false;
+};
+
+/* Parse one line, updating *r. "" = ok/continue (incl. ignored banner lines);
+   non-empty = fatal malformed/duplicate protocol line (mosh.pl dies on these). */
+std::string parse_server_line( const std::string &line, ServerReply *r );
+/* Numeric IPv4/IPv6? Requires mosh_winsock_init(). */
+bool is_numeric_ip( const std::string &s );
+/* Apply MOSH-IP-else-SSH_CONNECTION fallback, validate, fill *out. "" or error. */
+std::string resolve_endpoint( const ServerReply &r, const std::string &target, BootstrapResult *out );
+
 /* scripts/mosh.pl shell_quote: wrap in single quotes, embedded ' -> '\'' */
 std::string sh_quote( const std::string &arg );
 /* Fixed minimal remote command (probe && mosh-server new -c 256 -s -l LC_ALL=C.UTF-8). */

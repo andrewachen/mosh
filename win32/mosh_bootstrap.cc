@@ -36,6 +36,13 @@
 #include "win32/mosh_bootstrap.h"
 
 #include <string>
+#include <regex>
+#include <sstream>
+#include <vector>
+#include <cstdlib>
+#include "win32/wincompat.h"
+#include <winsock2.h>
+#include <ws2tcpip.h>
 
 std::string sh_quote( const std::string &arg )
 {
@@ -73,4 +80,57 @@ std::string win_quote_arg( const std::string &arg )
   }
   out += "\"";
   return out;
+}
+
+std::string parse_server_line( const std::string &line, ServerReply *r )
+{
+  static const std::regex connect_re( "^MOSH CONNECT (\\d+) ([A-Za-z0-9/+]{22})\\s*$" );
+  static const std::regex ip_re( "^MOSH IP (\\S+)\\s*$" );
+  std::smatch m;
+
+  if ( line.compare( 0, 13, "MOSH CONNECT " ) == 0 ) {
+    if ( std::regex_match( line, m, connect_re ) ) {
+      r->port = m[1].str(); r->key = m[2].str(); r->have_connect = true;
+      return "";
+    }
+    return "mosh: bad MOSH CONNECT string from server";       // mosh.pl:433
+  }
+  if ( line.compare( 0, 20, "MOSH SSH_CONNECTION " ) == 0 ) {
+    std::istringstream iss( line );
+    std::vector<std::string> tok; std::string t;
+    while ( iss >> t ) tok.push_back( t );
+    if ( tok.size() != 6 ) return "mosh: bad MOSH SSH_CONNECTION string from server";  // mosh.pl:427
+    r->sship = tok[4];
+    return "";
+  }
+  if ( line.compare( 0, 8, "MOSH IP " ) == 0 ) {
+    if ( !r->mosh_ip.empty() ) return "mosh: server redefined MOSH IP";               // mosh.pl:419
+    if ( std::regex_match( line, m, ip_re ) ) { r->mosh_ip = m[1].str(); return ""; }
+    return "mosh: bad MOSH IP string from server";
+  }
+  return "";   // banner / diagnostic -> ignore
+}
+
+bool is_numeric_ip( const std::string &s )
+{
+  if ( s.empty() || s.find( '\0' ) != std::string::npos ) return false;
+  unsigned char buf[sizeof( struct in6_addr )];
+  return inet_pton( AF_INET, s.c_str(), buf ) == 1 || inet_pton( AF_INET6, s.c_str(), buf ) == 1;
+}
+
+std::string resolve_endpoint( const ServerReply &r, const std::string &target, BootstrapResult *out )
+{
+  if ( !r.have_connect || r.port.empty() || r.key.empty() )
+    return "mosh: did not find the mosh server startup message (is mosh installed on " + target + "?)";
+  char *end = NULL;
+  const long port = std::strtol( r.port.c_str(), &end, 10 );
+  if ( end == r.port.c_str() || *end != '\0' || port < 1 || port > 65535 )
+    return "mosh: server reported an invalid UDP port (" + r.port + ")";
+  const std::string ip = !r.mosh_ip.empty() ? r.mosh_ip : r.sship;   // mosh.pl:445-448
+  if ( ip.empty() )
+    return "mosh: requires a direct UDP endpoint to " + target + "; proxied SSH is unsupported";
+  if ( !is_numeric_ip( ip ) )
+    return "mosh: server reported a non-numeric address (" + ip + ")";
+  out->ip = ip; out->port = r.port; out->key = r.key;
+  return "";
 }

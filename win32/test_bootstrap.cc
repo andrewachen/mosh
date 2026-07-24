@@ -65,11 +65,71 @@ static void test_win_quote_arg()
   assert( win_quote_arg( "trail\\\\" ) == "trail\\\\" );  /* no special char: unquoted */
 }
 
+static void test_parse_connect()
+{
+  ServerReply r;
+  assert( parse_server_line( "MOSH CONNECT 60001 ABCDEFGHIJKLMNOPQRSTUV", &r ).empty() );
+  assert( r.have_connect && r.port == "60001" && r.key == "ABCDEFGHIJKLMNOPQRSTUV" );
+  ServerReply bad;                                    /* malformed CONNECT -> fatal */
+  assert( !parse_server_line( "MOSH CONNECT 60001 tooshort", &bad ).empty() );
+  assert( !bad.have_connect );
+}
+
+static void test_parse_ssh_connection()
+{
+  ServerReply r;
+  assert( parse_server_line( "MOSH SSH_CONNECTION 10.0.0.2 51000 203.0.113.7 22", &r ).empty() );
+  assert( r.sship == "203.0.113.7" );
+  ServerReply bad;                                    /* 5 tokens -> fatal */
+  assert( !parse_server_line( "MOSH SSH_CONNECTION 10.0.0.2 51000 203.0.113.7", &bad ).empty() );
+}
+
+static void test_parse_mosh_ip_banner_and_redefine()
+{
+  ServerReply r;
+  assert( parse_server_line( "MOSH IP 203.0.113.9", &r ).empty() );
+  assert( r.mosh_ip == "203.0.113.9" );
+  assert( parse_server_line( "Last login: Tue ...", &r ).empty() );  /* banner ignored */
+  assert( r.mosh_ip == "203.0.113.9" && !r.have_connect );
+  assert( !parse_server_line( "MOSH IP 198.51.100.1", &r ).empty() );  /* redefine -> fatal */
+}
+
+static void test_is_numeric_ip()
+{
+  mosh_winsock_init();
+  assert( is_numeric_ip( "203.0.113.7" ) && is_numeric_ip( "::1" ) && is_numeric_ip( "2001:db8::1" ) );
+  assert( !is_numeric_ip( "example.com" ) && !is_numeric_ip( "" ) );
+  assert( !is_numeric_ip( std::string( "203.0.113.7\0junk", 15 ) ) );
+}
+
+static void test_resolve_endpoint()
+{
+  mosh_winsock_init();
+  BootstrapResult out;
+  ServerReply a; a.sship = "203.0.113.7"; a.port = "60001"; a.key = "ABCDEFGHIJKLMNOPQRSTUV"; a.have_connect = true;
+  assert( resolve_endpoint( a, "host", &out ).empty() && out.ip == "203.0.113.7" && out.port == "60001" );
+  ServerReply b = a; b.mosh_ip = "198.51.100.5";
+  assert( resolve_endpoint( b, "host", &out ).empty() && out.ip == "198.51.100.5" );  /* MOSH IP wins */
+  ServerReply c; c.port = "60001"; c.key = "ABCDEFGHIJKLMNOPQRSTUV"; c.have_connect = true;  /* no IP */
+  assert( !resolve_endpoint( c, "host", &out ).empty() );
+  ServerReply d; d.sship = "203.0.113.7";                                              /* no key/port */
+  assert( !resolve_endpoint( d, "host", &out ).empty() );
+  ServerReply e = a; e.mosh_ip = "not-an-ip";                                          /* non-numeric */
+  assert( !resolve_endpoint( e, "host", &out ).empty() );
+  ServerReply f = a; f.port = "70000";                                                 /* port range */
+  assert( !resolve_endpoint( f, "host", &out ).empty() );
+}
+
 int main()
 {
   test_sh_quote();
   test_build_remote_command();
   test_win_quote_arg();
+  test_parse_connect();
+  test_parse_ssh_connection();
+  test_parse_mosh_ip_banner_and_redefine();
+  test_is_numeric_ip();
+  test_resolve_endpoint();
   puts( "test_bootstrap: passed" );
   return 0;
 }
