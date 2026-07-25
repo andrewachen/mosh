@@ -113,6 +113,29 @@ int main()
   }
   assert( got_frame );
 
+  /* A resize to the dimensions the display already has changes nothing on
+     screen, so it must not dirty the display: once the diff has settled, the
+     frame that follows such a resize carries no bytes. */
+  bool settled = false;
+  for ( int i = 0; i < 200 && !settled; i++ ) {
+    service( core, server );
+    settled = core.next_frame().empty();
+    pause_for_network();
+  }
+  if ( !settled ) {
+    fprintf( stderr, "FAIL: display never settled to an empty frame\n" );
+    return 1;
+  }
+
+  core.resize( 80, 24 );
+  const std::string& resize_frame = core.next_frame();
+  if ( !resize_frame.empty() ) {
+    fprintf( stderr,
+             "FAIL: resize to the current 80x24 emitted %u bytes of output\n",
+             static_cast<unsigned>( resize_frame.size() ) );
+    return 1;
+  }
+
   core.begin_shutdown();
   for ( int i = 0; i < 400 && !core.is_finished(); i++ ) {
     service( core, server );
