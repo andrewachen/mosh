@@ -107,14 +107,14 @@ src/network/libmoshnetwork.a: $(NETWORK_OBJS)
 src/frontend/libmoshfrontend.a: $(FRONTEND_OBJS)
 	$(AR) rcs $@ $^
 
-mosh.exe: $(BUILD)/win32/mosh_main.o $(BUILD)/win32/console_io.o $(BUILD)/win32/mosh_core.o src/crypto/libmoshcrypto.a src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a src/frontend/libmoshfrontend.a src/network/libmoshnetwork.a $(BUILD)/win32/wincompat.o
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ $(BUILD)/win32/mosh_main.o $(BUILD)/win32/console_io.o $(BUILD)/win32/mosh_core.o -Wl,--start-group src/crypto/libmoshcrypto.a $(BUILD)/win32/wincompat.o -Wl,-Bstatic $(shell pkg-config --libs --static protobuf) src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a src/frontend/libmoshfrontend.a src/network/libmoshnetwork.a -Wl,-Bdynamic -Wl,--end-group $(LDFLAGS) -lcrypto -lz $(NCURSES_LIBS) -lws2_32 -luser32 -lcrypt32 -lbcrypt -l:libwinpthread.a -static-libstdc++ -static-libgcc
+mosh.exe: $(BUILD)/win32/mosh_main.o $(BUILD)/win32/mosh_bootstrap.o $(BUILD)/win32/console_io.o $(BUILD)/win32/mosh_core.o src/crypto/libmoshcrypto.a src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a src/frontend/libmoshfrontend.a src/network/libmoshnetwork.a $(BUILD)/win32/wincompat.o
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ $(BUILD)/win32/mosh_main.o $(BUILD)/win32/mosh_bootstrap.o $(BUILD)/win32/console_io.o $(BUILD)/win32/mosh_core.o -Wl,--start-group src/crypto/libmoshcrypto.a $(BUILD)/win32/wincompat.o -Wl,-Bstatic $(shell pkg-config --libs --static protobuf) src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a src/frontend/libmoshfrontend.a src/network/libmoshnetwork.a -Wl,-Bdynamic -Wl,--end-group $(LDFLAGS) -lcrypto -lz $(NCURSES_LIBS) -lws2_32 -luser32 -lcrypt32 -lbcrypt -l:libwinpthread.a -static-libstdc++ -static-libgcc
 
 $(BUILD)/win32/console_io.o: win32/console_io.cc win32/console_io.h win32/mosh_core.h src/include/config.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
 
-$(BUILD)/win32/mosh_main.o: win32/mosh_main.cc win32/console_io.h win32/mosh_core.h src/include/config.h
+$(BUILD)/win32/mosh_main.o: win32/mosh_main.cc win32/console_io.h win32/mosh_bootstrap.h win32/mosh_core.h src/include/config.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
 

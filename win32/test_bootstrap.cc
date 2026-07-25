@@ -312,6 +312,26 @@ static void test_build_ssh_command_line()
   assert( build_ssh_command_line( ssh_path, "user@host" ) == expected );
 }
 
+static char *A( const char *s ) { return const_cast<char *>( s ); }
+
+static void test_classify_invocation()
+{
+  char *dev[]  = { A("mosh"), A("203.0.113.7"), A("60001"), A("KEY") };
+  assert( classify_invocation( 4, dev ) == Invocation::DevPath );
+  char *devp[] = { A("mosh"), A("203.0.113.7"), A("60001"), A("KEY"), A("always") };
+  assert( classify_invocation( 5, devp ) == Invocation::DevPath );
+  char *badp[] = { A("mosh"), A("203.0.113.7"), A("60001"), A("KEY"), A("bogus") };
+  assert( classify_invocation( 5, badp ) == Invocation::Usage );
+  char *boot[] = { A("mosh"), A("user@host") };
+  assert( classify_invocation( 2, boot ) == Invocation::Bootstrap );
+  char *dash[] = { A("mosh"), A("-X") };
+  assert( classify_invocation( 2, dash ) == Invocation::Usage );
+  char *none[] = { A("mosh") };
+  assert( classify_invocation( 1, none ) == Invocation::Usage );
+  char *three[] = { A("mosh"), A("a"), A("b") };
+  assert( classify_invocation( 3, three ) == Invocation::Usage );
+}
+
 static void test_mosh_bootstrap_rejects_invalid_target()
 {
   BootstrapResult out;
@@ -412,6 +432,7 @@ static void test_spawn_timeout_reap()
 int main()
 {
   test_sh_quote();
+  test_classify_invocation();
   test_build_remote_command();
   test_win_quote_arg();
   test_parse_connect();

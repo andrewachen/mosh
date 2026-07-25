@@ -343,6 +343,20 @@ static bool is_clean_destination( const char *s )
   return true;
 }
 
+bool valid_predict( const char *p )
+{
+  const std::string s( p );
+  return s == "adaptive" || s == "always" || s == "never" || s == "experimental";
+}
+
+Invocation classify_invocation( int argc, char *argv[] )
+{
+  if ( argc == 2 ) return ( argv[1][0] == '-' || argv[1][0] == '\0' ) ? Invocation::Usage : Invocation::Bootstrap;
+  if ( argc == 4 ) return Invocation::DevPath;
+  if ( argc == 5 && valid_predict( argv[4] ) ) return Invocation::DevPath;
+  return Invocation::Usage;
+}
+
 std::string mosh_bootstrap( const char *target, BootstrapResult *out )
 {
   if ( target == NULL || target[0] == '\0' || target[0] == '-' )
