@@ -40,6 +40,29 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <thread>
+#include <vector>
+
+/* Bounds mirrored from the static consts in mosh_bootstrap.cc (MAX_LINE/MAX_TOTAL),
+   which are file-static there and so not exposed for symbolic inclusion here. */
+static const size_t TEST_MAX_LINE = 64 * 1024;
+static const size_t TEST_MAX_TOTAL = 1024 * 1024;
+
+/* Write |data| to |wr| on a background thread, then close the write end. Used for
+   any drain test whose input could fill the ~64 KiB default pipe buffer: drain_and_parse
+   reads on the CALLING thread and stops early on a fatal line, so a synchronous writer
+   of large input would deadlock once the pipe fills and the reader has bailed. */
+static void write_all_and_close( HANDLE wr, const char *data, size_t n )
+{
+  DWORD off = 0;
+  while ( off < n ) {
+    DWORD once = 0;
+    const DWORD chunk = (DWORD) ( ( n - off > 4096 ) ? 4096 : ( n - off ) );
+    if ( !WriteFile( wr, data + off, chunk, &once, NULL ) ) break;
+    off += once;
+  }
+  CloseHandle( wr );
+}
 
 static void test_sh_quote()
 {
@@ -169,6 +192,112 @@ static void test_drain_fatal_line()
   CloseHandle( rd );
 }
 
+/* Boundary: a single line of exactly MAX_LINE bytes (banner, not MOSH-) followed
+   by CRLF is accepted (not over-long) and yields no CONNECT. Written from a
+   thread because 64 KiB+ can fill the pipe buffer. */
+static void test_drain_line_at_max()
+{
+  HANDLE rd = NULL, wr = NULL;
+  make_pipe( &rd, &wr );
+  std::string line( TEST_MAX_LINE, 'x' );          /* exactly MAX_LINE non-protocol chars */
+  line += "\r\n";
+  std::thread( write_all_and_close, wr, line.data(), line.size() ).detach();
+  ServerReply r;
+  assert( drain_and_parse( rd, &r ).empty() );     /* ok, no fatal */
+  CloseHandle( rd );
+  assert( !r.have_connect );
+}
+
+/* Boundary: a line that exceeds MAX_LINE with no newline until past the limit is
+   fatal BEFORE parse/echo. drain_and_parse returns non-empty. Writer thread. */
+static void test_drain_line_over_max()
+{
+  HANDLE rd = NULL, wr = NULL;
+  make_pipe( &rd, &wr );
+  std::string line( TEST_MAX_LINE + 1, 'x' );      /* one byte over the limit, no newline */
+  std::thread( write_all_and_close, wr, line.data(), line.size() ).detach();
+  ServerReply r;
+  assert( !drain_and_parse( rd, &r ).empty() );    /* fatal: over-long line */
+  CloseHandle( rd );
+  assert( !r.have_connect );
+}
+
+/* A MOSH CONNECT line carrying an embedded NUL must NOT be accepted as a clean
+   protocol message. drain_and_parse treats embedded NULs as fatal (non-empty
+   return) before parse_server_line runs, so have_connect stays false. */
+static void test_drain_embedded_nul_line()
+{
+  HANDLE rd = NULL, wr = NULL;
+  make_pipe( &rd, &wr );
+  /* Valid 22-char key, but a NUL injected before the trailing newline. Build the
+     buffer explicitly so the NUL and its size are unambiguous (a string literal
+     with \0 would truncate at strlen). */
+  std::string canned = "MOSH CONNECT 60001 ABCDEFGHIJKLMNOPQRSTUV";
+  canned.push_back( '\0' );
+  canned += "\r\n";
+  std::thread( write_all_and_close, wr, canned.data(), canned.size() ).detach();
+  ServerReply r;
+  assert( !drain_and_parse( rd, &r ).empty() );    /* fatal: embedded NUL */
+  CloseHandle( rd );
+  assert( !r.have_connect );
+}
+
+/* Overflow: many banner lines totalling more than MAX_TOTAL is fatal. 1 MiB input
+   from a writer thread (a synchronous writer would deadlock against the early
+   bail). Lines are MOSH-prefixed but not a recognized sub-command, so parse_server_line
+   ignores them as banners (no fprintf, no redefine-fatal) and the total accumulator
+   is what trips. */
+static void test_drain_total_overflow()
+{
+  HANDLE rd = NULL, wr = NULL;
+  make_pipe( &rd, &wr );
+  const char banner[] = "MOSH BANNER ok\r\n";
+  const size_t blen = sizeof( banner ) - 1;
+  const size_t want = TEST_MAX_TOTAL + 64;         /* strictly over the cap */
+  std::vector<char> buf;
+  buf.reserve( want );
+  while ( buf.size() + blen <= want ) { buf.insert( buf.end(), banner, banner + blen ); }
+  std::thread( write_all_and_close, wr, buf.data(), buf.size() ).detach();
+  ServerReply r;
+  assert( !drain_and_parse( rd, &r ).empty() );    /* fatal: total overflow */
+  CloseHandle( rd );
+  assert( !r.have_connect );
+}
+
+/* resolve_on_path with an explicit fixture directory (NOT the process PATH):
+   a present file resolves to that path; a missing file returns a non-empty
+   error. Cleans up the temp dir/file at the end. */
+static void test_resolve_on_path_fixture()
+{
+  wchar_t tmp[MAX_PATH] = { 0 };
+  assert( GetTempPathW( MAX_PATH, tmp ) );
+  wchar_t dir[MAX_PATH] = { 0 };
+  assert( GetTempFileNameW( tmp, L"moshbt", 0, dir ) );  /* reserves a temp name */
+  /* GetTempFileName gives a file; delete it and make a directory of the same name. */
+  DeleteFileW( dir );
+  assert( CreateDirectoryW( dir, NULL ) );
+  const std::wstring fixture = dir;
+
+  const wchar_t *sentinel = L"sentinel.exe";
+  const std::wstring sfile = fixture + L"\\" + sentinel;
+  HANDLE h = CreateFileW( sfile.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                          FILE_ATTRIBUTE_NORMAL, NULL );
+  assert( h && h != INVALID_HANDLE_VALUE );
+  CloseHandle( h );
+
+  std::wstring out;
+  std::string ok = resolve_on_path( fixture, sentinel, &out );
+  assert( ok.empty() && out == sfile );
+
+  std::wstring miss;
+  std::string bad = resolve_on_path( fixture, L"does_not_exist.exe", &miss );
+  assert( !bad.empty() );
+
+  /* cleanup */
+  DeleteFileW( sfile.c_str() );
+  RemoveDirectoryW( fixture.c_str() );
+}
+
 static void test_build_ssh_command_line()
 {
   const std::wstring ssh_path = L"C:\\Windows\\System32\\OpenSSH\\ssh.exe";
@@ -202,6 +331,11 @@ int main()
   test_drain_over_pipe();
   test_drain_eof_without_connect();
   test_drain_fatal_line();
+  test_drain_line_at_max();
+  test_drain_line_over_max();
+  test_drain_embedded_nul_line();
+  test_drain_total_overflow();
+  test_resolve_on_path_fixture();
   test_build_ssh_command_line();
   test_mosh_bootstrap_rejects_invalid_target();
   puts( "test_bootstrap: passed" );

@@ -203,7 +203,10 @@ std::string resolve_on_path( const std::wstring &path_dirs, const std::wstring &
   if ( need == 0 ) return "mosh: could not find " + std::string( name.begin(), name.end() ) + " on PATH";
   std::wstring buf( need, L'\0' );
   const DWORD n = SearchPathW( path_dirs.c_str(), name.c_str(), L".exe", need, &buf[0], NULL );
-  if ( n == 0 || n >= need ) return "mosh: could not resolve ssh path";
+  /* SearchPathW returns the count INCLUDING the null terminator (L+1 for a length-L
+     path), which fits exactly in the need-sized buffer; only FAIL if it reports
+     strictly over (truncation) or zero. The original n >= need rejected every success. */
+  if ( n == 0 || n > need ) return "mosh: could not resolve ssh path";
   buf.resize( n );
   *out = buf;
   return "";
@@ -259,7 +262,7 @@ std::string spawn_and_drain( const std::wstring &app_path, const std::wstring &c
   std::string herr = dup_or_nul( STD_INPUT_HANDLE, &dupIn );
   if ( herr.empty() ) herr = dup_or_nul( STD_ERROR_HANDLE, &dupErr );
   if ( !herr.empty() ) {
-    if ( dupIn ) CloseHandle( dupIn );
+    if ( dupIn && dupIn != INVALID_HANDLE_VALUE ) CloseHandle( dupIn );
     CloseHandle( rd ); CloseHandle( wr ); return herr;
   }
 
@@ -281,11 +284,14 @@ std::string spawn_and_drain( const std::wstring &app_path, const std::wstring &c
   InitializeProcThreadAttributeList( NULL, 2, 0, &asz );
   std::vector<char> abuf( asz );
   LPPROC_THREAD_ATTRIBUTE_LIST attr = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>( abuf.data() );
-  bool attr_ok = InitializeProcThreadAttributeList( attr, 2, 0, &asz )
+  const bool init_ok = InitializeProcThreadAttributeList( attr, 2, 0, &asz );
+  bool attr_ok = init_ok
     && UpdateProcThreadAttribute( attr, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit, sizeof inherit, NULL, NULL )
     && UpdateProcThreadAttribute( attr, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, &job, sizeof job, NULL, NULL );
   if ( !attr_ok ) {
-    if ( attr ) DeleteProcThreadAttributeList( attr );
+    /* Only Delete the list if the real Initialize above actually succeeded; the
+       size-query call (with a NULL list pointer) never initialized attr. */
+    if ( init_ok ) DeleteProcThreadAttributeList( attr );
     CloseHandle( job ); CloseHandle( dupIn ); CloseHandle( dupErr ); CloseHandle( rd ); CloseHandle( wr );
     return "mosh: failed to build the spawn attribute list";   // fail closed, never spawn without the whitelist
   }
@@ -301,7 +307,9 @@ std::string spawn_and_drain( const std::wstring &app_path, const std::wstring &c
                                   EXTENDED_STARTUPINFO_PRESENT, NULL, NULL, &six.StartupInfo, &pi );
   const DWORD spawn_err = GetLastError();
   DeleteProcThreadAttributeList( attr );
-  CloseHandle( wr ); CloseHandle( dupIn ); CloseHandle( dupErr );
+  CloseHandle( wr );
+  if ( dupIn && dupIn != INVALID_HANDLE_VALUE ) CloseHandle( dupIn );
+  if ( dupErr && dupErr != INVALID_HANDLE_VALUE ) CloseHandle( dupErr );
   if ( !ok ) {
     CloseHandle( rd ); CloseHandle( job );
     return "mosh: could not launch ssh (error " + std::to_string( spawn_err ) + ")";

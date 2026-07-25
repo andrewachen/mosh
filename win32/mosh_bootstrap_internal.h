@@ -41,7 +41,10 @@
 
 /* PROC_THREAD_ATTRIBUTE_JOB_LIST is not defined in older Windows SDKs. */
 #ifndef PROC_THREAD_ATTRIBUTE_JOB_LIST
-#define PROC_THREAD_ATTRIBUTE_JOB_LIST 0x00000023UL
+/* ProcThreadAttributeValue(ProcThreadAttributeJobList=13, FALSE, TRUE, FALSE); the
+   target SDK's winbase.h lacks the JobList enum/macro, so define it explicitly
+   from the SDK's own flag macros (verified: NUMBER=0x0000ffff, INPUT=0x00020000). */
+#define PROC_THREAD_ATTRIBUTE_JOB_LIST ( ( 13 & PROC_THREAD_ATTRIBUTE_NUMBER ) | PROC_THREAD_ATTRIBUTE_INPUT )
 #endif
 
 std::wstring widen( const std::string &s );          // UTF-8 -> wide, MB_ERR_INVALID_CHARS
