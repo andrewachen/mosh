@@ -323,40 +323,27 @@ static void test_mosh_bootstrap_rejects_invalid_target()
   assert( !mosh_bootstrap( "user@\xC3\xA9host", &out ).empty() );  /* non-ASCII (eacute) */
 }
 
-/* Locate bootstrap_child.exe via the same resolve_on_path helper used for ssh:
-   a temp fixture directory holding the binary, so the spawn path is exercised
-   against a real PE rather than a stub. Returns false (assertion-failed) if the
-   fixture cannot be found or built. */
+/* Locate the real bootstrap_child.exe built alongside test_bootstrap.exe: the
+   Makefile compiles both into the same directory, and ./test_bootstrap.exe
+   runs there on CI. Return its resolved path, or false (assertion-failed) if
+   the fixture is not found next to the running test executable. */
 static bool locate_fixture( std::wstring *out )
 {
-  wchar_t tmp[MAX_PATH] = { 0 };
-  assert( GetTempPathW( MAX_PATH, tmp ) );
-  wchar_t dir[MAX_PATH] = { 0 };
-  assert( GetTempFileNameW( tmp, L"moshbt", 0, dir ) );
-  DeleteFileW( dir );
-  assert( CreateDirectoryW( dir, NULL ) );
-  const std::wstring fixture = dir;
-
-  const wchar_t *sentinel = L"bootstrap_child.exe";
-  const std::wstring sfile = fixture + L"\\" + sentinel;
-  HANDLE h = CreateFileW( sfile.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
-                          FILE_ATTRIBUTE_NORMAL, NULL );
-  assert( h && h != INVALID_HANDLE_VALUE );
-  CloseHandle( h );
+  wchar_t buf[MAX_PATH] = { 0 };
+  const DWORD n = GetModuleFileNameW( NULL, buf, MAX_PATH );
+  assert( n != 0 && n < MAX_PATH );
+  std::wstring dir( buf, n );
+  const size_t slash = dir.rfind( L'\\' );
+  assert( slash != std::wstring::npos );
+  dir.resize( slash );
 
   std::wstring resolved;
-  std::string ok = resolve_on_path( fixture, sentinel, &resolved );
+  std::string ok = resolve_on_path( dir, L"bootstrap_child.exe", &resolved );
   if ( !ok.empty() ) {
-    DeleteFileW( sfile.c_str() );
-    RemoveDirectoryW( fixture.c_str() );
-    assert( 0 && "bootstrap_child.exe fixture missing" );
+    assert( 0 && "bootstrap_child.exe not found next to test_bootstrap.exe" );
     return false;
   }
   *out = resolved;
-
-  /* cleanup the temp file/dir; the spawned child is a throwaway stub */
-  DeleteFileW( sfile.c_str() );
-  RemoveDirectoryW( fixture.c_str() );
   return true;
 }
 
