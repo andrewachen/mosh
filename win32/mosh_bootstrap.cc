@@ -60,7 +60,12 @@ std::string build_remote_command()
   const std::string probe =
     "[ -n \"$SSH_CONNECTION\" ] && "
     "printf \"\\nMOSH SSH_CONNECTION %s\\n\" \"$SSH_CONNECTION\"";
-  /* mosh.pl:377-389 minimal server args; no trailing -- (no remote command). */
+  /* mosh.pl:377-389 minimal server args; no trailing -- (no remote command).
+     LIMITATION (M3, Linux-first): a Windows client has no Unix locale to forward,
+     so the server locale is forced to C.UTF-8. That exists on glibc (the primary
+     target) but not on macOS/some BSD, where mosh-server would start non-UTF-8 and
+     exit before MOSH CONNECT. Probing the remote for a supported UTF-8 locale is a
+     deferred follow-up. */
   const char *server_args[] = { "new", "-c", "256", "-s", "-l", "LC_ALL=C.UTF-8" };
   /* '&&' (not upstream's ';'): if there is no SSH_CONNECTION the probe fails and
      mosh-server never starts, avoiding an orphaned detached server. */
@@ -128,7 +133,16 @@ std::string resolve_endpoint( const ServerReply &r, const std::string &target, B
   const long port = std::strtol( r.port.c_str(), &end, 10 );
   if ( end == r.port.c_str() || *end != '\0' || port < 1 || port > 65535 )
     return "mosh: server reported an invalid UDP port (" + r.port + ")";
-  const std::string ip = !r.mosh_ip.empty() ? r.mosh_ip : r.sship;   // mosh.pl:445-448
+  /* Client UDP target: prefer the server-reported MOSH IP, else the SSH_CONNECTION
+     server address (mosh.pl:445-448). LIMITATION (M3, direct-endpoint only): this
+     build implements neither upstream's default "proxy" method (a client-side ssh
+     ProxyCommand that captures the client-visible address) nor the "local" method
+     (client-side DNS of the target), so MOSH IP is never populated and this always
+     uses the SSH_CONNECTION address. For a server behind NAT or a load balancer that
+     is the server's own (often private) address, which the client may be unable to
+     reach; the UDP session then times out. Client-visible-address discovery is
+     tracked for M4. */
+  const std::string ip = !r.mosh_ip.empty() ? r.mosh_ip : r.sship;
   if ( ip.empty() )
     return "mosh: requires a direct UDP endpoint to " + target + "; proxied SSH is unsupported";
   if ( !is_numeric_ip( ip ) )
@@ -149,6 +163,11 @@ std::wstring widen( const std::string &s )
 
 std::wstring build_ssh_command_line( const std::wstring &ssh_path, const std::string &target )
 {
+  /* -n: no PTY (stdin from NUL). Intentional divergence from upstream mosh.pl's
+     default -tt: we parse mosh-server's startup banner from ssh's piped stdout, and
+     a PTY would CRLF-translate and merge stderr into that stream, corrupting the
+     MOSH CONNECT parse. The tradeoff is that mosh-server <= 1.2.4 (which needs a PTY
+     for its initial TIOCGWINSZ) is unsupported; modern servers do not need one. */
   return L"\"" + ssh_path + L"\""
     + L" -n -S none -o ProxyJump=none -o ProxyCommand=none "
     + widen( win_quote_arg( target ) ) + L" -- "
@@ -369,6 +388,14 @@ std::string mosh_bootstrap( const char *target, BootstrapResult *out )
   if ( !rerr.empty() ) return rerr;
 
   const std::wstring cmdline = build_ssh_command_line( ssh_path, target );
+  /* Key hygiene: the base64 session key returned by the server is copied into
+     out->key and scrubbed (SecureZeroMemory) by the caller immediately after the
+     MoshCore ctor consumes it -- that is the long-lived copy. The short-lived copies
+     here (reply.key, and the drain buffers inside spawn_and_drain) are freed when
+     this function returns and are left un-zeroed: partial scrubbing of copies that
+     std::string may have reallocated cannot be done reliably, and upstream mosh
+     zeroes none of its key copies at all. Documented residual for a crash-dump-class
+     adversary; the key never touches a command line, environment variable, or log. */
   ServerReply reply;
   const std::string serr = spawn_and_drain( ssh_path, cmdline, &reply );
   if ( !serr.empty() ) return serr;
