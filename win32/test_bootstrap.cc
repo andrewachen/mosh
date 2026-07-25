@@ -38,6 +38,7 @@
 #include "win32/wincompat.h"     /* mosh_winsock_init (used by later tasks) */
 #include <cassert>
 #include <cstdio>
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -322,6 +323,105 @@ static void test_mosh_bootstrap_rejects_invalid_target()
   assert( !mosh_bootstrap( "user@\xC3\xA9host", &out ).empty() );  /* non-ASCII (eacute) */
 }
 
+/* Locate bootstrap_child.exe via the same resolve_on_path helper used for ssh:
+   a temp fixture directory holding the binary, so the spawn path is exercised
+   against a real PE rather than a stub. Returns false (assertion-failed) if the
+   fixture cannot be found or built. */
+static bool locate_fixture( std::wstring *out )
+{
+  wchar_t tmp[MAX_PATH] = { 0 };
+  assert( GetTempPathW( MAX_PATH, tmp ) );
+  wchar_t dir[MAX_PATH] = { 0 };
+  assert( GetTempFileNameW( tmp, L"moshbt", 0, dir ) );
+  DeleteFileW( dir );
+  assert( CreateDirectoryW( dir, NULL ) );
+  const std::wstring fixture = dir;
+
+  const wchar_t *sentinel = L"bootstrap_child.exe";
+  const std::wstring sfile = fixture + L"\\" + sentinel;
+  HANDLE h = CreateFileW( sfile.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                          FILE_ATTRIBUTE_NORMAL, NULL );
+  assert( h && h != INVALID_HANDLE_VALUE );
+  CloseHandle( h );
+
+  std::wstring resolved;
+  std::string ok = resolve_on_path( fixture, sentinel, &resolved );
+  if ( !ok.empty() ) {
+    DeleteFileW( sfile.c_str() );
+    RemoveDirectoryW( fixture.c_str() );
+    assert( 0 && "bootstrap_child.exe fixture missing" );
+    return false;
+  }
+  *out = resolved;
+
+  /* cleanup the temp file/dir; the spawned child is a throwaway stub */
+  DeleteFileW( sfile.c_str() );
+  RemoveDirectoryW( fixture.c_str() );
+  return true;
+}
+
+/* emit mode: spawn the fixture, pass an inheritable event as the sentinel,
+   the quoted marker arg, and "emit". Asserts: no error, endpoint resolves to
+   the documented 203.0.113.7:60001, and the event is NOT signaled by the child
+   (proving the exact handle was excluded by the spawn whitelist). The child's
+   argv reconstruction is validated by its own argv round-trip check. */
+static void test_spawn_fixture()
+{
+  std::wstring child;
+  if ( !locate_fixture( &child ) ) return;         /* fixture build failure, asserted inside */
+
+  SECURITY_ATTRIBUTES sa = {}; sa.nLength = sizeof sa; sa.bInheritHandle = TRUE;
+  HANDLE sentinel = CreateEventW( &sa, FALSE, FALSE, NULL );
+  assert( sentinel && sentinel != INVALID_HANDLE_VALUE );
+
+  /* argv[0]=program, [1]=sentinel handle value, [2]=quoted marker, [3]=mode */
+  const std::string marker = "round trip \"marker\"";
+  std::string cmd = "bootstrap_child.exe";
+  cmd += " " + win_quote_arg( std::to_string( (uintptr_t) sentinel ) );
+  cmd += " " + win_quote_arg( marker );
+  cmd += " " + win_quote_arg( "emit" );
+
+  ServerReply r;
+  std::string err = spawn_and_drain( child, widen( cmd ), &r );
+  assert( err.empty() );
+
+  BootstrapResult out;
+  assert( resolve_endpoint( r, "host", &out ).empty() );
+  assert( out.ip == "203.0.113.7" && out.port == "60001" );
+
+  /* Event identity is the inheritance oracle: if that exact handle leaked, the
+     child's SetEvent would have signaled it. WAIT_TIMEOUT == non-signaled ==
+     proof of exclusion by the handle whitelist. */
+  assert( WaitForSingleObject( sentinel, 0 ) == WAIT_TIMEOUT );
+  CloseHandle( sentinel );
+}
+
+/* hang mode: spawn the fixture in "hang" (emits CONNECT then sleeps forever).
+   Asserts: no error, endpoint resolves, returns within a bounded time. The
+   internal 10s wait + terminate path ran, proving timeout/terminate/job-reap
+   works; the child is confined to the kill-on-close job so reaping is
+   guaranteed when spawn_and_drain closes the job. ~10s duration, within the
+   2-min CI step timeout. A fuller external liveness oracle is deferred. */
+static void test_spawn_timeout_reap()
+{
+  std::wstring child;
+  if ( !locate_fixture( &child ) ) return;         /* fixture build failure, asserted inside */
+
+  const std::string marker = "round trip \"marker\"";
+  std::string cmd = "bootstrap_child.exe";
+  cmd += " " + win_quote_arg( std::to_string( (uintptr_t) 0 ) );
+  cmd += " " + win_quote_arg( marker );
+  cmd += " " + win_quote_arg( "hang" );
+
+  ServerReply r;
+  std::string err = spawn_and_drain( child, widen( cmd ), &r );
+  assert( err.empty() );
+
+  BootstrapResult out;
+  assert( resolve_endpoint( r, "host", &out ).empty() );
+  assert( out.ip == "203.0.113.7" && out.port == "60001" );
+}
+
 int main()
 {
   test_sh_quote();
@@ -342,6 +442,8 @@ int main()
   test_resolve_on_path_fixture();
   test_build_ssh_command_line();
   test_mosh_bootstrap_rejects_invalid_target();
+  test_spawn_fixture();
+  test_spawn_timeout_reap();
   puts( "test_bootstrap: passed" );
   return 0;
 }

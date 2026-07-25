@@ -52,7 +52,7 @@ LIBS = src/crypto/libmoshcrypto.a src/protobufs/libmoshprotos.a src/util/libmosh
 
 .PHONY: all clean protobufs check config
 
-all: $(LIBS) mosh.exe test_loopback test_core test_bootstrap $(BUILD)/win32/console_io_include_check.o
+all: $(LIBS) mosh.exe test_loopback test_core test_bootstrap bootstrap_child $(BUILD)/win32/console_io_include_check.o
 
 check: all
 	test -f mosh.exe
@@ -163,6 +163,11 @@ test_core: $(BUILD)/win32/test_core.o $(BUILD)/win32/mosh_core.o $(BUILD)/win32/
 test_bootstrap: $(BUILD)/win32/test_bootstrap.o $(BUILD)/win32/mosh_bootstrap.o $(BUILD)/win32/wincompat.o
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ $(BUILD)/win32/test_bootstrap.o $(BUILD)/win32/mosh_bootstrap.o $(BUILD)/win32/wincompat.o $(LDFLAGS) -lws2_32 -luser32 -l:libwinpthread.a -static-libstdc++ -static-libgcc
 
+$(BUILD)/win32/bootstrap_child.o: win32/bootstrap_child.cc src/include/config.h
+
+bootstrap_child: $(BUILD)/win32/bootstrap_child.o
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -municode -o $@ $(BUILD)/win32/bootstrap_child.o $(LDFLAGS) -luser32 -static-libstdc++ -static-libgcc
+
 $(BUILD)/%.o: %.cc src/include/config.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
@@ -172,4 +177,4 @@ $(BUILD)/src/frontend/terminaloverlay.o: src/frontend/terminaloverlay.cc src/inc
 	$(CXX) $(CPPFLAGS) -DMOSH_NEEDS_WCWIDTH $(CXXFLAGS) -c -o $@ $<
 
 clean:
-	rm -rf $(BUILD) $(LIBS) mosh.exe test_loopback test_loopback.exe test_core test_core.exe test_bootstrap test_bootstrap.exe src/protobufs/*.pb.cc src/protobufs/*.pb.h src/include/config.h
+	rm -rf $(BUILD) $(LIBS) mosh.exe test_loopback test_loopback.exe test_core test_core.exe test_bootstrap test_bootstrap.exe bootstrap_child bootstrap_child.exe src/protobufs/*.pb.cc src/protobufs/*.pb.h src/include/config.h

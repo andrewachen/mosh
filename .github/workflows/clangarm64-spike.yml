@@ -66,7 +66,7 @@ jobs:
         shell: msys2 {0}
         timeout-minutes: 2
         run: |
-          make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" test_bootstrap
+          make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" test_bootstrap bootstrap_child
           ./test_bootstrap.exe
 
       - name: Verify mosh.exe is a native ARM64 PE
