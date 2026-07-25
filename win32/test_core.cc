@@ -128,11 +128,36 @@ int main()
   }
 
   core.resize( 80, 24 );
-  const std::string& resize_frame = core.next_frame();
+  const std::string resize_frame = core.next_frame();
   if ( !resize_frame.empty() ) {
     fprintf( stderr,
              "FAIL: resize to the current 80x24 emitted %u bytes of output\n",
              static_cast<unsigned>( resize_frame.size() ) );
+    return 1;
+  }
+
+  /* A resize to new dimensions reaches the server, which echoes it back, and
+     the echo is what changes the dimensions the display renders. That costs
+     exactly one full repaint: a second one would mean the local state was
+     disturbed ahead of the echo. */
+  core.resize( 100, 30 );
+  int repaints = 0;
+  bool quiet = false;
+  for ( int i = 0; i < 200; i++ ) {
+    service( core, server );
+    const std::string& frame = core.next_frame();
+    if ( frame.find( "\033[2J" ) != std::string::npos ) {
+      repaints++;
+    }
+    quiet = frame.empty();
+    pause_for_network();
+  }
+  if ( repaints != 1 ) {
+    fprintf( stderr, "FAIL: resize to 100x30 emitted %d full repaints, expected 1\n", repaints );
+    return 1;
+  }
+  if ( !quiet ) {
+    fprintf( stderr, "FAIL: display still emitting output after a resize to 100x30\n" );
     return 1;
   }
 
