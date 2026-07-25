@@ -201,10 +201,11 @@ static void test_drain_line_at_max()
   make_pipe( &rd, &wr );
   std::string line( TEST_MAX_LINE, 'x' );          /* exactly MAX_LINE non-protocol chars */
   line += "\r\n";
-  std::thread( write_all_and_close, wr, line.data(), line.size() ).detach();
+  std::thread writer( write_all_and_close, wr, line.data(), line.size() );
   ServerReply r;
   assert( drain_and_parse( rd, &r ).empty() );     /* ok, no fatal */
-  CloseHandle( rd );
+  CloseHandle( rd );                               /* unblock a pipe-full WriteFile so join can't hang */
+  writer.join();                                   /* join before |line| leaves scope (no UAF) */
   assert( !r.have_connect );
 }
 
@@ -215,10 +216,11 @@ static void test_drain_line_over_max()
   HANDLE rd = NULL, wr = NULL;
   make_pipe( &rd, &wr );
   std::string line( TEST_MAX_LINE + 1, 'x' );      /* one byte over the limit, no newline */
-  std::thread( write_all_and_close, wr, line.data(), line.size() ).detach();
+  std::thread writer( write_all_and_close, wr, line.data(), line.size() );
   ServerReply r;
   assert( !drain_and_parse( rd, &r ).empty() );    /* fatal: over-long line */
-  CloseHandle( rd );
+  CloseHandle( rd );                               /* unblock a pipe-full WriteFile so join can't hang */
+  writer.join();                                   /* join before |line| leaves scope (no UAF) */
   assert( !r.have_connect );
 }
 
@@ -235,10 +237,11 @@ static void test_drain_embedded_nul_line()
   std::string canned = "MOSH CONNECT 60001 ABCDEFGHIJKLMNOPQRSTUV";
   canned.push_back( '\0' );
   canned += "\r\n";
-  std::thread( write_all_and_close, wr, canned.data(), canned.size() ).detach();
+  std::thread writer( write_all_and_close, wr, canned.data(), canned.size() );
   ServerReply r;
   assert( !drain_and_parse( rd, &r ).empty() );    /* fatal: embedded NUL */
-  CloseHandle( rd );
+  CloseHandle( rd );                               /* unblock a pipe-full WriteFile so join can't hang */
+  writer.join();                                   /* join before |canned| leaves scope (no UAF) */
   assert( !r.have_connect );
 }
 
@@ -257,10 +260,11 @@ static void test_drain_total_overflow()
   std::vector<char> buf;
   buf.reserve( want );
   while ( buf.size() + blen <= want ) { buf.insert( buf.end(), banner, banner + blen ); }
-  std::thread( write_all_and_close, wr, buf.data(), buf.size() ).detach();
+  std::thread writer( write_all_and_close, wr, buf.data(), buf.size() );
   ServerReply r;
   assert( !drain_and_parse( rd, &r ).empty() );    /* fatal: total overflow */
-  CloseHandle( rd );
+  CloseHandle( rd );                               /* unblock a pipe-full WriteFile so join can't hang */
+  writer.join();                                   /* join before |buf| leaves scope (no UAF) */
   assert( !r.have_connect );
 }
 

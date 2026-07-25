@@ -203,9 +203,9 @@ std::string resolve_on_path( const std::wstring &path_dirs, const std::wstring &
   if ( need == 0 ) return "mosh: could not find " + std::string( name.begin(), name.end() ) + " on PATH";
   std::wstring buf( need, L'\0' );
   const DWORD n = SearchPathW( path_dirs.c_str(), name.c_str(), L".exe", need, &buf[0], NULL );
-  /* SearchPathW returns the count INCLUDING the null terminator (L+1 for a length-L
-     path), which fits exactly in the need-sized buffer; only FAIL if it reports
-     strictly over (truncation) or zero. The original n >= need rejected every success. */
+  /* The size-query call returned the required size INCLUDING the null (need = L+1).
+     On a successful copy SearchPathW returns the length EXCLUDING the null (n = need-1),
+     or 0 on failure; the n > need branch is an unreachable defensive truncation guard. */
   if ( n == 0 || n > need ) return "mosh: could not resolve ssh path";
   buf.resize( n );
   *out = buf;
