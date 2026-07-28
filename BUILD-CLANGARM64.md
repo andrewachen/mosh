@@ -3,18 +3,23 @@
 ## Current M2 status
 
 `mosh.exe` is now the native Windows console frontend, not the M0 standalone
-engine spike. It accepts the development form
+engine spike. It accepts `mosh.exe <user@host>`, which spawns `ssh` and reads
+the endpoint from the server's `MOSH CONNECT` reply, and the raw form
 `mosh.exe <ip> <port> <key> [predict]`; the CI bare invocation verifies the
 well-defined usage exit code `2`. That invocation returns before it opens a
 console or constructs `MoshCore`, so it is not console, core, or crypto runtime
 evidence. Console/session runtime validation remains native Windows ARM64 work.
 
-### Known limitations (M2, dev)
+### Known limitations
 
-The M2 development invocation passes the session key on the command line,
-where process listings can expose it. This is an accepted development-only
-limitation; M3 replaces it with the SSH bootstrap's secure in-process key
-channel.
+The SSH bootstrap carries the session key in-process, so the default
+`<user@host>` invocation never puts it on a command line. The raw form still
+takes the key as an argument, where process listings can expose it, and it is
+compiled into and advertised by the same binary — calling it "development" does
+not make it unreachable in a release artifact. Nothing currently gates it.
+`win32/PARITY.md` finding S1 holds the disposition and the remaining decision:
+drop the key argument or put the form behind a build option that release CI
+asserts is absent.
 
 ## Historical M0 standalone-engine spike record
 

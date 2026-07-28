@@ -23,21 +23,21 @@ Severity is **high** for correctness, security, or resource-exhaustion consequen
 | `PLATFORM` | 7 |
 | `POLICY` | 1 |
 | `DEFERRED` | 0 |
-| `DEFECT` | 21 |
+| `DEFECT` | 22 |
 | `OPEN` | 0 |
-| **Total** | **29** |
+| **Total** | **30** |
 
-Seven repaired or confirmed behavior records — connection-timeout shutdown, reader input ending, Ctrl-C and Ctrl-Break shutdown, bounded close-handler restoration attempts, post-wait timestamp freezing, resize framebuffer ownership, and UCRT wide-printf semantics — are recorded at the end and are not counted as findings.
+Seven repaired or confirmed behavior records — connection-timeout shutdown, reader input ending, interrupt control events versus a typed Ctrl-C, bounded close-handler restoration attempts, post-wait timestamp freezing, resize framebuffer ownership, and UCRT wide-printf semantics — are recorded at the end and are not counted as findings.
 
 ## How the defects cluster
 
 Six are **configuration omissions**, each independent and individually cheap: `MOSH_ESCAPE_KEY` (A1), `MOSH_PREDICTION_OVERWRITE` (A2), the `[mosh] ` title prefix (A3), `-v` diagnostics (A4), `MOSH_NO_TERM_INIT` (A20), and the escape-suspend sequence (A16).
 
-Ten are **event-loop and shutdown drift**: A5, A6, A7, A8, A9, A12, A15, A18, A22, and A23. `STMClient::main()` was re-derived rather than extracted, so every ordering and exception-boundary decision was re-made independently, and each drifted on its own.
+Eleven are **event-loop and shutdown drift**: A5, A6, A7, A8, A9, A12, A15, A18, A22, A23, and A24. `STMClient::main()` was re-derived rather than extracted, so every ordering and exception-boundary decision was re-made independently, and each drifted on its own.
 
 Whether the correct remedy is a shared platform-neutral loop coordinator (taking normalized events, returning actions and deadlines) or platform-specific loops held together by parity tests is an open architectural question — a literal extraction of `STMClient::main()` is unlikely to stay simple, because the POSIX and Win32 waiting, input, resize, and termination contracts genuinely differ.
 
-What must be settled first is the **behavioral contract**, not the code organization: the intended phase ordering, exception boundaries, timer semantics, fairness limits, and shutdown invariants, recorded as expected event traces rather than prose — ordinary input, simultaneous input and network readiness, receive error, send error, crypto error, resize during shutdown, first Ctrl-C, second Ctrl-C, and close or session-end termination. Those traces serve either architecture and make the eventual coordinator decision evidence-based. Sharing an implementation stays an evaluated option, not a prerequisite.
+What must be settled first is the **behavioral contract**, not the code organization: the intended phase ordering, exception boundaries, timer semantics, fairness limits, and shutdown invariants, recorded as expected event traces rather than prose — ordinary input, simultaneous input and network readiness, receive error, send error, crypto error, resize during shutdown, a typed Ctrl-C reaching the remote, a first and a repeated interrupt control event, and close or session-end termination. Those traces serve either architecture and make the eventual coordinator decision evidence-based. Sharing an implementation stays an evaluated option, not a prerequisite.
 
 Only the genuinely coupled findings wait on that contract: A5 and A9 (phase ordering) and A6, A7, and A15 (exception boundaries and retry timing). A18 is an independent safety invariant with a local contract test and should land now — it is the one high-severity item here, and holding a resource-exhaustion fix behind a speculative refactor is the wrong trade. A22 is local error-state bookkeeping and is likewise independently fixable.
 
@@ -249,6 +249,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 * **Upstream:** SIGTERM and SIGHUP start network shutdown when a remote address exists (`src/frontend/stmclient.cc:508`).
 * **Port:** Defines `ShutdownCause::SESSION_END` and a cross-thread `request_shutdown()` entry point (`win32/console_io.h:67`, `win32/console_io.cc:1053`), but no hidden window or message pump publishes that cause from `WM_QUERYENDSESSION` or `WM_ENDSESSION`.
 * **Consequence:** On logoff, the client has no protocol-shutdown path and the remote `mosh-server` can be left running.
+* **The producer cannot be scoped to `ConsoleSession`.** A session end can arrive during the SSH bootstrap — after `mosh-server` has started and returned its `MOSH CONNECT` reply, but before a `ConsoleSession` exists to receive `request_shutdown()`. In that window the notification has nothing to reach: the spawned `ssh` child is not reaped, the acquired key is not scrubbed, and the remote server is orphaned with no client that ever connected. Whatever owns the hidden window therefore has to outlive and precede the console session, and has to know which phase — bootstrapping, running, restoring — it is interrupting.
 * **Correcting this is not simply wiring the two messages to `request_shutdown()`.** `WM_QUERYENDSESSION` is a query that may be refused or cancelled, and a cancelled session end is followed by `WM_ENDSESSION` with `wParam == FALSE`. Transport shutdown is irreversible, so publishing on the query would destroy a session the user just kept. Only a committed `WM_ENDSESSION` may publish, exactly once. The attainable guarantee is a bounded best-effort shutdown attempt before the callback returns, not a stopped remote server: Windows may terminate the process once the callback returns, and the message budget for session end is not the `SPI_GETHUNGAPPTIMEOUT` value that governs `CTRL_CLOSE_EVENT`.
 * **Class:** `DEFECT`, medium. Windows supplies session-end notification through hidden-window messages; the missing producer is not platform-forced.
 
@@ -258,6 +259,15 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 * **Port:** The close path attempts to restore input and output modes before it signals `restored` (`Impl::restore`, `win32/console_io.cc:967`, `win32/console_io.cc:982`; `Impl::release_and_signal`, `win32/console_io.cc:909`, `win32/console_io.cc:918`, `win32/console_io.cc:920`). The completion event means only that the attempt completed; the cleanup report records whether it succeeded (`win32/mosh_main.cc:182`).
 * **Consequence:** Even when the handler waits within the close deadline, restoration can fail. The deadline machinery can bound the attempt; it cannot guarantee a restored console. Any user-visible cleanup report is best-effort because console output is itself among the operations documented as unreliable during close handling. Acceptance criteria for close must distinguish an attempt completing from restoration succeeding.
 * **Class:** `PLATFORM`, medium.
+
+#### A24. A blocked console write can consume the whole close deadline
+
+* **Upstream:** No analogue. POSIX imposes no forced-termination deadline on the client, so a slow terminal write delays shutdown without cutting it short.
+* **Port:** Every console write is a synchronous `WriteFile` on the owner thread — the open sequence during construction (`win32/console_io.cc:887`) and each frame in the loop (`win32/console_io.cc:1223`). Publishing a close deadline signals an event; it does not interrupt a write already in progress, and nothing cancels one.
+* **Consequence:** If close arrives while the owner is inside a console write, the owner cannot reach `release_and_signal()`. The handler's wait expires, Windows terminates the process, and the console is left raw with no restoration *attempted* — the outcome the bounded close path exists to prevent. This is distinct from I6c, where the attempt runs and can fail; here it never starts. The `deadline-wedged-reader` mode does not cover it: it wedges the reader after the loop has regained control, not the writer, and not during construction.
+* **Class:** `DEFECT`, medium. A5 records the same unbounded write as a latency cost; this is its termination consequence.
+* **Fix:** Not chosen. Bounding it needs a cancellable output path — a dedicated writer whose handle can be cancelled, with a bounded join and a rule forbidding writes after restoration — or the close contract has to be stated as best-effort rather than bounded. That is a design decision, not a patch.
+* **Verification:** a close arriving during the open sequence and during an in-progress frame write both reach a restoration attempt within the deadline.
 
 #### A12. Send errors become sticky final status messages
 
@@ -313,16 +323,19 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 * **Port:** `Reader::read_loop` marks a `ReadFile` failure as input ended (`win32/console_io.cc:358`); the owner observes `has_ended()` and begins graceful shutdown with `ShutdownCause::IO_LOSS` (`win32/console_io.cc:1178`). A successful zero-byte result follows the same path (`win32/console_io.cc:370`).
 * **Status:** read-failure parity. Treating a successful zero-byte console read as end-of-input is engineering judgment, not a documented Windows EOF guarantee. Microsoft's [ReadFile documentation](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-readfile) specifies end-of-file behavior for file reads but not console handles. Microsoft's [high-level console input documentation](https://learn.microsoft.com/windows/console/high-level-console-input-and-output-functions) instead says that, with line input disabled, `ReadFile` on console input does not return until at least one character is available. A successful zero-byte console read is therefore undocumented in both directions. The chosen teardown avoids an unbounded immediate retry spin: a spurious zero costs a clean shutdown; a wrong backoff can consume a core indefinitely.
 
-#### Ctrl-C and Ctrl-Break enter protocol shutdown
+#### An interrupt control event enters protocol shutdown; a typed Ctrl-C does not
 
-* **Upstream:** SIGINT and SIGTERM start network shutdown when a remote address exists (`src/frontend/stmclient.cc:508`).
-* **Port:** `console_control_handler` records `ShutdownCause::CTRL_BREAK` and signals the termination event (`win32/console_io.cc:609`, `win32/console_io.cc:615`, `win32/console_io.cc:630`); the owner observes it and begins graceful shutdown (`win32/console_io.cc:1172`, `win32/console_io.cc:1070`).
-* **Status:** first-signal parity. With a remote address, `MoshCore::begin_shutdown()` starts the protocol shutdown (`win32/mosh_core.cc:294`). A second Ctrl-C or Ctrl-Break is idempotent: after the first observation the loop no longer polls the termination event, and `CTRL_BREAK` carries no deadline (`win32/console_io.cc:1110`, `win32/console_io.cc:1172`, `win32/console_io.cc:125`). A close event can still escalate the same shutdown by publishing its deadline.
+* **Upstream:** SIGINT and SIGTERM start network shutdown when a remote address exists (`src/frontend/stmclient.cc:508`). A typed Ctrl-C is not one of them: raw mode leaves terminal signal generation off, so the byte goes to the remote.
+* **Port:** Setup clears `ENABLE_PROCESSED_INPUT` (`win32/console_io.cc:844`), so a typed Ctrl-C reaches `ReadFile` as `0x03` and is forwarded as an ordinary user byte — the escape key is `0x1e` (`win32/mosh_core.cc:114`), so nothing intercepts it. A **delivered** `CTRL_C_EVENT` or `CTRL_BREAK_EVENT` maps to `ShutdownCause::CTRL_BREAK` and signals the termination event (`win32/console_io.cc:609`, `win32/console_io.cc:615`, `win32/console_io.cc:630`); the owner observes it and begins graceful shutdown (`win32/console_io.cc:1172`, `win32/console_io.cc:1070`).
+* **Status:** parity for the interrupt path, on first signal. With a remote address, `MoshCore::begin_shutdown()` starts the protocol shutdown (`win32/mosh_core.cc:294`). A repeated event is idempotent: after the first observation the loop no longer polls the termination event, and `CTRL_BREAK` carries no deadline (`win32/console_io.cc:1110`, `win32/console_io.cc:1172`, `win32/console_io.cc:125`). A close event can still escalate the same shutdown by publishing its deadline.
+* **What is verified and what is not:** the acceptance modes drive `request_shutdown()` directly, so they establish the cause-to-shutdown mapping and its idempotence, not the delivery of a real control event. Keyboard forwarding of `0x03` rests on the cleared mode flag, not on a test.
+* **Windows-only exit path:** clearing `ENABLE_PROCESSED_INPUT` suppresses Ctrl-C but not Ctrl-Break, so a *typed* Ctrl-Break does generate `CTRL_BREAK_EVENT` and ends the session locally. Upstream has no equivalent key.
 
 #### The close control handler waits for the restoration attempt
 
 * **Port:** `console_control_handler` publishes the close deadline and waits for `control->restored` for the remaining OS budget (`win32/console_io.cc:609`, `win32/console_io.cc:630`, `win32/console_io.cc:635`); `Impl::release_and_signal` attempts restoration and signals that event (`win32/console_io.cc:909`, `win32/console_io.cc:918`, `win32/console_io.cc:920`).
-* **Status:** parity with the required bounded close-handling contract. Returning `TRUE` alone cannot preserve the restoration-attempt window: Microsoft's [HandlerRoutine documentation](https://learn.microsoft.com/windows/console/handlerroutine) says the system terminates the process when `HandlerRoutine` returns `TRUE` or when the timeout expires. A signalled `restored` event means the attempt finished, not that it succeeded; the cleanup report holds that result. Waiting is therefore required, not defensive.
+* **Status:** parity with the required bounded close-handling contract, for the paths that reach teardown. Returning `TRUE` alone cannot preserve the restoration-attempt window: Microsoft's [HandlerRoutine documentation](https://learn.microsoft.com/windows/console/handlerroutine) says the system terminates the process when `HandlerRoutine` returns `TRUE` or when the timeout expires. A signalled `restored` event means the attempt finished, not that it succeeded; the cleanup report holds that result. Waiting is therefore required, not defensive.
+* **Limit:** the handler bounds its own wait, which is not the same as bounding the owner. An owner blocked in a console write never reaches teardown at all — see A24.
 
 #### The cached timestamp is frozen after the wait
 
