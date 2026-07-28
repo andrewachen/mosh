@@ -205,13 +205,10 @@ static int run_vt_mode()
   return 0;
 }
 
-/* Deadline for run() to observe the already-signaled termination event. It is
-   set generously on purpose: a tight deadline would measure console scheduling
-   latency instead of the dispatch order and make the test flaky. The deadline
-   only bounds a genuine hang; discrimination is carried by the drain-flag and
-   core-finished post-conditions, and a winner-only dispatch returns well inside
-   this bound. */
-static const DWORD FAIRNESS_DEADLINE_MS = 10000;
+/* Deadline for the fairness harness to allow the transport shutdown handshake
+   to finish. It exceeds the upstream ACTIVE_RETRY_TIMEOUT (10000 ms) and
+   SHUTDOWN_RETRIES (16), so the watchdog does not reject a healthy shutdown. */
+static const DWORD FAIRNESS_DEADLINE_MS = 30000;
 /* Timeout for establishing the backlog before run() is entered. Failing here
    is a harness setup failure, not a dispatch verdict. */
 static const DWORD FAIRNESS_FILL_TIMEOUT_MS = 5000;
@@ -320,21 +317,18 @@ private:
   std::thread thread_;
 };
 
-/* Fairness test: proves the event loop services termination on the same wakeup
+/* Fairness test: proves the event loop observes termination on the same wakeup
    as a ready reader event. A winner-only dispatch favors the reader event at
-   index 0 whenever it is signaled, so termination cannot win a contested
-   wakeup. The fair dispatch independently re-tests termination and exits
-   immediately.
+   index 0 whenever it is signaled, so termination cannot be observed on a
+   contested wakeup. The fair dispatch independently re-tests termination.
 
    Synchronization contract: the test preloads the reader backlog to
    INPUT_BUDGET_BYTES+1 before run() begins, then atomically verifies the
-   backlog and SetEvent(termination) while holding the reader queue mutex.
-   This proves the old loop cannot break on its first two wakeups: the reader
-   event is already signaled, and after the next drain at least one byte
-   remains and re-signals it. The sticky drain flag records whether any drain
-   ever emptied the queue; under the fair dispatch run() breaks before take_bytes()
-   so the flag stays false, while a winner-only dispatch drains until the
-   reader event goes quiet and termination wins an idle wakeup instead. */
+   backlog and signals termination while holding the reader queue mutex. The
+   sampled drain state captures whether a drain had already emptied the queue
+   at the instant the shutdown request was observed. A fair dispatch samples
+   false while the contested backlog remains; a winner-only dispatch samples
+   true after draining the reader queue until termination wins an idle wakeup. */
 static int run_fairness()
 {
   ConsoleTestScope scope;
@@ -435,32 +429,34 @@ static int run_fairness()
   must( SetEvent( session_done.get() ), "SetEvent(session_done)" );
   watchdog.stop();
 
-  /* The sticky drain flag records whether any drain ever emptied the queue.
-     A winner-only dispatch escapes by consuming the backlog until the reader
-     event goes quiet and termination wins an idle wakeup instead of a
-     contested one. Under the fair dispatch run() breaks at the termination
-     re-test before take_bytes(), so the flag stays false. */
-  const bool backlog_ever_emptied = session->input_ever_drained_for_test();
-  const bool core_finished = core.is_finished();
+  /* The drain-at-shutdown flag records whether a drain had ever emptied the
+     queue at the moment the loop first observed a shutdown request. Under the
+     fair dispatch, termination wins a contested wakeup where the reader event
+     is already signaled, so the drain that happens later in the same iteration
+     will leave bytes in the queue. Under a winner-only dispatch, the reader
+     event wins repeatedly, draining the queue to empty before termination is
+     ever observed, so the sampled flag is true. */
+  const bool shutdown_observed = session->shutdown_observed_for_test();
+  const bool input_drained_at_shutdown = session->input_drained_at_shutdown_for_test();
 
   if ( thrown ) {
     return 1;
   }
-  /* run() must have returned because it observed termination. This harness
-     never services TestServer, so a run() that returns without servicing
-     termination can still leave through core.is_finished() once MoshCore's
-     connection timeout elapses. The watchdog deadline is stamped after the
-     bounded fill and expires first, so in practice it pre-empts that path;
-     this check costs nothing and names the cause if it ever wins the race. */
-  if ( core_finished ) {
-    fprintf( stderr,
-             "FAIL: session.run() returned because the mosh core finished "
-             "(connection timeout), not because it serviced termination\n" );
+  /* The loop must have observed termination and begun graceful shutdown. This
+     is a direct observation of the thing we're testing, rather than inferring
+     from the core's exit condition which could be confounded by connection
+     timeout. */
+  if ( !shutdown_observed ) {
+    fprintf( stderr, "FAIL: session.run() did not observe termination\n" );
     return 1;
   }
-  if ( backlog_ever_emptied ) {
+  /* The discriminating assertion: on the wakeup where termination was first
+     observed, the backlog had not yet drained to empty. If the reader event
+     had won repeatedly (winner-only dispatch), the queue would be empty and
+     termination would only be observed later on an idle wakeup. */
+  if ( input_drained_at_shutdown ) {
     fprintf( stderr,
-             "FAIL: reader backlog drained to empty during run(); "
+             "FAIL: reader backlog drained to empty before termination was observed; "
              "termination may have won an idle wakeup rather than a contested "
              "one\n" );
     return 1;
@@ -468,9 +464,10 @@ static int run_fairness()
   return 0;
 }
 
-/* Hang bound for the clock-refresh mode, generous for the same reason as the
-   fairness deadline: it exists to stop a wedge, not to time anything. */
-static const DWORD CLOCK_REFRESH_DEADLINE_MS = 10000;
+/* Deadline for the clock-refresh harness to allow the transport shutdown
+   handshake to finish. It is generous because it detects a wedge rather than
+   measuring shutdown duration. */
+static const DWORD CLOCK_REFRESH_DEADLINE_MS = 30000;
 /* How long the loop is left running before termination is signaled. Each wait is
    capped at RESIZE_POLL_CAP_MS, so this window holds many iterations. */
 static const DWORD CLOCK_REFRESH_RUN_MS = 1000;
@@ -760,6 +757,100 @@ static int run_init_checkpoint()
   return 0;
 }
 
+/* Deadline for the graceful-shutdown harness to allow the transport shutdown
+   handshake to finish. It exceeds the upstream SHUTDOWN_RETRIES (16) and
+   ACTIVE_RETRY_TIMEOUT (10000 ms), so the watchdog does not reject a healthy
+   shutdown. */
+static const DWORD GRACEFUL_SHUTDOWN_DEADLINE_MS = 30000;
+/* Delay before signaling termination, to ensure run() has entered its loop.
+   The loop must be pumping before the request can be observed and the graceful
+   shutdown initiated. */
+static const DWORD GRACEFUL_SHUTDOWN_SIGNAL_DELAY_MS = 100;
+
+static int run_graceful_shutdown()
+{
+  ConsoleTestScope scope;
+
+  TestServer server( 80, 24 );
+  MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
+                 80, 24, "never" );
+
+  UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  if ( session_done.get() == NULL ) {
+    fprintf( stderr, "fatal: CreateEvent(session_done) failed (GetLastError=%lu)\n",
+             GetLastError() );
+    return 1;
+  }
+  UniqueHandle deadline_start( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  if ( deadline_start.get() == NULL ) {
+    fprintf( stderr, "fatal: CreateEvent(deadline_start) failed (GetLastError=%lu)\n",
+             GetLastError() );
+    return 1;
+  }
+
+  auto session = std::make_unique<ConsoleSession>( core );
+  std::atomic<ULONGLONG> deadline_at( 0 );
+
+  WatchdogGuard watchdog( session_done.get(), deadline_start.get(), &deadline_at, &scope,
+                          GRACEFUL_SHUTDOWN_DEADLINE_MS );
+
+  /* Signal the shutdown request after a short delay to ensure run() has started. */
+  TerminationTimerGuard signaler( session.get(), session_done.get(),
+                                  GRACEFUL_SHUTDOWN_SIGNAL_DELAY_MS );
+
+  int thrown = 0;
+  try {
+    deadline_at.store( GetTickCount64() + GRACEFUL_SHUTDOWN_DEADLINE_MS );
+    must( SetEvent( deadline_start.get() ), "SetEvent(deadline_start)" );
+    session->run();
+  } catch ( const std::exception &e ) {
+    fprintf( stderr, "FAIL: graceful-shutdown: session.run() threw: %s\n", e.what() );
+    thrown = 1;
+  } catch ( ... ) {
+    fprintf( stderr, "FAIL: graceful-shutdown: session.run() threw a non-standard exception\n" );
+    thrown = 1;
+  }
+  signaler.stop();
+  must( SetEvent( session_done.get() ), "SetEvent(session_done)" );
+  watchdog.stop();
+
+  if ( thrown ) {
+    return 1;
+  }
+
+  /* The loop must have observed termination and begun graceful shutdown. */
+  if ( !session->shutdown_observed_for_test() ) {
+    fprintf( stderr, "FAIL: session.run() did not observe termination\n" );
+    return 1;
+  }
+
+  /* The loop must have exited through core.is_finished(), not a break. */
+  if ( !core.is_finished() ) {
+    fprintf( stderr, "FAIL: session.run() did not exit through core.is_finished()\n" );
+    return 1;
+  }
+
+  /* The status message should be "Exiting..." which is set by begin_shutdown().
+     This proves the session went through the graceful shutdown path. */
+  const std::string &status = core.status_message();
+  if ( status != "Exiting..." ) {
+    fprintf( stderr,
+             "FAIL: status message was \"%s\", expected \"Exiting...\"\n",
+             status.c_str() );
+    return 1;
+  }
+
+  /* The clean_shutdown flag is set after either shutdown acknowledgement has
+     been received or the counterparty's acknowledgement has been sent. It stays
+     false on the timeout path, proving this session used that path. */
+  if ( core.exited_cleanly() ) {
+    fprintf( stderr, "FAIL: session exited cleanly (expected timeout path)\n" );
+    return 1;
+  }
+
+  return 0;
+}
+
 int main( int argc, char *argv[] )
 {
   if ( argc < 2 ) {
@@ -793,6 +884,9 @@ int main( int argc, char *argv[] )
     }
     if ( strcmp( argv[1], "init-checkpoint" ) == 0 ) {
       return run_init_checkpoint();
+    }
+    if ( strcmp( argv[1], "graceful-shutdown" ) == 0 ) {
+      return run_graceful_shutdown();
     }
   } catch ( const std::exception &e ) {
     fprintf( stderr, "FAIL: uncaught exception: %s\n", e.what() );

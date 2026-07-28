@@ -64,9 +64,10 @@ jobs:
 
       - name: Build and run console lifecycle test
         shell: msys2 {0}
-        # Covers the build plus five modes. Fairness backlog establishment is
-        # bounded at 5s and run() is then bounded by a 10s watchdog. Clock-refresh
-        # uses the same watchdog bound. This cap leaves the build room on top.
+        # Covers the build plus six modes. Fairness backlog establishment is
+        # bounded at 5s and run() is then bounded by a 30s watchdog. Clock-refresh
+        # and graceful-shutdown use the same watchdog bound. This cap leaves the
+        # build room on top.
         timeout-minutes: 5
         # A bounded native test constructs a ConsoleSession on the inherited
         # console (repointed at CONOUT$/CONIN$ via SetStdHandle, since the msys2
@@ -78,8 +79,8 @@ jobs:
         # termination event on the same wakeup as a ready reader event. A
         # winner-only dispatch drains the preloaded backlog until the reader
         # event goes quiet and termination wins an idle wakeup instead of a
-        # contested one, which the drain-flag post-condition rejects; the fair
-        # per-wakeup dispatch returns with the backlog still intact.
+        # contested one, which the sampled drain state rejects. The fair
+        # per-wakeup dispatch observes termination while the backlog remains.
         # The clock-refresh case proves the cached timestamp is refreshed after
         # the wait returns. It records the timestamp either side of the refresh
         # for the first several iterations and requires that one of them advanced
@@ -96,6 +97,7 @@ jobs:
           ./test_console_lifecycle.exe vt-mode
           ./test_console_lifecycle.exe fairness
           ./test_console_lifecycle.exe clock-refresh
+          ./test_console_lifecycle.exe graceful-shutdown
           ./test_console_lifecycle.exe transaction
           ./test_console_lifecycle.exe init-checkpoint
 

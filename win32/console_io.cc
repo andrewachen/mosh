@@ -105,6 +105,13 @@ bool valid_handle( HANDLE handle )
   return handle != NULL && handle != INVALID_HANDLE_VALUE;
 }
 
+/* These causes have an OS-enforced termination deadline that the event loop
+   cannot currently honor while completing a transport shutdown handshake. */
+bool has_termination_deadline( ShutdownCause cause )
+{
+  return cause == ShutdownCause::CTRL_CLOSE || cause == ShutdownCause::SESSION_END;
+}
+
 /* Keeps the first failure recorded into *report; later failures are dropped
    because the caller only wants to report the failure that actually broke
    restoration, not a downstream one it caused. */
@@ -575,12 +582,23 @@ public:
   ConsoleSession::ClockRefreshSample clock_samples[CLOCK_SAMPLE_CAPACITY];
   size_t clock_sample_count;
 
+  /* State for graceful shutdown: true once the loop has observed a shutdown
+     request and begun the graceful shutdown. Set exactly once on the first
+     wakeup where the termination event is signaled. */
+  bool shutdown_observed;
+  /* Whether a drain had ever emptied the input queue at the moment the loop
+     first observed a shutdown request. Sampled at that instant rather than
+     after run() returns, because the loop keeps pumping afterward and will
+     drain the queue in the normal course of shutting down. */
+  bool input_drained_at_shutdown;
+
   explicit Impl( MoshCore &core_ref )
     : core( core_ref ), original(), input_mode_set( false ), output_mode_set( false ),
       input_cp_set( false ), output_cp_set( false ), open_sequence_started( false ),
       control( NULL ), reader(), socket_events(), cols( 0 ), rows( 0 ),
       state( ConsoleLifecycleState::RUNNING ), restored_flag( false ), cleanup(),
-      clock_samples(), clock_sample_count( 0 )
+      clock_samples(), clock_sample_count( 0 ),
+      shutdown_observed( false ), input_drained_at_shutdown( false )
   {
     original.input = GetStdHandle( STD_INPUT_HANDLE );
     original.output = GetStdHandle( STD_OUTPUT_HANDLE );
@@ -825,6 +843,16 @@ public:
     return reader->signal_termination_against_backlog( control->termination, minimum );
   }
 
+  bool shutdown_observed_for_test() const
+  {
+    return shutdown_observed;
+  }
+
+  bool input_drained_at_shutdown_for_test() const
+  {
+    return input_drained_at_shutdown;
+  }
+
   size_t clock_refresh_samples( ConsoleSession::ClockRefreshSample *out,
                                 size_t capacity ) const
   {
@@ -874,17 +902,29 @@ private:
 
       socket_events->reconcile( core.socket_fds() );
       const std::map<intptr_t, WSAEVENT> &registered = socket_events->all();
-      if ( registered.size() + 2 > MAXIMUM_WAIT_OBJECTS ) {
-        throw ConsoleError( ERROR_TOO_MANY_OPEN_FILES, "too many handles for WaitForMultipleObjects" );
-      }
 
       std::vector<HANDLE> handles;
       std::vector<intptr_t> fds;
       handles.push_back( reader->event() );
-      handles.push_back( control->termination );
+      /* After the termination request has been observed, the termination handle
+         is no longer pushed into the wait set. This avoids a busy spin since the
+         manual-reset event stays signaled. Before that observation, the resize
+         poll cap bounds how long the loop can go without noticing a control event. */
+      if ( !shutdown_observed ) {
+        handles.push_back( control->termination );
+      }
+      /* Capture the base immediately after fixed handles are pushed, before sockets.
+         The socket base is the count of fixed handles, which is either 2 (reader
+         + termination) or 1 (reader only, after shutdown observed). This is the
+         number of handles that come before the socket handles in the array. */
+      const size_t socket_base = handles.size();
       for ( std::map<intptr_t, WSAEVENT>::const_iterator it = registered.begin(); it != registered.end(); ++it ) {
         handles.push_back( it->second );
         fds.push_back( it->first );
+      }
+      /* WaitForMultipleObjects accepts at most MAXIMUM_WAIT_OBJECTS handles. */
+      if ( handles.size() > MAXIMUM_WAIT_OBJECTS ) {
+        throw ConsoleError( ERROR_TOO_MANY_OPEN_FILES, "too many handles for WaitForMultipleObjects" );
       }
       const DWORD wait_timeout = static_cast<DWORD>( std::max( 0, std::min( timeout, static_cast<int>( RESIZE_POLL_CAP_MS ) ) ) );
       const DWORD result = WaitForMultipleObjects( static_cast<DWORD>( handles.size() ), &handles[0], FALSE, wait_timeout );
@@ -919,33 +959,47 @@ private:
          Upstream gets this from pselect, which reports the whole ready set.
          Sockets are the one exception: at most one readable socket is serviced
          per wakeup, because on_readable can prune the set this snapshot names. */
-      if ( WaitForSingleObject( control->termination, 0 ) == WAIT_OBJECT_0 ) {
-        break;
+      /* The termination event is only checked before shutdown has been observed.
+         Once observed, the loop continues to pump until core.is_finished() and
+         the termination handle has been dropped from the wait set. */
+      if ( !shutdown_observed && WaitForSingleObject( control->termination, 0 ) == WAIT_OBJECT_0 ) {
+        const ShutdownCause cause = control->cause.load();
+        if ( has_termination_deadline( cause ) ) {
+          break;
+        }
+        shutdown_observed = true;
+        input_drained_at_shutdown = reader->ever_drained_to_empty();
+        core.begin_shutdown();
+        state = ConsoleLifecycleState::SHUTTING_DOWN;
       }
-      /* Surface a dead reader only once termination has not claimed this wakeup,
-         so a console teardown exits cleanly instead of by exception. */
-      reader->check_failure();
+      /* A reader failure is fatal until shutdown has been accepted. Once the
+         loop is pumping the shutdown handshake, console teardown can invalidate
+         the reader before its next ReadFile completes. */
+      if ( !shutdown_observed ) {
+        reader->check_failure();
+      }
 
-      /* Upstream resize work is signal-gated and a cheap ioctl. Windows has no
-         SIGWINCH, so this unconditional synchronous console round trip stays
-         after termination to avoid shutdown work upstream never pays. */
+      /* Windows polls dimensions because it has no SIGWINCH. A dying console
+         can reject the query after shutdown begins, but that must not interrupt
+         the transport handshake. */
       CONSOLE_SCREEN_BUFFER_INFO info;
-      if ( !GetConsoleScreenBufferInfo( original.output, &info ) ) {
+      if ( GetConsoleScreenBufferInfo( original.output, &info ) ) {
+        const int new_cols = info.srWindow.Right - info.srWindow.Left + 1;
+        const int new_rows = info.srWindow.Bottom - info.srWindow.Top + 1;
+        if ( new_cols != cols || new_rows != rows ) {
+          cols = new_cols;
+          rows = new_rows;
+          core.resize( cols, rows );
+        }
+      } else if ( !shutdown_observed ) {
         throw_last_error( "GetConsoleScreenBufferInfo" );
-      }
-      const int new_cols = info.srWindow.Right - info.srWindow.Left + 1;
-      const int new_rows = info.srWindow.Bottom - info.srWindow.Top + 1;
-      if ( new_cols != cols || new_rows != rows ) {
-        cols = new_cols;
-        rows = new_rows;
-        core.resize( cols, rows );
       }
 
       for ( size_t index = 0; index < fds.size(); ++index ) {
-        if ( WaitForSingleObject( handles[index + 2], 0 ) == WAIT_OBJECT_0 ) {
+        if ( WaitForSingleObject( handles[socket_base + index], 0 ) == WAIT_OBJECT_0 ) {
           WSANETWORKEVENTS events = {};
           if ( WSAEnumNetworkEvents( static_cast<SOCKET>( fds[index] ),
-                                     handles[index + 2], &events ) == SOCKET_ERROR ) {
+                                     handles[socket_base + index], &events ) == SOCKET_ERROR ) {
             const int error = WSAGetLastError();
             throw ConsoleError( static_cast<DWORD>( error ),
                                 error_message( "WSAEnumNetworkEvents", error ) );
@@ -1010,6 +1064,16 @@ size_t ConsoleSession::input_backlog_for_test() const
 bool ConsoleSession::input_ever_drained_for_test() const
 {
   return impl->input_ever_drained();
+}
+
+bool ConsoleSession::shutdown_observed_for_test() const
+{
+  return impl->shutdown_observed_for_test();
+}
+
+bool ConsoleSession::input_drained_at_shutdown_for_test() const
+{
+  return impl->input_drained_at_shutdown_for_test();
 }
 
 size_t ConsoleSession::input_budget_bytes()

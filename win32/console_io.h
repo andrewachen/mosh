@@ -151,15 +151,16 @@ public:
 
   /* Main event loop. Per wakeup it:
        - refreshes the cached timestamp after the wait returns
-       - services termination
+       - services termination (calls begin_shutdown() once when observed)
        - polls for a resize
        - at most one readable socket
        - one bounded input chunk
        - writes any pending frame
-     Does NOT call begin_shutdown().
+     The loop continues until core.is_finished() returns true. A shutdown
+     request begins a graceful shutdown: begin_shutdown() is called once and
+     the loop keeps pumping so the transport can complete its shutdown handshake.
 
-     Returns when the termination re-test observes the termination event, or
-     when core.is_finished() is true after core.tick() at the top of an
+     Returns when core.is_finished() is true after core.tick() at the top of an
      iteration. Restores the console on every exit path, normal or
      exceptional, before returning or propagating.
 
@@ -186,6 +187,16 @@ public:
      itself rather than an end state, so it cannot be confused by whatever the
      queue happens to hold when run() returns. */
   bool input_ever_drained_for_test() const;
+  /* True once the event loop has observed a shutdown request and begun the
+     graceful shutdown. Read only after run() returns; this value is written by
+     run() without synchronization. */
+  bool shutdown_observed_for_test() const;
+  /* Whether a drain had ever emptied the input queue at the moment the loop
+     first observed a shutdown request. Sampled at that instant rather than
+     after run() returns, because the loop keeps pumping afterward and will
+     drain the queue in the normal course of shutting down. Read only after
+     run() returns; this value is written by run() without synchronization. */
+  bool input_drained_at_shutdown_for_test() const;
   /* One per event-loop iteration: the cached timestamp as the wait ended
      (tick_ts, still the value core.tick() froze before the wait) and the cached
      timestamp after core.refresh_clock() (dispatch_ts, what every source
