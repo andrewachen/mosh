@@ -89,6 +89,18 @@ public:
      large sentinel if none — the host treats it as an effectively infinite wait. */
   int tick();
 
+  /* Refreshes mosh's process-wide cached timestamp. The host calls this after its
+     wait returns and before dispatching any ready source, so transport timing sees
+     when the event arrived rather than when the wait began. tick() is the
+     before-the-wait counterpart. */
+  void refresh_clock();
+
+  /* The cached timestamp itself, in milliseconds. Lets a host read the clock it
+     is driving without reaching into the engine's timestamp header. Priming the
+     cache is a side effect if nothing has frozen it yet, so this is not purely
+     an observer; the constructor freezes once, which makes that moot in practice. */
+  uint64_t cached_timestamp() const;
+
   /* Lifecycle / status. */
   void begin_shutdown();     /* user- or host-requested graceful shutdown */
   bool is_finished() const;  /* true on clean shutdown, remote exit, or timeout */

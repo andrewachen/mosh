@@ -40,6 +40,7 @@
 #include <ws2tcpip.h>
 #include "mosh_core.h"
 #include <windows.h>
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -75,10 +76,14 @@ public:
   ConsoleSession( const ConsoleSession & ) = delete;
   ConsoleSession &operator=( const ConsoleSession & ) = delete;
 
-  /* Main event loop. Fairness-only: per wakeup it services termination, then
-     polls for a resize, then at most one readable socket, then one bounded
-     input chunk, then writes any pending frame. Does NOT call
-     begin_shutdown().
+  /* Main event loop. Fairness-only: per wakeup it:
+       - refreshes the cached timestamp after the wait returns
+       - services termination
+       - polls for a resize
+       - at most one readable socket
+       - one bounded input chunk
+       - writes any pending frame
+     Does NOT call begin_shutdown().
 
      Returns when the termination re-test observes the termination event, or
      when core.is_finished() is true after core.tick() at the top of an
@@ -92,12 +97,27 @@ public:
      what callers should catch. */
   void run();
 
-  /* Test-only accessors for the event-loop fairness harness. */
+  /* Test-only accessors for the event-loop acceptance harness. */
   size_t input_backlog_for_test() const;
   /* True if a drain ever left the input queue empty. Records the drain event
      itself rather than an end state, so it cannot be confused by whatever the
      queue happens to hold when run() returns. */
   bool input_ever_drained_for_test() const;
+  /* One per event-loop iteration: the cached timestamp as the wait ended
+     (tick_ts, still the value core.tick() froze before the wait) and the cached
+     timestamp after core.refresh_clock() (dispatch_ts, what every source
+     dispatched this iteration sees). A loop that never refreshes leaves the two
+     equal on every iteration. */
+  struct ClockRefreshSample {
+    uint64_t tick_ts;
+    uint64_t dispatch_ts;
+  };
+  /* Copies up to `capacity` samples into `out` and returns how many were
+     written. Recording stops at a fixed capacity, so these are the first
+     iterations. The caller must not run this concurrently with run(): unlike the
+     accessors above it takes no lock, because the samples are written from
+     inside run() without one. */
+  size_t clock_refresh_samples_for_test( ClockRefreshSample *out, size_t capacity ) const;
   static size_t input_budget_bytes();
   /* Holds the reader queue mutex across both the backlog check and the
      termination signal, so the backlog is read consistently against a queue the

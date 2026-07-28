@@ -417,6 +417,16 @@ int MoshCore::tick()
   return wait_time;
 }
 
+void MoshCore::refresh_clock()
+{
+  freeze_timestamp();
+}
+
+uint64_t MoshCore::cached_timestamp() const
+{
+  return frozen_timestamp();
+}
+
 void MoshCore::begin_shutdown()
 {
   impl->begin_shutdown();

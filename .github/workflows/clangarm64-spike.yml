@@ -64,10 +64,9 @@ jobs:
 
       - name: Build and run console lifecycle test
         shell: msys2 {0}
-        # Covers the build plus both modes. Fairness backlog establishment is
-        # bounded at 5s and run() is then bounded by a 10s watchdog, so the mode
-        # cannot outlast 15s plus its diagnostic; this cap leaves the build room
-        # on top of that.
+        # Covers the build plus three modes. Fairness backlog establishment is
+        # bounded at 5s and run() is then bounded by a 10s watchdog. Clock-refresh
+        # uses the same watchdog bound. This cap leaves the build room on top.
         timeout-minutes: 5
         # A bounded native test drives console_raw_enter/console_raw_restore on
         # the inherited console (repointed at CONOUT$/CONIN$ via SetStdHandle,
@@ -81,10 +80,18 @@ jobs:
         # event goes quiet and termination wins an idle wakeup instead of a
         # contested one, which the drain-flag post-condition rejects; the fair
         # per-wakeup dispatch returns with the backlog still intact.
+        # The clock-refresh case proves the cached timestamp is refreshed after
+        # the wait returns. It records the timestamp either side of the refresh
+        # for the first several iterations and requires that one of them advanced
+        # it. A loop that only freezes at the top of the iteration leaves the two
+        # exactly equal, which is what this rejects. That the refresh also
+        # precedes every dispatch is a property of where the call sits, which
+        # this cannot observe -- code review has to hold that line.
         run: |
           make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" test_console_lifecycle
           ./test_console_lifecycle.exe vt-mode
           ./test_console_lifecycle.exe fairness
+          ./test_console_lifecycle.exe clock-refresh
 
       - name: Verify mosh.exe is a native ARM64 PE
         shell: msys2 {0}

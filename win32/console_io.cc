@@ -38,6 +38,7 @@
 #include <algorithm>
 #include <atomic>
 #include <climits>
+#include <cstdint>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -47,6 +48,9 @@
 
 namespace {
 const DWORD RESIZE_POLL_CAP_MS = 100;
+/* Capacity of the clock-refresh sample buffer. Recording stops at this many
+   iterations; it does not wrap, so the samples are always the first ones. */
+const size_t CLOCK_SAMPLE_CAPACITY = 64;
 const size_t READ_BUFFER_SIZE = 4096;
 const size_t INPUT_BUDGET_BYTES = 65536;
 /* Bound retained paste data while leaving room for several large terminal pastes. */
@@ -571,12 +575,19 @@ public:
   int cols;
   int rows;
 
+  /* Per-iteration clock samples for the clock-refresh test. Written from inside
+     run() without a lock, so the accessor's contract forbids reading them while
+     run() is executing. */
+  ConsoleSession::ClockRefreshSample clock_samples[CLOCK_SAMPLE_CAPACITY];
+  size_t clock_sample_count;
+
   Impl( MoshCore &core_ref, const ConsoleState &cs )
     : core( core_ref ), state( cs ),
       termination_guard(),
       socket_events( core_ref ),
       reader( cs.h_in ),
-      cols( 0 ), rows( 0 )
+      cols( 0 ), rows( 0 ),
+      clock_samples(), clock_sample_count( 0 )
   {
     CONSOLE_SCREEN_BUFFER_INFO initial_info;
     if ( !GetConsoleScreenBufferInfo( state.h_out, &initial_info ) ) {
@@ -601,6 +612,16 @@ public:
   {
     return reader.signal_termination_against_backlog(
       termination_guard.handle(), minimum );
+  }
+
+  size_t clock_refresh_samples( ConsoleSession::ClockRefreshSample *out,
+                                size_t capacity ) const
+  {
+    const size_t count = std::min( capacity, clock_sample_count );
+    for ( size_t i = 0; i < count; ++i ) {
+      out[i] = clock_samples[i];
+    }
+    return count;
   }
 
   void run()
@@ -632,6 +653,22 @@ public:
       }
       if ( result != WAIT_TIMEOUT && ( result < WAIT_OBJECT_0 || result >= WAIT_OBJECT_0 + handles.size() ) ) {
         throw ConsoleError( ERROR_INVALID_HANDLE, "WaitForMultipleObjects returned an invalid result" );
+      }
+
+      /* Refresh the cached timestamp after the wait returns and before dispatching
+         any source, so transport timing sees when the event arrived rather than
+         when the wait began. The wait blocks for up to RESIZE_POLL_CAP_MS, so
+         dispatching on the pre-wait timestamp would backdate inbound packets and
+         understate RTT. Upstream does the same at src/util/select.h:186, where
+         Select::select() freezes the timestamp after pselect() returns. */
+      const uint64_t tick_ts = core.cached_timestamp();
+      core.refresh_clock();
+
+      if ( clock_sample_count < CLOCK_SAMPLE_CAPACITY ) {
+        ConsoleSession::ClockRefreshSample &sample = clock_samples[clock_sample_count];
+        sample.tick_ts = tick_ts;
+        sample.dispatch_ts = core.cached_timestamp();
+        ++clock_sample_count;
       }
 
       /* WaitForMultipleObjects reports one winner rather than every ready
@@ -723,4 +760,9 @@ size_t ConsoleSession::input_budget_bytes()
 bool ConsoleSession::signal_termination_against_backlog_for_test( size_t minimum )
 {
   return impl->signal_termination_against_backlog( minimum );
+}
+
+size_t ConsoleSession::clock_refresh_samples_for_test( ClockRefreshSample *out, size_t capacity ) const
+{
+  return impl->clock_refresh_samples( out, capacity );
 }

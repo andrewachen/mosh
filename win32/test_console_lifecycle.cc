@@ -31,7 +31,7 @@
 */
 
 /* ABOUTME: Acceptance harness for the native Windows console lifecycle, run on the inherited console. */
-/* ABOUTME: Modes: vt-mode asserts raw enter/restore output flags; fairness proves termination wins a contested wakeup. */
+/* ABOUTME: Modes: vt-mode asserts raw enter/restore output flags; fairness proves termination wins a contested wakeup; clock-refresh proves the timestamp refreshes after the wait. */
 
 #include <atomic>
 #include <cstdio>
@@ -224,9 +224,11 @@ private:
 class WatchdogGuard {
 public:
   WatchdogGuard( HANDLE session_done, HANDLE deadline_start,
-                 const std::atomic<ULONGLONG> *deadline_at, ConsoleTestScope *scope )
+                 const std::atomic<ULONGLONG> *deadline_at, ConsoleTestScope *scope,
+                 DWORD deadline_ms )
     : session_done_( session_done ),
-      thread_( &WatchdogGuard::watch, session_done, deadline_start, deadline_at, scope )
+      thread_( &WatchdogGuard::watch, session_done, deadline_start, deadline_at, scope,
+               deadline_ms )
   {}
   ~WatchdogGuard()
   {
@@ -243,7 +245,8 @@ public:
   WatchdogGuard &operator=( const WatchdogGuard & ) = delete;
 private:
   static void watch( HANDLE session_done, HANDLE deadline_start,
-                     const std::atomic<ULONGLONG> *deadline_at, ConsoleTestScope *scope )
+                     const std::atomic<ULONGLONG> *deadline_at, ConsoleTestScope *scope,
+                     DWORD deadline_ms )
   {
     HANDLE handles[] = { deadline_start, session_done };
     const DWORD start_result = WaitForMultipleObjects( 2, handles, FALSE, INFINITE );
@@ -275,10 +278,8 @@ private:
       return;
     }
     if ( wait_result == WAIT_TIMEOUT ) {
-      fprintf( stderr,
-               "FAIL: session.run() did not return within %lums although "
-               "termination was signaled before it was entered\n",
-               FAIRNESS_DEADLINE_MS );
+      fprintf( stderr, "FAIL: session.run() did not return within %lums\n",
+               deadline_ms );
     } else {
       fprintf( stderr,
                "fatal: WaitForSingleObject(session_done) failed "
@@ -347,7 +348,8 @@ static int run_fairness()
      wrong is silent: the event handles would close before
      ~WatchdogGuard signalled them, leaving its thread parked on an INFINITE
      wait and join() blocking until CI kills the step with no diagnostic. */
-  WatchdogGuard watchdog( session_done.get(), deadline_start.get(), &deadline_at, &scope );
+  WatchdogGuard watchdog( session_done.get(), deadline_start.get(), &deadline_at, &scope,
+                          FAIRNESS_DEADLINE_MS );
 
   /* Establish the backlog synchronously before run() is entered. */
   const size_t minimum = ConsoleSession::input_budget_bytes() + 1;
@@ -444,6 +446,173 @@ static int run_fairness()
   return 0;
 }
 
+/* Hang bound for the clock-refresh mode, generous for the same reason as the
+   fairness deadline: it exists to stop a wedge, not to time anything. */
+static const DWORD CLOCK_REFRESH_DEADLINE_MS = 10000;
+/* How long the loop is left running before termination is signaled. Each wait is
+   capped at RESIZE_POLL_CAP_MS, so this window holds many iterations. */
+static const DWORD CLOCK_REFRESH_RUN_MS = 1000;
+/* Matches the recording capacity inside ConsoleSession; a short read is fine. */
+static const size_t CLOCK_REFRESH_SAMPLE_CAPACITY = 64;
+
+/* Ends run() from a second thread once the loop has had time to turn over
+   several waits. It shares nothing with the test thread but the session pointer
+   and a cancel event, and contributes nothing to the verdict, so it carries none
+   of the attribution problems a thread that raced run() would. Signaling against
+   a zero minimum asks only for the termination event: this mode deliberately
+   leaves the input queue empty. */
+class TerminationTimerGuard {
+public:
+  TerminationTimerGuard( ConsoleSession *session, HANDLE cancel, DWORD delay_ms )
+    : cancel_( cancel ),
+      thread_( &TerminationTimerGuard::fire, session, cancel, delay_ms )
+  {}
+  ~TerminationTimerGuard()
+  {
+    stop();
+  }
+  void stop()
+  {
+    SetEvent( cancel_ );
+    if ( thread_.joinable() ) {
+      thread_.join();
+    }
+  }
+  TerminationTimerGuard( const TerminationTimerGuard & ) = delete;
+  TerminationTimerGuard &operator=( const TerminationTimerGuard & ) = delete;
+private:
+  static void fire( ConsoleSession *session, HANDLE cancel, DWORD delay_ms )
+  {
+    if ( WaitForSingleObject( cancel, delay_ms ) != WAIT_TIMEOUT ) {
+      return;
+    }
+    session->signal_termination_against_backlog_for_test( 0 );
+  }
+
+  HANDLE cancel_;
+  std::thread thread_;
+};
+
+/* Clock-refresh test: proves the event loop refreshes mosh's cached timestamp
+   after its wait returns and before dispatching any source. Upstream gets this
+   from Select::select(), which freezes the timestamp after pselect() returns; a
+   loop that only freezes at the top of the iteration dispatches on a timestamp
+   as old as the wait it just finished, backdating inbound packets by up to
+   RESIZE_POLL_CAP_MS and understating RTT.
+
+   Without the refresh, core.tick()'s freeze is the last thing to touch the clock
+   before dispatch, so dispatch_ts equals tick_ts exactly on every iteration.
+   Nothing between the two — socket reconciliation, the handle vector, the wait
+   itself — freezes the timestamp. The assertion is therefore that some iteration
+   advanced the clock at all, with no threshold and no reference to how long any
+   wait ran: a duration test would measure the scheduler, and the defect it has
+   to catch produces an exact zero rather than a small number.
+
+   This mode establishes no input backlog and signals no termination up front, so
+   the reader event stays quiet. Whether a wait then blocks long enough to cross
+   a millisecond depends on the timeout mosh's transport asks for, which this
+   harness does not control; if no iteration advances the clock the mode fails and
+   names that outcome without claiming which cause produced it. */
+static int run_clock_refresh()
+{
+  ConsoleTestScope scope;
+
+  ConsoleState saved;
+  console_raw_enter( &saved );
+
+  TestServer server( 80, 24 );
+  MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
+                 80, 24, "never" );
+
+  UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  if ( session_done.get() == NULL ) {
+    fprintf( stderr, "fatal: CreateEvent(session_done) failed (GetLastError=%lu)\n",
+             GetLastError() );
+    return 1;
+  }
+  UniqueHandle deadline_start( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  if ( deadline_start.get() == NULL ) {
+    fprintf( stderr, "fatal: CreateEvent(deadline_start) failed (GetLastError=%lu)\n",
+             GetLastError() );
+    return 1;
+  }
+
+  UniqueHandle timer_cancel( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  if ( timer_cancel.get() == NULL ) {
+    fprintf( stderr, "fatal: CreateEvent(timer_cancel) failed (GetLastError=%lu)\n",
+             GetLastError() );
+    return 1;
+  }
+
+  auto session = std::make_unique<ConsoleSession>( core, saved );
+  std::atomic<ULONGLONG> deadline_at( 0 );
+
+  /* Between them the two guards own threads that reach back into `scope`,
+     `deadline_at`, and all three event handles (watchdog), and into `session`
+     and `timer_cancel` (timer). Locals are destroyed in reverse order and both
+     destructors join, so every one of those must stay declared ABOVE the guards.
+     Locals declared below them are safe; neither thread touches those. */
+  WatchdogGuard watchdog( session_done.get(), deadline_start.get(), &deadline_at, &scope,
+                          CLOCK_REFRESH_DEADLINE_MS );
+  TerminationTimerGuard timer( session.get(), timer_cancel.get(),
+                               CLOCK_REFRESH_RUN_MS );
+
+  int thrown = 0;
+  try {
+    deadline_at.store( GetTickCount64() + CLOCK_REFRESH_DEADLINE_MS );
+    must( SetEvent( deadline_start.get() ), "SetEvent(deadline_start)" );
+    session->run();
+  } catch ( const std::exception &e ) {
+    fprintf( stderr, "FAIL: session.run() threw: %s\n", e.what() );
+    thrown = 1;
+  } catch ( ... ) {
+    fprintf( stderr, "FAIL: session.run() threw a non-standard exception\n" );
+    thrown = 1;
+  }
+  must( SetEvent( session_done.get() ), "SetEvent(session_done)" );
+  timer.stop();
+  watchdog.stop();
+
+  if ( thrown ) {
+    return 1;
+  }
+
+  ConsoleSession::ClockRefreshSample samples[CLOCK_REFRESH_SAMPLE_CAPACITY];
+  const size_t count =
+    session->clock_refresh_samples_for_test( samples, CLOCK_REFRESH_SAMPLE_CAPACITY );
+  if ( count == 0 ) {
+    fprintf( stderr, "FAIL: run() recorded no event-loop iterations\n" );
+    return 1;
+  }
+
+  uint64_t widest_advance = 0;
+  for ( size_t i = 0; i < count; ++i ) {
+    const ConsoleSession::ClockRefreshSample &sample = samples[i];
+    if ( sample.dispatch_ts < sample.tick_ts ) {
+      fprintf( stderr,
+               "FAIL: iteration %zu ran the cached timestamp backwards "
+               "(tick_ts=%llu dispatch_ts=%llu)\n",
+               i, (unsigned long long)sample.tick_ts,
+               (unsigned long long)sample.dispatch_ts );
+      return 1;
+    }
+    const uint64_t advance = sample.dispatch_ts - sample.tick_ts;
+    if ( advance > widest_advance ) {
+      widest_advance = advance;
+    }
+  }
+
+  if ( widest_advance == 0 ) {
+    fprintf( stderr,
+             "FAIL: none of %zu event-loop iterations advanced the cached "
+             "timestamp across the wait; every source was dispatched on the "
+             "timestamp core.tick() froze before it\n",
+             count );
+    return 1;
+  }
+  return 0;
+}
+
 int main( int argc, char *argv[] )
 {
   if ( argc < 2 ) {
@@ -457,6 +626,9 @@ int main( int argc, char *argv[] )
     }
     if ( strcmp( argv[1], "fairness" ) == 0 ) {
       return run_fairness();
+    }
+    if ( strcmp( argv[1], "clock-refresh" ) == 0 ) {
+      return run_clock_refresh();
     }
   } catch ( const std::exception &e ) {
     fprintf( stderr, "FAIL: uncaught exception: %s\n", e.what() );
