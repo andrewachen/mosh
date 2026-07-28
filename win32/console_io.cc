@@ -46,6 +46,11 @@
 
 namespace {
 const DWORD RESIZE_POLL_CAP_MS = 100;
+const DWORD DEFAULT_HUNG_APP_TIMEOUT_MS = 5000;
+/* This engineering reserve leaves 500 ms for a handful of console restoration
+   calls; it is not a timeout promised by Windows. */
+const DWORD RESTORE_RESERVE_MS = 500;
+const ULONGLONG NO_TERMINATION_DEADLINE = 0;
 /* Capacity of the clock-refresh sample buffer. Recording stops at this many
    iterations; it does not wrap, so the samples are always the first ones. */
 const size_t CLOCK_SAMPLE_CAPACITY = 64;
@@ -65,6 +70,8 @@ struct ShutdownControl {
   HANDLE termination;
   HANDLE restored;
   std::atomic<ShutdownCause> cause;
+  std::atomic<ULONGLONG> deadline;
+  DWORD hung_app_timeout_ms;
 };
 
 /* Published once setup allocates both events, cleared on every teardown path.
@@ -81,6 +88,12 @@ std::atomic<int> g_fail_after_step( -1 );
    Unlike the failure injector this does not short-circuit: setup still reaches
    the production termination checkpoint and fails there. */
 std::atomic<int> g_terminate_after_step( -1 );
+std::atomic<ConsoleReaderTestOutcome> g_reader_test_outcome( ConsoleReaderTestOutcome::NONE );
+/* Zero leaves the SystemParametersInfo result in force. */
+std::atomic<DWORD> g_shutdown_budget_override_ms( 0 );
+/* Optional test barrier reached inside the reader-stop wait. */
+std::atomic<HANDLE> g_teardown_entered( NULL );
+std::atomic<HANDLE> g_teardown_resume( NULL );
 
 /* The restored event of the most recently created control block. Readable after
    a constructor throws, when no session object survives to be asked. Safe to
@@ -110,6 +123,48 @@ bool valid_handle( HANDLE handle )
 bool has_termination_deadline( ShutdownCause cause )
 {
   return cause == ShutdownCause::CTRL_CLOSE || cause == ShutdownCause::SESSION_END;
+}
+
+int shutdown_urgency( ShutdownCause cause )
+{
+  switch ( cause ) {
+  case ShutdownCause::CTRL_CLOSE:
+    return 4;
+  case ShutdownCause::SESSION_END:
+    return 3;
+  case ShutdownCause::IO_LOSS:
+    return 2;
+  case ShutdownCause::CTRL_BREAK:
+    return 1;
+  case ShutdownCause::IN_BAND:
+    return 0;
+  }
+  return 0;
+}
+
+void publish_cause( ShutdownControl *control, ShutdownCause cause )
+{
+  ShutdownCause current = control->cause.load();
+  while ( shutdown_urgency( cause ) > shutdown_urgency( current )
+          && !control->cause.compare_exchange_weak( current, cause ) ) {}
+}
+
+void publish_shutdown( ShutdownControl *control, ShutdownCause cause )
+{
+  if ( has_termination_deadline( cause ) ) {
+    const ULONGLONG candidate = GetTickCount64() + control->hung_app_timeout_ms;
+    ULONGLONG current = control->deadline.load();
+    while ( ( current == NO_TERMINATION_DEADLINE || candidate < current )
+            && !control->deadline.compare_exchange_weak( current, candidate ) ) {}
+  }
+  publish_cause( control, cause );
+  SetEvent( control->termination );
+}
+
+DWORD deadline_remaining( ULONGLONG deadline )
+{
+  const ULONGLONG now = GetTickCount64();
+  return now >= deadline ? 0 : static_cast<DWORD>( deadline - now );
 }
 
 /* Keeps the first failure recorded into *report; later failures are dropped
@@ -177,7 +232,8 @@ private:
   HANDLE worker;
   std::mutex failure_mutex;
   DWORD failure_code;
-  bool failed;
+  bool input_ended;
+  bool read_failed;
 
   void append_utf8( std::string &output, unsigned int codepoint )
   {
@@ -278,6 +334,23 @@ private:
 
   void read_loop()
   {
+    const ConsoleReaderTestOutcome injected = g_reader_test_outcome.load();
+    if ( injected == ConsoleReaderTestOutcome::END_OF_INPUT
+         || injected == ConsoleReaderTestOutcome::READ_FAILURE ) {
+      std::lock_guard<std::mutex> lock( failure_mutex );
+      input_ended = true;
+      read_failed = injected == ConsoleReaderTestOutcome::READ_FAILURE;
+      failure_code = read_failed ? ERROR_READ_FAULT : ERROR_SUCCESS;
+      SetEvent( ready_event );
+      return;
+    }
+    if ( injected == ConsoleReaderTestOutcome::NONTERMINATING ) {
+      SetEvent( ready_event );
+      while ( true ) {
+        Sleep( 100 );
+      }
+    }
+
     char bytes[READ_BUFFER_SIZE];
     std::string pending;
     while ( !stopping.load() ) {
@@ -289,12 +362,20 @@ private:
         }
         std::lock_guard<std::mutex> lock( failure_mutex );
         failure_code = error;
-        failed = true;
+        input_ended = true;
+        read_failed = true;
         SetEvent( ready_event );
         break;
       }
       if ( read == 0 ) {
-        continue;
+        /* Raw console reads are documented to wait for a character, but a
+           successful zero-byte result is not defined. Treat it as end of input:
+           graceful teardown is safer than a potentially unbounded retry spin. */
+        std::lock_guard<std::mutex> lock( failure_mutex );
+        input_ended = true;
+        read_failed = false;
+        SetEvent( ready_event );
+        break;
       }
       std::string converted = recombine_cesu8( bytes, read, pending );
       while ( !converted.empty() && !stopping.load() ) {
@@ -321,7 +402,7 @@ public:
   explicit Reader( HANDLE h_in )
     : input( NULL ), ready_event( CreateEvent( NULL, FALSE, FALSE, NULL ) ),
       stopping( false ), drained_to_empty( false ), worker( NULL ),
-      failure_code( ERROR_SUCCESS ), failed( false )
+      failure_code( ERROR_SUCCESS ), input_ended( false ), read_failed( false )
   {
     if ( ready_event == NULL ) {
       throw_last_error( "CreateEvent for console input" );
@@ -368,12 +449,16 @@ public:
     return bytes;
   }
 
-  void check_failure()
+  bool has_ended()
   {
     std::lock_guard<std::mutex> lock( failure_mutex );
-    if ( failed ) {
-      throw ConsoleError( failure_code, error_message( "ReadFile console input", failure_code ) );
-    }
+    return input_ended;
+  }
+
+  DWORD error()
+  {
+    std::lock_guard<std::mutex> lock( failure_mutex );
+    return read_failed ? failure_code : ERROR_SUCCESS;
   }
 
   size_t pending_bytes() const
@@ -402,24 +487,68 @@ public:
     return ok;
   }
 
-  void stop()
+  void cancel_without_join() noexcept
   {
     if ( worker != NULL ) {
       stopping.store( true );
-      while ( WaitForSingleObject( worker, 100 ) == WAIT_TIMEOUT ) {
-        CancelSynchronousIo( worker );
-        HANDLE handle = input.exchange( NULL );
-        if ( handle != NULL ) {
-          CloseHandle( handle );
-        }
-      }
+      CancelSynchronousIo( worker );
       HANDLE handle = input.exchange( NULL );
       if ( handle != NULL ) {
         CloseHandle( handle );
       }
-      CloseHandle( worker );
-      worker = NULL;
     }
+  }
+
+  void stop_until_deadline( const std::atomic<ULONGLONG> *deadline )
+  {
+    if ( worker == NULL ) {
+      return;
+    }
+    stopping.store( true );
+    while ( true ) {
+      const ULONGLONG active_deadline = deadline == NULL
+        ? NO_TERMINATION_DEADLINE : deadline->load();
+      const DWORD remaining = active_deadline == NO_TERMINATION_DEADLINE
+        ? RESIZE_POLL_CAP_MS : deadline_remaining( active_deadline );
+      if ( active_deadline != NO_TERMINATION_DEADLINE && remaining == 0 ) {
+        return;
+      }
+      const DWORD wait_timeout = std::min<DWORD>( RESIZE_POLL_CAP_MS, remaining );
+      if ( WaitForSingleObject( worker, wait_timeout ) != WAIT_TIMEOUT ) {
+        break;
+      }
+      const HANDLE teardown_entered = g_teardown_entered.load();
+      if ( teardown_entered != NULL ) {
+        SetEvent( teardown_entered );
+        const HANDLE teardown_resume = g_teardown_resume.load();
+        if ( teardown_resume != NULL ) {
+          WaitForSingleObject( teardown_resume, RESIZE_POLL_CAP_MS );
+        }
+      }
+      CancelSynchronousIo( worker );
+      HANDLE handle = input.exchange( NULL );
+      if ( handle != NULL ) {
+        CloseHandle( handle );
+      }
+      if ( deadline != NULL && deadline->load() != NO_TERMINATION_DEADLINE ) {
+        return;
+      }
+    }
+    HANDLE handle = input.exchange( NULL );
+    if ( handle != NULL ) {
+      CloseHandle( handle );
+    }
+    CloseHandle( worker );
+    worker = NULL;
+  }
+
+  /* The destructor's unbounded join is intentional: release_and_signal() signals
+     restored before deadline teardown leaves a wedged worker non-NULL, so the
+     console is already available to mosh.exe and the harness must release such
+     sessions instead of unwinding them. */
+  void stop()
+  {
+    stop_until_deadline( NULL );
   }
 };
 
@@ -498,8 +627,14 @@ BOOL WINAPI console_control_handler( DWORD type )
      a single null-checked local is all the safety this needs. */
   ShutdownControl *control = g_shutdown_control.load();
   if ( control != NULL ) {
-    control->cause.store( cause );
-    SetEvent( control->termination );
+    publish_shutdown( control, cause );
+    if ( has_termination_deadline( cause ) ) {
+      const ULONGLONG deadline = control->deadline.load();
+      const DWORD wait = deadline_remaining( deadline );
+      if ( wait != 0 ) {
+        WaitForSingleObject( control->restored, wait );
+      }
+    }
   }
   return TRUE;
 }
@@ -514,10 +649,30 @@ void console_test_signal_termination_after( ConsoleSetupStep step )
   g_terminate_after_step.store( static_cast<int>( step ) );
 }
 
+void console_test_set_reader_outcome( ConsoleReaderTestOutcome outcome )
+{
+  g_reader_test_outcome.store( outcome );
+}
+
+void console_test_set_shutdown_budget( DWORD budget_ms )
+{
+  g_shutdown_budget_override_ms.store( budget_ms );
+}
+
+void console_test_pause_teardown( HANDLE entered, HANDLE resume )
+{
+  g_teardown_entered.store( entered );
+  g_teardown_resume.store( resume );
+}
+
 void console_test_clear_setup_injections()
 {
   g_fail_after_step.store( -1 );
   g_terminate_after_step.store( -1 );
+  g_reader_test_outcome.store( ConsoleReaderTestOutcome::NONE );
+  g_shutdown_budget_override_ms.store( 0 );
+  g_teardown_entered.store( NULL );
+  g_teardown_resume.store( NULL );
 }
 
 HANDLE console_test_last_restored_event()
@@ -586,6 +741,7 @@ public:
      request and begun the graceful shutdown. Set exactly once on the first
      wakeup where the termination event is signaled. */
   bool shutdown_observed;
+  bool output_available;
   /* Whether a drain had ever emptied the input queue at the moment the loop
      first observed a shutdown request. Sampled at that instant rather than
      after run() returns, because the loop keeps pumping afterward and will
@@ -598,7 +754,8 @@ public:
       control( NULL ), reader(), socket_events(), cols( 0 ), rows( 0 ),
       state( ConsoleLifecycleState::RUNNING ), restored_flag( false ), cleanup(),
       clock_samples(), clock_sample_count( 0 ),
-      shutdown_observed( false ), input_drained_at_shutdown( false )
+      shutdown_observed( false ), output_available( true ),
+      input_drained_at_shutdown( false )
   {
     original.input = GetStdHandle( STD_INPUT_HANDLE );
     original.output = GetStdHandle( STD_OUTPUT_HANDLE );
@@ -642,6 +799,17 @@ public:
       throw_last_error( "CreateEvent for console restored" );
     }
     control->cause.store( ShutdownCause::IN_BAND );
+    control->deadline.store( NO_TERMINATION_DEADLINE );
+    UINT timeout = 0;
+    if ( !SystemParametersInfo( SPI_GETHUNGAPPTIMEOUT, 0, &timeout, 0 ) ) {
+      /* HandlerRoutine's timeout table lists 5000 ms for CTRL_CLOSE_EVENT. */
+      timeout = DEFAULT_HUNG_APP_TIMEOUT_MS;
+    }
+    /* A successful query is authoritative even below RESTORE_RESERVE_MS. Such a
+       policy leaves no pumping interval, so teardown starts immediately rather
+       than extending the OS budget with a frontend minimum. */
+    const DWORD injected_budget = g_shutdown_budget_override_ms.load();
+    control->hung_app_timeout_ms = injected_budget != 0 ? injected_budget : timeout;
     g_last_restored_event.store( control->restored );
 
     /* Publish before registering. A control event delivered in the gap between
@@ -733,21 +901,27 @@ public:
      has any effect. noexcept because a control handler is blocked on restored
      and an exception escaping here would strand it.
 
-     The reader stops first: restore() returns the console to cooked input, and a
-     worker still blocked in ReadFile on CONIN$ could otherwise swallow typeahead
-     after the console has been declared restored. */
+     Without a deadline the reader stops before cooked input is restored, so it
+     cannot swallow later typeahead. A deadline reverses that order and skips the
+     close-sequence write: restoring the dying console takes precedence over an
+     unbounded reader join or output write. Each potentially blocking operation
+     re-reads the deadline because a close event may arrive during teardown. */
   void release_and_signal() noexcept
   {
     if ( restored_flag ) {
       return;
     }
     restored_flag = true;
-    if ( reader ) {
-      reader->stop();
+    if ( reader && control->deadline.load() == NO_TERMINATION_DEADLINE ) {
+      reader->stop_until_deadline( &control->deadline );
     }
     cleanup = restore();
     state = ConsoleLifecycleState::RESTORED;
     SetEvent( control->restored );
+    cleanup.reader_error = reader ? reader->error() : ERROR_SUCCESS;
+    if ( reader && control->deadline.load() != NO_TERMINATION_DEADLINE ) {
+      reader->cancel_without_join();
+    }
     SetConsoleCtrlHandler( console_control_handler, FALSE );
     g_shutdown_control.store( NULL );
   }
@@ -792,8 +966,9 @@ public:
      no-op) and safe to call more than once. */
   CleanupReport restore() noexcept
   {
-    CleanupReport report = { ERROR_SUCCESS, CLEANUP_OP_NONE };
-    if ( open_sequence_started ) {
+    CleanupReport report = { ERROR_SUCCESS, CLEANUP_OP_NONE, ERROR_SUCCESS };
+    if ( open_sequence_started
+         && control->deadline.load() == NO_TERMINATION_DEADLINE ) {
       record_cleanup_failure( &report,
         write_all_noexcept( original.output, core.close_sequence(), &report, CLEANUP_OP_CLOSE_SEQUENCE ),
         CLEANUP_OP_CLOSE_SEQUENCE );
@@ -848,6 +1023,11 @@ public:
     return shutdown_observed;
   }
 
+  ULONGLONG termination_deadline_for_test() const
+  {
+    return control->deadline.load();
+  }
+
   bool input_drained_at_shutdown_for_test() const
   {
     return input_drained_at_shutdown;
@@ -872,8 +1052,7 @@ public:
      reader, or console state stays on the thread inside run(). */
   void request_shutdown( ShutdownCause cause )
   {
-    control->cause.store( cause );
-    SetEvent( control->termination );
+    publish_shutdown( control, cause );
   }
 
   void run()
@@ -888,6 +1067,25 @@ public:
   }
 
 private:
+  void begin_graceful_shutdown( ShutdownCause cause )
+  {
+    if ( shutdown_observed ) {
+      return;
+    }
+    publish_cause( control, cause );
+    shutdown_observed = true;
+    input_drained_at_shutdown = reader->ever_drained_to_empty();
+    core.begin_shutdown();
+    state = ConsoleLifecycleState::SHUTTING_DOWN;
+  }
+
+  bool restoration_reserve_reached() const
+  {
+    const ULONGLONG deadline = control->deadline.load();
+    return deadline != NO_TERMINATION_DEADLINE
+      && deadline_remaining( deadline ) <= RESTORE_RESERVE_MS;
+  }
+
   /* The exact sequence run() and the destructor both need on every exit path:
      restore, mark RESTORED, then unconditionally signal restored. A control
      handler blocks on this event, so nothing that can throw or allocate may
@@ -895,6 +1093,9 @@ private:
   void run_loop()
   {
     while ( true ) {
+      if ( restoration_reserve_reached() ) {
+        break;
+      }
       const int timeout = core.tick();
       if ( core.is_finished() ) {
         break;
@@ -926,7 +1127,13 @@ private:
       if ( handles.size() > MAXIMUM_WAIT_OBJECTS ) {
         throw ConsoleError( ERROR_TOO_MANY_OPEN_FILES, "too many handles for WaitForMultipleObjects" );
       }
-      const DWORD wait_timeout = static_cast<DWORD>( std::max( 0, std::min( timeout, static_cast<int>( RESIZE_POLL_CAP_MS ) ) ) );
+      DWORD wait_timeout = static_cast<DWORD>( std::max( 0, std::min( timeout, static_cast<int>( RESIZE_POLL_CAP_MS ) ) ) );
+      const ULONGLONG active_deadline = control->deadline.load();
+      if ( active_deadline != NO_TERMINATION_DEADLINE ) {
+        const DWORD remaining = deadline_remaining( active_deadline );
+        wait_timeout = remaining <= RESTORE_RESERVE_MS
+          ? 0 : std::min( wait_timeout, remaining - RESTORE_RESERVE_MS );
+      }
       const DWORD result = WaitForMultipleObjects( static_cast<DWORD>( handles.size() ), &handles[0], FALSE, wait_timeout );
       if ( result == WAIT_FAILED ) {
         throw_last_error( "WaitForMultipleObjects" );
@@ -959,40 +1166,37 @@ private:
          Upstream gets this from pselect, which reports the whole ready set.
          Sockets are the one exception: at most one readable socket is serviced
          per wakeup, because on_readable can prune the set this snapshot names. */
-      /* The termination event is only checked before shutdown has been observed.
-         Once observed, the loop continues to pump until core.is_finished() and
-         the termination handle has been dropped from the wait set. */
+      /* The termination handle leaves the wait set after first observation, so
+         deadline escalation is re-read explicitly. RESIZE_POLL_CAP_MS bounds the
+         delay before a close request tightens an already-running shutdown. */
       if ( !shutdown_observed && WaitForSingleObject( control->termination, 0 ) == WAIT_OBJECT_0 ) {
-        const ShutdownCause cause = control->cause.load();
-        if ( has_termination_deadline( cause ) ) {
-          break;
-        }
-        shutdown_observed = true;
-        input_drained_at_shutdown = reader->ever_drained_to_empty();
-        core.begin_shutdown();
-        state = ConsoleLifecycleState::SHUTTING_DOWN;
+        begin_graceful_shutdown( control->cause.load() );
       }
-      /* A reader failure is fatal until shutdown has been accepted. Once the
-         loop is pumping the shutdown handshake, console teardown can invalidate
-         the reader before its next ReadFile completes. */
-      if ( !shutdown_observed ) {
-        reader->check_failure();
+      if ( restoration_reserve_reached() ) {
+        break;
+      }
+      if ( !shutdown_observed && reader->has_ended() ) {
+        /* EOF and ReadFile failure share graceful teardown. The reader keeps
+           the error sticky so cleanup reporting can surface it after restore. */
+        begin_graceful_shutdown( ShutdownCause::IO_LOSS );
       }
 
-      /* Windows polls dimensions because it has no SIGWINCH. A dying console
-         can reject the query after shutdown begins, but that must not interrupt
-         the transport handshake. */
-      CONSOLE_SCREEN_BUFFER_INFO info;
-      if ( GetConsoleScreenBufferInfo( original.output, &info ) ) {
-        const int new_cols = info.srWindow.Right - info.srWindow.Left + 1;
-        const int new_rows = info.srWindow.Bottom - info.srWindow.Top + 1;
-        if ( new_cols != cols || new_rows != rows ) {
-          cols = new_cols;
-          rows = new_rows;
-          core.resize( cols, rows );
+      /* Windows polls dimensions because it has no SIGWINCH. Once a deadline is
+         active the session is leaving, so resize cannot affect useful output and
+         the synchronous conhost query must not consume the restoration budget. */
+      if ( control->deadline.load() == NO_TERMINATION_DEADLINE ) {
+        CONSOLE_SCREEN_BUFFER_INFO info;
+        if ( GetConsoleScreenBufferInfo( original.output, &info ) ) {
+          const int new_cols = info.srWindow.Right - info.srWindow.Left + 1;
+          const int new_rows = info.srWindow.Bottom - info.srWindow.Top + 1;
+          if ( new_cols != cols || new_rows != rows ) {
+            cols = new_cols;
+            rows = new_rows;
+            core.resize( cols, rows );
+          }
+        } else if ( !shutdown_observed ) {
+          throw_last_error( "GetConsoleScreenBufferInfo" );
         }
-      } else if ( !shutdown_observed ) {
-        throw_last_error( "GetConsoleScreenBufferInfo" );
       }
 
       for ( size_t index = 0; index < fds.size(); ++index ) {
@@ -1017,8 +1221,13 @@ private:
       }
 
       const std::string &frame = core.next_frame();
-      if ( !frame.empty() ) {
-        write_all( original.output, frame );
+      if ( output_available && !frame.empty() && !restoration_reserve_reached() ) {
+        try {
+          write_all( original.output, frame );
+        } catch ( const ConsoleError & ) {
+          output_available = false;
+          begin_graceful_shutdown( ShutdownCause::IO_LOSS );
+        }
       }
     }
   }
@@ -1069,6 +1278,11 @@ bool ConsoleSession::input_ever_drained_for_test() const
 bool ConsoleSession::shutdown_observed_for_test() const
 {
   return impl->shutdown_observed_for_test();
+}
+
+ULONGLONG ConsoleSession::termination_deadline_for_test() const
+{
+  return impl->termination_deadline_for_test();
 }
 
 bool ConsoleSession::input_drained_at_shutdown_for_test() const

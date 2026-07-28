@@ -239,8 +239,8 @@ private:
   HANDLE handle_;
 };
 
-/* Enforces the fairness deadline from a separate thread so the test thread can
-   be the one inside run(). stop() and the destructor both release the thread, so
+/* Enforces a mode's deadline from a separate thread so the test thread can be
+   the one inside run(). stop() and the destructor both release the thread, so
    an early return needs no special handling. */
 class WatchdogGuard {
 public:
@@ -757,15 +757,345 @@ static int run_init_checkpoint()
   return 0;
 }
 
-/* Deadline for the graceful-shutdown harness to allow the transport shutdown
-   handshake to finish. It exceeds the upstream SHUTDOWN_RETRIES (16) and
-   ACTIVE_RETRY_TIMEOUT (10000 ms), so the watchdog does not reject a healthy
-   shutdown. */
-static const DWORD GRACEFUL_SHUTDOWN_DEADLINE_MS = 30000;
+/* Sixteen unacknowledged shutdown sends are spaced by the 250 ms transport
+   interval plus at most the 100 ms console poll cap, so healthy completion is
+   expected in 4--5.6 s. These acceptance watchdogs allow more than five times
+   that ceiling; they diagnose wedges rather than measure transport timing. */
+static const DWORD ACCEPTANCE_WATCHDOG_MS = 30000;
 /* Delay before signaling termination, to ensure run() has entered its loop.
    The loop must be pumping before the request can be observed and the graceful
    shutdown initiated. */
 static const DWORD GRACEFUL_SHUTDOWN_SIGNAL_DELAY_MS = 100;
+
+static int run_reader_end( ConsoleReaderTestOutcome outcome, const char *label )
+{
+  ConsoleTestScope scope;
+  TestServer server( 80, 24 );
+  MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
+                 80, 24, "never" );
+  console_test_set_reader_outcome( outcome );
+
+  UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( session_done.get() != NULL, "CreateEvent(session_done)" );
+  UniqueHandle deadline_start( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( deadline_start.get() != NULL, "CreateEvent(deadline_start)" );
+  std::atomic<ULONGLONG> deadline_at( 0 );
+  WatchdogGuard watchdog( session_done.get(), deadline_start.get(), &deadline_at, &scope,
+                          ACCEPTANCE_WATCHDOG_MS );
+
+  ConsoleSession session( core );
+  try {
+    deadline_at.store( GetTickCount64() + ACCEPTANCE_WATCHDOG_MS );
+    must( SetEvent( deadline_start.get() ), "SetEvent(deadline_start)" );
+    session.run();
+  } catch ( const std::exception &e ) {
+    must( SetEvent( session_done.get() ), "SetEvent(session_done)" );
+    watchdog.stop();
+    console_test_clear_setup_injections();
+    fprintf( stderr, "FAIL: %s: session.run() threw: %s\n", label, e.what() );
+    return 1;
+  }
+  must( SetEvent( session_done.get() ), "SetEvent(session_done)" );
+  watchdog.stop();
+  console_test_clear_setup_injections();
+  if ( !session.shutdown_observed_for_test() || !core.is_finished()
+       || core.exited_cleanly() ) {
+    fprintf( stderr, "FAIL: %s did not complete the unacknowledged graceful path\n", label );
+    return 1;
+  }
+  const CleanupReport cleanup = session.cleanup_report();
+  const DWORD expected_reader_error = outcome == ConsoleReaderTestOutcome::READ_FAILURE
+    ? ERROR_READ_FAULT : ERROR_SUCCESS;
+  if ( cleanup.reader_error != expected_reader_error ) {
+    fprintf( stderr, "FAIL: %s reported reader error %lu, expected %lu\n",
+             label, cleanup.reader_error, expected_reader_error );
+    return 1;
+  }
+  return 0;
+}
+
+/* A 900 ms injected OS budget leaves 400 ms of pumping before the 500 ms
+   restoration reserve. That reserve break precedes the transport's earliest
+   4000 ms retry-cap completion by 3100 ms, making deadline exit deterministic. */
+static const DWORD INJECTED_SHUTDOWN_BUDGET_MS = 900;
+static const DWORD DEADLINE_STAMP_TOLERANCE_MS = 100;
+static const DWORD DEADLINE_COMPLETION_FLOOR_MS = 300;
+static const DWORD DELAYED_OBSERVATION_MS = 200;
+/* A close is published while reader teardown is in one 100 ms wait. Ten such
+   poll intervals allow scheduling and restoration headroom while still proving
+   that the close diverts teardown promptly; this bound is independent of the
+   transport and OS shutdown budgets. */
+static const DWORD MID_TEARDOWN_CLOSE_BOUND_MS = 1000;
+
+class ConsoleTestInjectionGuard {
+public:
+  ConsoleTestInjectionGuard() {}
+  ~ConsoleTestInjectionGuard()
+  {
+    console_test_clear_setup_injections();
+  }
+  ConsoleTestInjectionGuard( const ConsoleTestInjectionGuard & ) = delete;
+  ConsoleTestInjectionGuard &operator=( const ConsoleTestInjectionGuard & ) = delete;
+};
+
+class ShutdownRequestGuard {
+public:
+  ShutdownRequestGuard( ConsoleSession *session, std::atomic<ULONGLONG> *close_publication )
+    : thread_( &ShutdownRequestGuard::fire, session, close_publication ) {}
+  ~ShutdownRequestGuard()
+  {
+    if ( thread_.joinable() ) {
+      thread_.join();
+    }
+  }
+private:
+  static void fire( ConsoleSession *session, std::atomic<ULONGLONG> *close_publication )
+  {
+    Sleep( 100 );
+    session->request_shutdown( ShutdownCause::CTRL_BREAK );
+    Sleep( 200 );
+    close_publication->store( GetTickCount64() );
+    session->request_shutdown( ShutdownCause::CTRL_CLOSE );
+  }
+  std::thread thread_;
+};
+
+class MidTeardownCloseGuard {
+public:
+  MidTeardownCloseGuard( ConsoleSession *session, HANDLE teardown_entered,
+                         HANDLE teardown_resume,
+                         std::atomic<ULONGLONG> *close_publication )
+    : thread_( &MidTeardownCloseGuard::fire, session, teardown_entered,
+               teardown_resume, close_publication ) {}
+  ~MidTeardownCloseGuard()
+  {
+    if ( thread_.joinable() ) {
+      thread_.join();
+    }
+  }
+private:
+  static void fire( ConsoleSession *session, HANDLE teardown_entered,
+                    HANDLE teardown_resume,
+                    std::atomic<ULONGLONG> *close_publication )
+  {
+    if ( WaitForSingleObject( teardown_entered, ACCEPTANCE_WATCHDOG_MS ) != WAIT_OBJECT_0 ) {
+      return;
+    }
+    close_publication->store( GetTickCount64() );
+    session->request_shutdown( ShutdownCause::CTRL_CLOSE );
+    SetEvent( teardown_resume );
+  }
+  std::thread thread_;
+};
+
+enum class DeadlineCase {
+  PUBLICATION,
+  ESCALATION,
+};
+
+static int run_deadline_case( DeadlineCase which )
+{
+  ConsoleTestInjectionGuard injections;
+  ConsoleTestScope scope;
+  TestServer server( 80, 24 );
+  MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
+                 80, 24, "never" );
+  console_test_set_shutdown_budget( INJECTED_SHUTDOWN_BUDGET_MS );
+  UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( session_done.get() != NULL, "CreateEvent(session_done)" );
+  UniqueHandle deadline_start( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( deadline_start.get() != NULL, "CreateEvent(deadline_start)" );
+  std::atomic<ULONGLONG> watchdog_at( 0 );
+  WatchdogGuard watchdog( session_done.get(), deadline_start.get(), &watchdog_at, &scope,
+                          ACCEPTANCE_WATCHDOG_MS );
+
+  auto session = std::make_unique<ConsoleSession>( core );
+  std::atomic<ULONGLONG> close_publication( 0 );
+  std::unique_ptr<ShutdownRequestGuard> requests;
+  if ( which == DeadlineCase::ESCALATION ) {
+    requests.reset( new ShutdownRequestGuard( session.get(), &close_publication ) );
+  } else {
+    close_publication.store( GetTickCount64() );
+    session->request_shutdown( ShutdownCause::CTRL_CLOSE );
+    Sleep( DELAYED_OBSERVATION_MS );
+  }
+
+  watchdog_at.store( GetTickCount64() + ACCEPTANCE_WATCHDOG_MS );
+  must( SetEvent( deadline_start.get() ), "SetEvent(deadline_start)" );
+  session->run();
+  const ULONGLONG completed = GetTickCount64();
+  must( SetEvent( session_done.get() ), "SetEvent(session_done)" );
+  watchdog.stop();
+
+  const ULONGLONG publication = close_publication.load();
+  const ULONGLONG expected_deadline = publication + INJECTED_SHUTDOWN_BUDGET_MS;
+  const ULONGLONG adopted_deadline = session->termination_deadline_for_test();
+  if ( publication == 0 || !session->shutdown_observed_for_test() ) {
+    fprintf( stderr, "FAIL: deadline request was not observed and published\n" );
+    return 1;
+  }
+  /* With a 900 ms budget and 500 ms reserve, correct pumping ends about
+     400 ms after publication. The 300 ms floor leaves one 100 ms poll interval
+     of scheduling margin while rejecting an immediate stopgap break. */
+  if ( completed < publication + DEADLINE_COMPLETION_FLOOR_MS
+       || completed > expected_deadline ) {
+    fprintf( stderr,
+             "FAIL: deadline shutdown completed outside its external %lu--%lu ms window\n",
+             DEADLINE_COMPLETION_FLOOR_MS, INJECTED_SHUTDOWN_BUDGET_MS );
+    return 1;
+  }
+  if ( adopted_deadline < expected_deadline
+       || adopted_deadline > expected_deadline + DEADLINE_STAMP_TOLERANCE_MS ) {
+    fprintf( stderr,
+             "FAIL: adopted deadline %llu is not the close publication budget %llu--%llu\n",
+             (unsigned long long)adopted_deadline,
+             (unsigned long long)expected_deadline,
+             (unsigned long long)( expected_deadline + DEADLINE_STAMP_TOLERANCE_MS ) );
+    return 1;
+  }
+  DWORD restored_mode = 0;
+  const ConsoleSnapshot snapshot = session->original_console_for_test();
+  must( GetConsoleMode( snapshot.input, &restored_mode ), "GetConsoleMode(deadline restored)" );
+  if ( restored_mode != snapshot.input_mode ) {
+    fprintf( stderr, "FAIL: deadline shutdown returned before restoring input mode\n" );
+    return 1;
+  }
+  return 0;
+}
+
+static int run_mid_teardown_close()
+{
+  ConsoleTestInjectionGuard injections;
+  ConsoleTestScope scope;
+  TestServer server( 80, 24 );
+  MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
+                 80, 24, "never" );
+  console_test_set_reader_outcome( ConsoleReaderTestOutcome::NONTERMINATING );
+
+  UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( session_done.get() != NULL, "CreateEvent(session_done)" );
+  UniqueHandle deadline_start( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( deadline_start.get() != NULL, "CreateEvent(deadline_start)" );
+  UniqueHandle teardown_entered( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( teardown_entered.get() != NULL, "CreateEvent(teardown_entered)" );
+  UniqueHandle teardown_resume( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( teardown_resume.get() != NULL, "CreateEvent(teardown_resume)" );
+  std::atomic<ULONGLONG> watchdog_at( 0 );
+  WatchdogGuard watchdog( session_done.get(), deadline_start.get(), &watchdog_at, &scope,
+                          ACCEPTANCE_WATCHDOG_MS );
+
+  auto session = std::make_unique<ConsoleSession>( core );
+  console_test_pause_teardown( teardown_entered.get(), teardown_resume.get() );
+  std::atomic<ULONGLONG> close_publication( 0 );
+  MidTeardownCloseGuard request( session.get(), teardown_entered.get(),
+                                 teardown_resume.get(), &close_publication );
+  const char quit[] = { 0x1e, '.' };
+  core.feed_input( quit, sizeof quit );
+  watchdog_at.store( GetTickCount64() + ACCEPTANCE_WATCHDOG_MS );
+  must( SetEvent( deadline_start.get() ), "SetEvent(deadline_start)" );
+  session->run();
+  const ULONGLONG completed = GetTickCount64();
+  must( SetEvent( session_done.get() ), "SetEvent(session_done)" );
+  watchdog.stop();
+
+  int failed = 0;
+  if ( close_publication.load() == 0
+       || completed > close_publication.load() + MID_TEARDOWN_CLOSE_BOUND_MS ) {
+    fprintf( stderr,
+             "FAIL: close during reader teardown did not divert restoration promptly\n" );
+    failed = 1;
+  }
+  DWORD restored_mode = 0;
+  const ConsoleSnapshot snapshot = session->original_console_for_test();
+  must( GetConsoleMode( snapshot.input, &restored_mode ),
+        "GetConsoleMode(mid-teardown restored)" );
+  if ( restored_mode != snapshot.input_mode ) {
+    fprintf( stderr, "FAIL: close during teardown did not restore input mode\n" );
+    failed = 1;
+  }
+  session.release();
+  return failed;
+}
+
+static int run_connection_timeout()
+{
+  ConsoleTestScope scope;
+  TestServer server( 80, 24 );
+  const ULONGLONG started = GetTickCount64();
+  MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
+                 80, 24, "never" );
+
+  UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( session_done.get() != NULL, "CreateEvent(session_done)" );
+  UniqueHandle deadline_start( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( deadline_start.get() != NULL, "CreateEvent(deadline_start)" );
+  std::atomic<ULONGLONG> deadline_at( 0 );
+  WatchdogGuard watchdog( session_done.get(), deadline_start.get(), &deadline_at, &scope,
+                          ACCEPTANCE_WATCHDOG_MS );
+
+  ConsoleSession session( core );
+  deadline_at.store( started + ACCEPTANCE_WATCHDOG_MS );
+  must( SetEvent( deadline_start.get() ), "SetEvent(deadline_start)" );
+  session.run();
+  const ULONGLONG elapsed = GetTickCount64() - started;
+  must( SetEvent( session_done.get() ), "SetEvent(session_done)" );
+  watchdog.stop();
+
+  /* The 15 s connection timeout plus the 4--5.6 s retry budget predicts
+     19--20.6 s. The 18--23 s window leaves 1 s below the arithmetic floor,
+     2.4 s above its ceiling, and makes the old immediate 15 s exit fail. */
+  if ( elapsed < 18000 || elapsed > 23000 || !core.is_finished()
+       || core.exited_cleanly()
+       || core.status_message() != "Timed out waiting for server..." ) {
+    fprintf( stderr,
+             "FAIL: connection timeout did not use transport shutdown (elapsed=%llu ms)\n",
+             (unsigned long long)elapsed );
+    return 1;
+  }
+  return 0;
+}
+
+static int run_upstream_length()
+{
+  ConsoleTestScope scope;
+  TestServer server( 80, 24 );
+  MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
+                 80, 24, "never" );
+
+  UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( session_done.get() != NULL, "CreateEvent(session_done)" );
+  UniqueHandle deadline_start( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( deadline_start.get() != NULL, "CreateEvent(deadline_start)" );
+  std::atomic<ULONGLONG> deadline_at( 0 );
+  WatchdogGuard watchdog( session_done.get(), deadline_start.get(), &deadline_at, &scope,
+                          ACCEPTANCE_WATCHDOG_MS );
+
+  ConsoleSession session( core );
+  const char quit[] = { 0x1e, '.' };
+  core.feed_input( quit, sizeof quit );
+  const ULONGLONG started = GetTickCount64();
+  deadline_at.store( started + ACCEPTANCE_WATCHDOG_MS );
+  must( SetEvent( deadline_start.get() ), "SetEvent(deadline_start)" );
+  session.run();
+  const ULONGLONG elapsed = GetTickCount64() - started;
+  must( SetEvent( session_done.get() ), "SetEvent(session_done)" );
+  watchdog.stop();
+
+  /* Sixteen retries at 250--350 ms predict 4--5.6 s. The 3--8 s window is
+     comfortably above a one-retry exit, leaves 1 s below the arithmetic floor
+     and 2.4 s above its ceiling, yet stays 2 s below the 10 s timeout ceiling. */
+  if ( session.termination_deadline_for_test() != 0
+       || elapsed < 3000 || elapsed > 8000 || !core.is_finished()
+       || core.exited_cleanly() ) {
+    fprintf( stderr,
+             "FAIL: uncapped in-band shutdown did not use transport bound "
+             "(elapsed=%llu ms deadline=%llu)\n",
+             (unsigned long long)elapsed,
+             (unsigned long long)session.termination_deadline_for_test() );
+    return 1;
+  }
+  return 0;
+}
 
 static int run_graceful_shutdown()
 {
@@ -792,7 +1122,7 @@ static int run_graceful_shutdown()
   std::atomic<ULONGLONG> deadline_at( 0 );
 
   WatchdogGuard watchdog( session_done.get(), deadline_start.get(), &deadline_at, &scope,
-                          GRACEFUL_SHUTDOWN_DEADLINE_MS );
+                          ACCEPTANCE_WATCHDOG_MS );
 
   /* Signal the shutdown request after a short delay to ensure run() has started. */
   TerminationTimerGuard signaler( session.get(), session_done.get(),
@@ -800,7 +1130,7 @@ static int run_graceful_shutdown()
 
   int thrown = 0;
   try {
-    deadline_at.store( GetTickCount64() + GRACEFUL_SHUTDOWN_DEADLINE_MS );
+    deadline_at.store( GetTickCount64() + ACCEPTANCE_WATCHDOG_MS );
     must( SetEvent( deadline_start.get() ), "SetEvent(deadline_start)" );
     session->run();
   } catch ( const std::exception &e ) {
@@ -887,6 +1217,27 @@ int main( int argc, char *argv[] )
     }
     if ( strcmp( argv[1], "graceful-shutdown" ) == 0 ) {
       return run_graceful_shutdown();
+    }
+    if ( strcmp( argv[1], "reader-eof" ) == 0 ) {
+      return run_reader_end( ConsoleReaderTestOutcome::END_OF_INPUT, "reader-eof" );
+    }
+    if ( strcmp( argv[1], "reader-failure" ) == 0 ) {
+      return run_reader_end( ConsoleReaderTestOutcome::READ_FAILURE, "reader-failure" );
+    }
+    if ( strcmp( argv[1], "connection-timeout" ) == 0 ) {
+      return run_connection_timeout();
+    }
+    if ( strcmp( argv[1], "upstream-length" ) == 0 ) {
+      return run_upstream_length();
+    }
+    if ( strcmp( argv[1], "deadline-publication" ) == 0 ) {
+      return run_deadline_case( DeadlineCase::PUBLICATION );
+    }
+    if ( strcmp( argv[1], "deadline-escalation" ) == 0 ) {
+      return run_deadline_case( DeadlineCase::ESCALATION );
+    }
+    if ( strcmp( argv[1], "deadline-wedged-reader" ) == 0 ) {
+      return run_mid_teardown_close();
     }
   } catch ( const std::exception &e ) {
     fprintf( stderr, "FAIL: uncaught exception: %s\n", e.what() );

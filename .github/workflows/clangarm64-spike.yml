@@ -64,10 +64,10 @@ jobs:
 
       - name: Build and run console lifecycle test
         shell: msys2 {0}
-        # Covers the build plus six modes. Fairness backlog establishment is
-        # bounded at 5s and run() is then bounded by a 30s watchdog. Clock-refresh
-        # and graceful-shutdown use the same watchdog bound. This cap leaves the
-        # build room on top.
+        # Covers the build plus thirteen modes. Fairness backlog establishment
+        # is bounded at 5s, and every mode that enters run() has an in-process
+        # watchdog with enough headroom for the transport retry cap. This cap
+        # leaves the build room on top.
         timeout-minutes: 5
         # A bounded native test constructs a ConsoleSession on the inherited
         # console (repointed at CONOUT$/CONIN$ via SetStdHandle, since the msys2
@@ -100,6 +100,13 @@ jobs:
           ./test_console_lifecycle.exe graceful-shutdown
           ./test_console_lifecycle.exe transaction
           ./test_console_lifecycle.exe init-checkpoint
+          ./test_console_lifecycle.exe reader-eof
+          ./test_console_lifecycle.exe reader-failure
+          ./test_console_lifecycle.exe connection-timeout
+          ./test_console_lifecycle.exe upstream-length
+          ./test_console_lifecycle.exe deadline-publication
+          ./test_console_lifecycle.exe deadline-escalation
+          ./test_console_lifecycle.exe deadline-wedged-reader
 
       - name: Verify wide printf uses POSIX semantics where mosh needs them
         shell: msys2 {0}

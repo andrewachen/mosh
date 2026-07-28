@@ -184,7 +184,7 @@ public:
       if ( elapsed > CONNECTION_TIMEOUT ) {
         status = "Timed out waiting for server...";
         overlays.get_notification_engine().set_notification_string( L"Timed out waiting for server...", true );
-        finished = true;
+        network->start_shutdown();
       } else if ( elapsed > 250 ) {
         overlays.get_notification_engine().set_notification_string( connecting_notification );
       }

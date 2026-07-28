@@ -129,7 +129,7 @@ int main( int argc, char *argv[] )
     MoshCore core( argv[1], argv[2], argv[3], cols, rows, predict );
 
     int session_rc = 1;
-    CleanupReport cleanup = { ERROR_SUCCESS, CLEANUP_OP_NONE };
+    CleanupReport cleanup = { ERROR_SUCCESS, CLEANUP_OP_NONE, ERROR_SUCCESS };
     try {
       /* The constructor performs every console mutation and writes the open
          sequence; by the time it returns the session is fully live. */
@@ -158,6 +158,9 @@ int main( int argc, char *argv[] )
 
     if ( !message.empty() ) {
       std::fprintf( stderr, "%s\n", message.c_str() );
+    }
+    if ( cleanup.reader_error != ERROR_SUCCESS ) {
+      std::fprintf( stderr, "ReadFile console input (error %lu)\n", cleanup.reader_error );
     }
     if ( cleanup.failed_op != CLEANUP_OP_NONE ) {
       std::fprintf( stderr, "warning: %s failed while restoring the console (GetLastError=%lu)\n",

@@ -105,6 +105,7 @@ enum CleanupOp {
 struct CleanupReport {
   DWORD first_error;
   int failed_op;
+  DWORD reader_error;
 };
 
 /* A console setup mutation the test-only failure injector can target, in the
@@ -125,7 +126,24 @@ void console_test_fail_after( ConsoleSetupStep step );
    than at an injected failure, so deleting that checkpoint fails the test. */
 void console_test_signal_termination_after( ConsoleSetupStep step );
 
-/* Test-only: disarms both injectors, which are process-global and sticky. */
+/* Test-only reader outcomes used by the console lifecycle acceptance harness. */
+enum class ConsoleReaderTestOutcome {
+  NONE,
+  END_OF_INPUT,
+  READ_FAILURE,
+  NONTERMINATING,
+};
+void console_test_set_reader_outcome( ConsoleReaderTestOutcome outcome );
+
+/* Test-only: overrides the OS shutdown budget used for deadline publication.
+   Zero clears the override. */
+void console_test_set_shutdown_budget( DWORD budget_ms );
+
+/* Test-only: pauses teardown after reader stop has begun waiting, so acceptance
+   can publish a close request during that potentially unbounded operation. */
+void console_test_pause_teardown( HANDLE entered, HANDLE resume );
+
+/* Test-only: disarms all process-global, sticky injectors. */
 void console_test_clear_setup_injections();
 
 /* Test-only: the restored event of the most recently created session. Readable
@@ -191,6 +209,8 @@ public:
      graceful shutdown. Read only after run() returns; this value is written by
      run() without synchronization. */
   bool shutdown_observed_for_test() const;
+  /* Returns zero when no deadline-bearing cause was ever published. */
+  ULONGLONG termination_deadline_for_test() const;
   /* Whether a drain had ever emptied the input queue at the moment the loop
      first observed a shutdown request. Sampled at that instant rather than
      after run() returns, because the loop keeps pumping afterward and will
