@@ -40,6 +40,7 @@
 #include <ws2tcpip.h>
 #include "mosh_core.h"
 #include <windows.h>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
@@ -65,5 +66,46 @@ void console_dims( int *cols, int *rows );
 /* Write every byte or throw ConsoleError. */
 void write_all( HANDLE handle, const std::string &bytes );
 
-void console_run( MoshCore &core, const ConsoleState &cs );
+/* Owns the console event loop. Fairness-only scaffold: it does not implement
+   graceful shutdown. */
+class ConsoleSession {
+public:
+  ConsoleSession( MoshCore &core, const ConsoleState &state );
+  ~ConsoleSession();
+  ConsoleSession( const ConsoleSession & ) = delete;
+  ConsoleSession &operator=( const ConsoleSession & ) = delete;
+
+  /* Main event loop. Fairness-only: per wakeup it services termination, then
+     polls for a resize, then at most one readable socket, then one bounded
+     input chunk, then writes any pending frame. Does NOT call
+     begin_shutdown().
+
+     Returns when the termination re-test observes the termination event, or
+     when core.is_finished() is true after core.tick() at the top of an
+     iteration.
+
+     Otherwise it throws rather than returning. ConsoleError comes from socket
+     reconciliation, the handle-count guard, the wait itself, the reader's
+     deferred ReadFile failure, the resize query, socket event enumeration, and
+     frame output; core.tick() and core.on_readable() additionally rethrow a
+     fatal Crypto::CryptoException. Both derive from std::exception, which is
+     what callers should catch. */
+  void run();
+
+  /* Test-only accessors for the event-loop fairness harness. */
+  size_t input_backlog_for_test() const;
+  /* True if a drain ever left the input queue empty. Records the drain event
+     itself rather than an end state, so it cannot be confused by whatever the
+     queue happens to hold when run() returns. */
+  bool input_ever_drained_for_test() const;
+  static size_t input_budget_bytes();
+  /* Holds the reader queue mutex across both the backlog check and the
+     termination signal, so the backlog is read consistently against a queue the
+     reader thread is still growing. Returns false if the backlog is short.
+     Non-blocking — the caller establishes the backlog. */
+  bool signal_termination_against_backlog_for_test( size_t minimum );
+private:
+  class Impl;
+  std::unique_ptr<Impl> impl;
+};
 #endif

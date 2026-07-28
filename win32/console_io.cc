@@ -40,6 +40,7 @@
 #include <climits>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <vector>
@@ -158,8 +159,13 @@ private:
   std::atomic<HANDLE> input;
   HANDLE ready_event;
   std::atomic<bool> stopping;
-  std::mutex queue_mutex;
+  mutable std::mutex queue_mutex;
   std::string queue;
+  /* Sticky: set the first time a drain leaves the queue empty. Records the
+     drain event itself rather than an end state, so it cannot be confused by
+     whatever the queue happens to hold once the loop stops. Guarded by
+     queue_mutex. */
+  bool drained_to_empty;
   HANDLE worker;
   std::mutex failure_mutex;
   DWORD failure_code;
@@ -306,7 +312,8 @@ private:
 public:
   explicit Reader( HANDLE h_in )
     : input( NULL ), ready_event( CreateEvent( NULL, FALSE, FALSE, NULL ) ),
-      stopping( false ), worker( NULL ), failure_code( ERROR_SUCCESS ), failed( false )
+      stopping( false ), drained_to_empty( false ), worker( NULL ),
+      failure_code( ERROR_SUCCESS ), failed( false )
   {
     if ( ready_event == NULL ) {
       throw_last_error( "CreateEvent for console input" );
@@ -347,6 +354,8 @@ public:
     queue.erase( 0, count );
     if ( !queue.empty() ) {
       SetEvent( ready_event );
+    } else {
+      drained_to_empty = true;
     }
     return bytes;
   }
@@ -357,6 +366,32 @@ public:
     if ( failed ) {
       throw ConsoleError( failure_code, error_message( "ReadFile console input", failure_code ) );
     }
+  }
+
+  size_t pending_bytes() const
+  {
+    std::lock_guard<std::mutex> lock( queue_mutex );
+    return queue.size();
+  }
+
+  bool ever_drained_to_empty() const
+  {
+    std::lock_guard<std::mutex> lock( queue_mutex );
+    return drained_to_empty;
+  }
+
+  /* Locks the real reader queue, verifies the backlog meets the minimum, and
+     signals the termination event atomically — used by the fairness test to
+     prove the reader event is already signaled and at least one budget remains
+     after the next drain. Returns true if the minimum was met. */
+  bool signal_termination_against_backlog( HANDLE event, size_t minimum )
+  {
+    std::lock_guard<std::mutex> lock( queue_mutex );
+    const bool ok = queue.size() >= minimum;
+    if ( ok ) {
+      SetEvent( event );
+    }
+    return ok;
   }
 
   void stop()
@@ -526,89 +561,166 @@ void write_all( HANDLE handle, const std::string &bytes )
   }
 }
 
-void console_run( MoshCore &core, const ConsoleState &cs )
-{
+class ConsoleSession::Impl {
+public:
+  MoshCore &core;
+  const ConsoleState &state;
   ControlHandlerGuard termination_guard;
-  SocketEvents socket_events( core );
-  Reader reader( cs.h_in );
-  CONSOLE_SCREEN_BUFFER_INFO initial_info;
-  if ( !GetConsoleScreenBufferInfo( cs.h_out, &initial_info ) ) {
-    throw_last_error( "GetConsoleScreenBufferInfo" );
-  }
-  int cols = initial_info.srWindow.Right - initial_info.srWindow.Left + 1;
-  int rows = initial_info.srWindow.Bottom - initial_info.srWindow.Top + 1;
-  core.resize( cols, rows );
+  SocketEvents socket_events;
+  Reader reader;
+  int cols;
+  int rows;
 
-  while ( true ) {
-    const int timeout = core.tick();
-    if ( core.is_finished() ) {
-      break;
-    }
-
-    CONSOLE_SCREEN_BUFFER_INFO info;
-    if ( !GetConsoleScreenBufferInfo( cs.h_out, &info ) ) {
+  Impl( MoshCore &core_ref, const ConsoleState &cs )
+    : core( core_ref ), state( cs ),
+      termination_guard(),
+      socket_events( core_ref ),
+      reader( cs.h_in ),
+      cols( 0 ), rows( 0 )
+  {
+    CONSOLE_SCREEN_BUFFER_INFO initial_info;
+    if ( !GetConsoleScreenBufferInfo( state.h_out, &initial_info ) ) {
       throw_last_error( "GetConsoleScreenBufferInfo" );
     }
-    const int new_cols = info.srWindow.Right - info.srWindow.Left + 1;
-    const int new_rows = info.srWindow.Bottom - info.srWindow.Top + 1;
-    if ( new_cols != cols || new_rows != rows ) {
-      cols = new_cols;
-      rows = new_rows;
-      core.resize( cols, rows );
-    }
+    cols = initial_info.srWindow.Right - initial_info.srWindow.Left + 1;
+    rows = initial_info.srWindow.Bottom - initial_info.srWindow.Top + 1;
+    core.resize( cols, rows );
+  }
 
-    socket_events.reconcile( core.socket_fds() );
-    const std::map<intptr_t, WSAEVENT> &registered = socket_events.all();
-    if ( registered.size() + 2 > MAXIMUM_WAIT_OBJECTS ) {
-      throw ConsoleError( ERROR_TOO_MANY_OPEN_FILES, "too many handles for WaitForMultipleObjects" );
-    }
+  size_t input_backlog() const
+  {
+    return reader.pending_bytes();
+  }
 
-    std::vector<HANDLE> handles;
-    std::vector<intptr_t> fds;
-    handles.push_back( reader.event() );
-    handles.push_back( termination_guard.handle() );
-    for ( std::map<intptr_t, WSAEVENT>::const_iterator it = registered.begin(); it != registered.end(); ++it ) {
-      handles.push_back( it->second );
-      fds.push_back( it->first );
-    }
-    const DWORD wait_timeout = static_cast<DWORD>( std::max( 0, std::min( timeout, static_cast<int>( RESIZE_POLL_CAP_MS ) ) ) );
-    const DWORD result = WaitForMultipleObjects( static_cast<DWORD>( handles.size() ), &handles[0], FALSE, wait_timeout );
-    if ( result == WAIT_FAILED ) {
-      throw_last_error( "WaitForMultipleObjects" );
-    }
-    if ( result != WAIT_TIMEOUT && ( result < WAIT_OBJECT_0 || result >= WAIT_OBJECT_0 + handles.size() ) ) {
-      throw ConsoleError( ERROR_INVALID_HANDLE, "WaitForMultipleObjects returned an invalid result" );
-    }
+  bool input_ever_drained() const
+  {
+    return reader.ever_drained_to_empty();
+  }
 
-    reader.check_failure();
-    if ( result == WAIT_OBJECT_0 ) {
+  bool signal_termination_against_backlog( size_t minimum )
+  {
+    return reader.signal_termination_against_backlog(
+      termination_guard.handle(), minimum );
+  }
+
+  void run()
+  {
+    while ( true ) {
+      const int timeout = core.tick();
+      if ( core.is_finished() ) {
+        break;
+      }
+
+      socket_events.reconcile( core.socket_fds() );
+      const std::map<intptr_t, WSAEVENT> &registered = socket_events.all();
+      if ( registered.size() + 2 > MAXIMUM_WAIT_OBJECTS ) {
+        throw ConsoleError( ERROR_TOO_MANY_OPEN_FILES, "too many handles for WaitForMultipleObjects" );
+      }
+
+      std::vector<HANDLE> handles;
+      std::vector<intptr_t> fds;
+      handles.push_back( reader.event() );
+      handles.push_back( termination_guard.handle() );
+      for ( std::map<intptr_t, WSAEVENT>::const_iterator it = registered.begin(); it != registered.end(); ++it ) {
+        handles.push_back( it->second );
+        fds.push_back( it->first );
+      }
+      const DWORD wait_timeout = static_cast<DWORD>( std::max( 0, std::min( timeout, static_cast<int>( RESIZE_POLL_CAP_MS ) ) ) );
+      const DWORD result = WaitForMultipleObjects( static_cast<DWORD>( handles.size() ), &handles[0], FALSE, wait_timeout );
+      if ( result == WAIT_FAILED ) {
+        throw_last_error( "WaitForMultipleObjects" );
+      }
+      if ( result != WAIT_TIMEOUT && ( result < WAIT_OBJECT_0 || result >= WAIT_OBJECT_0 + handles.size() ) ) {
+        throw ConsoleError( ERROR_INVALID_HANDLE, "WaitForMultipleObjects returned an invalid result" );
+      }
+
+      /* WaitForMultipleObjects reports one winner rather than every ready
+         source, so its result is only a wakeup: a continuously ready reader
+         event would otherwise starve termination forever. Re-test each source
+         independently instead of trusting the winner, and drain the reader queue
+         directly because its auto-reset event may already have been consumed.
+         Upstream gets this from pselect, which reports the whole ready set.
+         Sockets are the one exception: at most one readable socket is serviced
+         per wakeup, because on_readable can prune the set this snapshot names. */
+      if ( WaitForSingleObject( termination_guard.handle(), 0 ) == WAIT_OBJECT_0 ) {
+        break;
+      }
+      /* Surface a dead reader only once termination has not claimed this wakeup,
+         so a console teardown exits cleanly instead of by exception. */
+      reader.check_failure();
+
+      /* Upstream resize work is signal-gated and a cheap ioctl. Windows has no
+         SIGWINCH, so this unconditional synchronous console round trip stays
+         after termination to avoid shutdown work upstream never pays. */
+      CONSOLE_SCREEN_BUFFER_INFO info;
+      if ( !GetConsoleScreenBufferInfo( state.h_out, &info ) ) {
+        throw_last_error( "GetConsoleScreenBufferInfo" );
+      }
+      const int new_cols = info.srWindow.Right - info.srWindow.Left + 1;
+      const int new_rows = info.srWindow.Bottom - info.srWindow.Top + 1;
+      if ( new_cols != cols || new_rows != rows ) {
+        cols = new_cols;
+        rows = new_rows;
+        core.resize( cols, rows );
+      }
+
+      for ( size_t index = 0; index < fds.size(); ++index ) {
+        if ( WaitForSingleObject( handles[index + 2], 0 ) == WAIT_OBJECT_0 ) {
+          WSANETWORKEVENTS events = {};
+          if ( WSAEnumNetworkEvents( static_cast<SOCKET>( fds[index] ),
+                                     handles[index + 2], &events ) == SOCKET_ERROR ) {
+            const int error = WSAGetLastError();
+            throw ConsoleError( static_cast<DWORD>( error ),
+                                error_message( "WSAEnumNetworkEvents", error ) );
+          }
+          if ( events.lNetworkEvents & FD_READ ) {
+            core.on_readable( fds[index] );
+            /* on_readable may prune sockets, invalidating this wakeup's snapshot. */
+            break;
+          }
+        }
+      }
       const std::string bytes = reader.take_bytes( INPUT_BUDGET_BYTES );
       if ( !bytes.empty() ) {
         core.feed_input( bytes.data(), bytes.size() );
       }
-    } else if ( result == WAIT_OBJECT_0 + 1 ) {
-      break;
-    } else if ( result != WAIT_TIMEOUT ) {
-      const size_t index = result - WAIT_OBJECT_0 - 2;
-      const intptr_t fd = fds[index];
-      WSANETWORKEVENTS events;
-      std::memset( &events, 0, sizeof events );
-      if ( WSAEnumNetworkEvents( static_cast<SOCKET>( fd ), handles[index + 2], &events ) == SOCKET_ERROR ) {
-        const int error = WSAGetLastError();
-        throw ConsoleError( static_cast<DWORD>( error ), error_message( "WSAEnumNetworkEvents", error ) );
-      }
-      if ( events.lNetworkEvents & FD_READ ) {
-        const int error = events.iErrorCode[FD_READ_BIT];
-        if ( error != 0 ) {
-          throw ConsoleError( static_cast<DWORD>( error ), error_message( "FD_READ", error ) );
-        }
-        core.on_readable( fd );
-      }
-    }
 
-    const std::string &frame = core.next_frame();
-    if ( !frame.empty() ) {
-      write_all( cs.h_out, frame );
+      const std::string &frame = core.next_frame();
+      if ( !frame.empty() ) {
+        write_all( state.h_out, frame );
+      }
     }
   }
+};
+
+ConsoleSession::ConsoleSession( MoshCore &core, const ConsoleState &state )
+  : impl( new Impl( core, state ) )
+{
+}
+
+ConsoleSession::~ConsoleSession() = default;
+
+void ConsoleSession::run()
+{
+  impl->run();
+}
+
+size_t ConsoleSession::input_backlog_for_test() const
+{
+  return impl->input_backlog();
+}
+
+bool ConsoleSession::input_ever_drained_for_test() const
+{
+  return impl->input_ever_drained();
+}
+
+size_t ConsoleSession::input_budget_bytes()
+{
+  return INPUT_BUDGET_BYTES;
+}
+
+bool ConsoleSession::signal_termination_against_backlog_for_test( size_t minimum )
+{
+  return impl->signal_termination_against_backlog( minimum );
 }

@@ -136,7 +136,8 @@ int main( int argc, char *argv[] )
         TerminalGuard terminal( state, core );
         terminal.open_started = true;
         write_all( state.h_out, core.open_sequence() );
-        console_run( core, state );
+        ConsoleSession session( core, state );
+        session.run();
         session_rc = core.exited_cleanly() ? 0 : 1;
         message = core.status_message();
       }
