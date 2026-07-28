@@ -99,6 +99,35 @@ jobs:
           ./test_console_lifecycle.exe transaction
           ./test_console_lifecycle.exe init-checkpoint
 
+      - name: Verify wide printf uses POSIX semantics where mosh needs them
+        shell: msys2 {0}
+        # Upstream writes wide format strings against POSIX, where %s is a narrow
+        # string; UCRT reads %s as wide and would render adjacent bytes as UTF-16
+        # garbage. POSIX_WIDE_STDIO selects mingw's conformant implementation for
+        # the translation units that compile those formats. Assert no object
+        # reaches UCRT's wide printf, so a new translation unit that includes
+        # src/frontend/terminaloverlay.h without the flag fails here rather than
+        # by garbling a notification at runtime.
+        # Each object's symbols land in a file before being searched. Piping into
+        # grep -q would let grep exit on the first match, send llvm-nm SIGPIPE, and
+        # fail the pipeline under pipefail — so the gate would report success in
+        # exactly the case it exists to catch.
+        run: |
+          rm -f ucrt-wide-printf.txt
+          find win32/build -name '*.o' -print > objects.txt
+          while IFS= read -r o; do
+            llvm-nm -u "$o" > nm-symbols.txt
+            if grep -q '__stdio_common_vswprintf' nm-symbols.txt; then
+              echo "  $o" >> ucrt-wide-printf.txt
+            fi
+          done < objects.txt
+          if [ -s ucrt-wide-printf.txt ]; then
+            echo "ERROR: these objects use UCRT wide printf; add \$(POSIX_WIDE_STDIO) to their rules"
+            cat ucrt-wide-printf.txt
+            exit 1
+          fi
+          echo "no object uses UCRT wide printf"
+
       - name: Verify mosh.exe is a native ARM64 PE
         shell: msys2 {0}
         run: |

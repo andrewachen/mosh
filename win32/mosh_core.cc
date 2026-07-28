@@ -77,7 +77,7 @@ void set_network_error( OverlayManager& overlays, const std::string& error )
 void set_crypto_error( OverlayManager& overlays, const Crypto::CryptoException& error )
 {
   wchar_t message[128];
-  swprintf( message, sizeof message / sizeof *message, L"Crypto exception: %hs", error.what() );
+  swprintf( message, sizeof message / sizeof *message, L"Crypto exception: %s", error.what() );
   overlays.get_notification_engine().set_notification_string( message );
 }
 }
@@ -143,7 +143,7 @@ public:
     overlays.get_notification_engine().set_escape_key_string( escape_key_name );
 
     wchar_t connecting[128];
-    swprintf( connecting, sizeof connecting / sizeof *connecting, L"Nothing received from server on UDP port %hs.", port );
+    swprintf( connecting, sizeof connecting / sizeof *connecting, L"Nothing received from server on UDP port %s.", port );
     connecting_notification = connecting;
 
     UserStream blank;
