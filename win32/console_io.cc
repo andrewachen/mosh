@@ -463,8 +463,8 @@ void console_raw_enter( ConsoleState *saved )
   bool output_cp = false;
   const DWORD raw_input = ( captured.in_mode | ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_EXTENDED_FLAGS )
     & ~( ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT | ENABLE_QUICK_EDIT_MODE );
-  const DWORD vt_output = captured.out_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING
-    | DISABLE_NEWLINE_AUTO_RETURN;
+  const DWORD vt_output = captured.out_mode | ENABLE_PROCESSED_OUTPUT
+    | ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN;
   if ( !SetConsoleMode( captured.h_in, raw_input ) ) {
     throw_last_error( "SetConsoleMode stdin" );
   }

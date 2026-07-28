@@ -62,6 +62,19 @@ jobs:
           make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" protobufs test_core
           ./test_core.exe
 
+      - name: Build and run console lifecycle test
+        shell: msys2 {0}
+        timeout-minutes: 2
+        # A bounded native test drives console_raw_enter/console_raw_restore on
+        # the inherited console (repointed at CONOUT$/CONIN$ via SetStdHandle,
+        # since the msys2 CI shell redirects the std handles to pipes) and
+        # asserts the VT output-mode flags (ENABLE_PROCESSED_OUTPUT,
+        # ENABLE_VIRTUAL_TERMINAL_PROCESSING, DISABLE_NEWLINE_AUTO_RETURN) are
+        # set, then that console_raw_restore returns the captured mode.
+        run: |
+          make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" test_console_lifecycle
+          ./test_console_lifecycle.exe vt-mode
+
       - name: Verify mosh.exe is a native ARM64 PE
         shell: msys2 {0}
         run: |
