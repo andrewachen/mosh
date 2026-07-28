@@ -430,10 +430,17 @@ is not reliable in the MSYS2 CLANGARM64 runtime.
 From the wsltty repository, run:
 
 ```sh
-./build-mosh-arm64-local.sh
+MOSH_LOCAL=~/git/gh/mosh/.claude/worktrees/mosh-termination \
+  ~/git/gh/wsltty/build-mosh-arm64-local.sh
 ```
 
-It runs the M0a dependency smoke test first, then invokes:
+The `MOSH_LOCAL` override is mandatory. Without it, the script defaults to the
+canonical mosh checkout (`~/git/gh/mosh/`) and silently validates the unchanged
+main-branch sources instead of this worktree. This override requires the Task 0a
+wsltty script revision, which adds support for the `MOSH_LOCAL` environment
+variable.
+
+The script runs the M0a dependency smoke test first, then invokes:
 
 ```sh
 make -f win32/Makefile.win clean
