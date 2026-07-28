@@ -42,4 +42,5 @@ src/include/version.h
 
 # Native Windows ARM64 build-spike artifacts (win32/Makefile.win)
 /mosh.exe
+/test_*.exe
 /win32/build/

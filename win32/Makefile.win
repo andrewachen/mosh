@@ -127,6 +127,10 @@ win32/build/src/network/network.o: src/protobufs/transportinstruction.pb.h
 win32/build/src/network/compressor.o: src/protobufs/transportinstruction.pb.h
 win32/build/src/network/transportfragment.o: src/protobufs/transportinstruction.pb.h
 
+# State-sync sources need protobuf files
+win32/build/src/statesync/completeterminal.o: src/protobufs/hostinput.pb.h
+win32/build/src/statesync/user.o: src/protobufs/userinput.pb.h
+
 $(BUILD)/win32/wincompat.o: win32/wincompat.cc src/include/config.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
