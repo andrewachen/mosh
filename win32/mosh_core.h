@@ -58,8 +58,12 @@ public:
      the first frame and close_sequence() once at teardown — console mode alone
      cannot repair these VT modes, and mosh's input encoding assumes
      application-cursor mode is set. */
-  /* The host must establish a UTF-8 locale before constructing MoshCore, so
-     Terminal::Parser::UTF8Parser can decode remote terminal bytes correctly. */
+  /* The constructor enforces that the host has established a UTF-8 locale, so
+     Terminal::Parser::UTF8Parser can decode remote terminal bytes correctly.
+     It throws std::runtime_error unless a non-ASCII wide character encodes to
+     its UTF-8 bytes. Left unchecked, a non-UTF-8 locale surfaces as a
+     std::length_error thrown from deep inside the framebuffer, long after
+     construction and only once an overlay renders such a character. */
   /* The host calls tick() at its event-loop boundary; tick refreshes mosh's
      process-wide cached timestamp before running transport timers. */
   const std::string& open_sequence() const;

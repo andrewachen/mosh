@@ -34,9 +34,12 @@
 /* ABOUTME: Validates a real reverse Transport path, framebuffer output, and clean shutdown. */
 
 #include <cassert>
+#include <climits>
 #include <clocale>
 #include <cstdio>
 #include <cwchar>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "src/util/locale_utils.h"
@@ -93,6 +96,32 @@ int main()
   TestServer server( 80, 24 );
   const std::string server_port = server.port();
   const std::string server_key = server.get_key();
+
+  /* Negative test: verify the locale probe fires when the locale is "C". */
+  {
+    assert( setlocale( LC_ALL, "C" ) != nullptr );
+
+    bool threw = false;
+    try {
+      MoshCore core( "127.0.0.1", server_port.c_str(), server_key.c_str(), 80, 24, "never" );
+    } catch ( const std::runtime_error& error ) {
+      threw = true;
+      assert( std::string( error.what() ).find( "UTF-8 locale" ) != std::string::npos );
+    }
+    assert( threw );
+
+#ifdef _WIN32
+    assert( setlocale( LC_ALL, ".UTF-8" ) != nullptr );
+#else
+    set_native_locale();
+    assert( is_utf8_locale() );
+#endif
+
+    mbstate_t mbs = {};
+    char mb[MB_LEN_MAX];
+    assert( wcrtomb( mb, L'\u00E9', &mbs ) == 2 );
+  }
+
   MoshCore core( "127.0.0.1", server_port.c_str(), server_key.c_str(), 80, 24, "never" );
 
   /* Display(false) deliberately supplies portable ANSI sequences; the native

@@ -311,6 +311,17 @@ public:
 MoshCore::MoshCore( const char *ip, const char *port, const char *key, int cols, int rows, const char *predict )
   : impl( nullptr )
 {
+  /* Functional locale probe: the framebuffer encodes wide characters with
+     wcrtomb(), so require that e-acute encodes as its two UTF-8 bytes. Merely
+     succeeding is not enough: a single-byte codepage such as Latin-1 encodes
+     this character in one byte, so a check that only rejects (size_t)-1 would
+     admit the very locales this rejects. */
+  mbstate_t mbs = {};
+  char mb[MB_LEN_MAX];
+  if ( wcrtomb( mb, L'\u00E9', &mbs ) != 2 || mb[0] != '\xc3' || mb[1] != '\xa9' ) {
+    throw std::runtime_error( "MoshCore requires a UTF-8 locale. The host must call setlocale( LC_ALL, \".UTF-8\" ) before constructing MoshCore." );
+  }
+
   freeze_timestamp();
   impl = new Impl( ip, port, key, cols, rows, predict );
 }
