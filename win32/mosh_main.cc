@@ -34,6 +34,7 @@
 /* ABOUTME: Restores the console before reporting any session or frontend failure. */
 
 #include "win32/console_io.h"
+#include "win32/mosh_bootstrap.h"
 #include "src/network/network.h"
 
 #include <clocale>
@@ -92,24 +93,58 @@ std::string bundled_terminfo_path()
 
 void print_usage( const char *program )
 {
-  std::fprintf( stderr, "Usage: %s <ip> <port> <key> [predict]\n", program );
+  std::fprintf( stderr,
+    "Usage: %s <user@host>                         (connect via ssh)\n"
+    "       %s <ip> <port> <key> [predict]         (developer/raw endpoint)\n",
+    program, program );
 }
 
-bool valid_predict( const char *predict )
+}  // namespace
+
+void scrub_key( std::string *key )   // idempotent
 {
-  return std::string( predict ) == "adaptive" || std::string( predict ) == "always"
-    || std::string( predict ) == "never" || std::string( predict ) == "experimental";
+  if ( key && !key->empty() ) { SecureZeroMemory( &(*key)[0], key->size() ); key->clear(); }
 }
+
+int run_console_session( const char *ip, const char *port, std::string *key,
+                         const char *predict, int cols, int rows, std::string *message,
+                         CleanupReport *cleanup )
+{
+  int session_rc = 1;
+  try {
+    MoshCore core( ip, port, key->c_str(), cols, rows, predict );
+    scrub_key( key );                          // base64 key consumed by the ctor
+    /* The constructor performs every console mutation and writes the open
+       sequence; by the time it returns the session is fully live. */
+    ConsoleSession session( core );
+    try {
+      session.run();
+    } catch ( ... ) {
+      /* run() restores before propagating, so the report is available
+         here whether or not it threw. */
+      *cleanup = session.cleanup_report();
+      throw;
+    }
+    *cleanup = session.cleanup_report();
+    session_rc = core.exited_cleanly() ? 0 : 1;
+    *message = core.status_message();
+  } catch ( const ConsoleError &error ) {
+    scrub_key( key ); session_rc = FRONTEND_FAILURE_EXIT_CODE; *message = error.what();
+  } catch ( const Network::NetworkException &error ) {
+    scrub_key( key ); session_rc = EXCEPTION_EXIT_CODE; *message = error.what();
+  } catch ( const std::exception &error ) {
+    scrub_key( key ); session_rc = EXCEPTION_EXIT_CODE; *message = error.what();
+  }
+  return session_rc;
 }
 
 int main( int argc, char *argv[] )
 {
-  if ( ( argc != 4 && argc != 5 ) || ( argc == 5 && !valid_predict( argv[4] ) ) ) {
-    print_usage( argv[0] );
-    return USAGE_EXIT_CODE;
-  }
+  const Invocation mode = classify_invocation( argc, argv );
+  if ( mode == Invocation::Usage ) { print_usage( argv[0] ); return USAGE_EXIT_CODE; }
 
   try {
+    /* existing setlocale(".UTF-8") + TERM/TERMINFO setup */
     if ( setlocale( LC_ALL, ".UTF-8" ) == NULL ) {
       std::fprintf( stderr, "Unable to configure the UTF-8 locale\n" );
       return EXCEPTION_EXIT_CODE;
@@ -122,40 +157,22 @@ int main( int argc, char *argv[] )
       return EXCEPTION_EXIT_CODE;
     }
 
-    int cols = 0;
-    int rows = 0;
-    console_dims( &cols, &rows );
-    const char *predict = argc == 5 ? argv[4] : "adaptive";
-    MoshCore core( argv[1], argv[2], argv[3], cols, rows, predict );
+    int cols = 0, rows = 0;
+    console_dims( &cols, &rows );                 // preflight before spawning ssh
 
-    int session_rc = 1;
+    int session_rc;
     CleanupReport cleanup = { ERROR_SUCCESS, CLEANUP_OP_NONE, ERROR_SUCCESS };
-    try {
-      /* The constructor performs every console mutation and writes the open
-         sequence; by the time it returns the session is fully live. */
-      ConsoleSession session( core );
-      try {
-        session.run();
-      } catch ( ... ) {
-        /* run() restores before propagating, so the report is available
-           here whether or not it threw. */
-        cleanup = session.cleanup_report();
-        throw;
-      }
-      cleanup = session.cleanup_report();
-      session_rc = core.exited_cleanly() ? 0 : 1;
-      message = core.status_message();
-    } catch ( const ConsoleError &error ) {
-      session_rc = FRONTEND_FAILURE_EXIT_CODE;
-      message = error.what();
-    } catch ( const Network::NetworkException &error ) {
-      session_rc = EXCEPTION_EXIT_CODE;
-      message = error.what();
-    } catch ( const std::exception &error ) {
-      session_rc = EXCEPTION_EXIT_CODE;
-      message = error.what();
+    if ( mode == Invocation::Bootstrap ) {
+      BootstrapResult ep;
+      const std::string err = mosh_bootstrap( argv[1], &ep );
+      if ( !err.empty() ) { std::fprintf( stderr, "%s\n", err.c_str() ); return FRONTEND_FAILURE_EXIT_CODE; }
+      session_rc = run_console_session( ep.ip.c_str(), ep.port.c_str(), &ep.key, "adaptive", cols, rows,
+                                        &message, &cleanup );
+    } else {
+      const char *predict = argc == 5 ? argv[4] : "adaptive";
+      std::string devkey( argv[3] );
+      session_rc = run_console_session( argv[1], argv[2], &devkey, predict, cols, rows, &message, &cleanup );
     }
-
     if ( !message.empty() ) {
       std::fprintf( stderr, "%s\n", message.c_str() );
     }
@@ -168,13 +185,10 @@ int main( int argc, char *argv[] )
     }
     return session_rc;
   } catch ( const ConsoleError &error ) {
-    std::fprintf( stderr, "%s\n", error.what() );
-    return FRONTEND_FAILURE_EXIT_CODE;
+    std::fprintf( stderr, "%s\n", error.what() ); return FRONTEND_FAILURE_EXIT_CODE;
   } catch ( const Network::NetworkException &error ) {
-    std::fprintf( stderr, "%s\n", error.what() );
-    return EXCEPTION_EXIT_CODE;
+    std::fprintf( stderr, "%s\n", error.what() ); return EXCEPTION_EXIT_CODE;
   } catch ( const std::exception &error ) {
-    std::fprintf( stderr, "%s\n", error.what() );
-    return EXCEPTION_EXIT_CODE;
+    std::fprintf( stderr, "%s\n", error.what() ); return EXCEPTION_EXIT_CODE;
   }
 }

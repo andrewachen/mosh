@@ -379,10 +379,12 @@ void MoshCore::resize( int cols, int rows )
     return;
   }
   impl->network->get_current_state().push_back( Parser::Resize( cols, rows ) );
-  impl->local_framebuffer = Framebuffer( cols, rows );
-  impl->new_state = Framebuffer( cols, rows );
+  /* The local framebuffers are deliberately left alone. The remote emulator
+     replies with its own Resize, and the display repaints in full by itself
+     once the state it renders changes dimensions. Reallocating them here would
+     make the diff baseline disagree with the state still being rendered, which
+     costs an extra full-screen repaint per resize step. */
   impl->overlays.get_prediction_engine().reset();
-  impl->repaint_requested = true;
 }
 
 int MoshCore::tick()
