@@ -51,32 +51,105 @@ struct ConsoleError : public std::runtime_error {
     : std::runtime_error( msg ), win32_code( code ) {}
 };
 
-struct ConsoleState {
-  HANDLE h_in;
-  HANDLE h_out;
-  DWORD in_mode;
-  DWORD out_mode;
-  UINT in_cp;
-  UINT out_cp;
-};
-
-void console_raw_enter( ConsoleState *saved );
-void console_raw_restore( const ConsoleState *saved );
 void console_dims( int *cols, int *rows );
 
 /* Write every byte or throw ConsoleError. */
 void write_all( HANDLE handle, const std::string &bytes );
 
-/* Owns the console event loop. Fairness-only scaffold: it does not implement
-   graceful shutdown. */
+/* Why a session is ending. IN_BAND is the default/benign cause (e.g. the
+   remote side quit); the rest name an external event that interrupted the
+   owner thread. */
+enum class ShutdownCause {
+  IN_BAND,
+  CTRL_BREAK,
+  IO_LOSS,
+  CTRL_CLOSE,
+  SESSION_END,
+};
+
+/* Where a session is in its life. RUNNING covers the whole time run() is
+   pumping; RESTORED means the console has been given back regardless of
+   whether every restore step succeeded; DONE is teardown-complete. */
+enum class ConsoleLifecycleState {
+  RUNNING,
+  SHUTTING_DOWN,
+  RESTORED,
+  DONE,
+};
+
+/* Console state captured before setup mutates it, and restored from at
+   teardown. */
+struct ConsoleSnapshot {
+  HANDLE input;
+  HANDLE output;
+  DWORD input_mode;
+  DWORD output_mode;
+  UINT input_cp;
+  UINT output_cp;
+};
+
+/* Which restore step (if any) first failed. Shared between console_io.cc,
+   which records it, and mosh_main.cc, which formats it, so the two cannot
+   drift out of sync if the steps are ever renumbered. */
+enum CleanupOp {
+  CLEANUP_OP_NONE,
+  CLEANUP_OP_CLOSE_SEQUENCE,
+  CLEANUP_OP_OUTPUT_CP,
+  CLEANUP_OP_INPUT_CP,
+  CLEANUP_OP_OUTPUT_MODE,
+  CLEANUP_OP_INPUT_MODE,
+};
+
+/* Records the first Win32 failure encountered while restoring the console, if
+   any. Later failures during the same restore are not recorded. */
+struct CleanupReport {
+  DWORD first_error;
+  int failed_op;
+};
+
+/* A console setup mutation the test-only failure injector can target, in the
+   order setup applies them. */
+enum class ConsoleSetupStep {
+  INPUT_MODE,
+  OUTPUT_MODE,
+  INPUT_CODE_PAGE,
+  OUTPUT_CODE_PAGE,
+};
+
+/* Test-only: makes setup fail immediately after the named mutation succeeds,
+   to exercise rollback of that specific mutation. */
+void console_test_fail_after( ConsoleSetupStep step );
+
+/* Test-only: signals the real termination event after the named mutation
+   succeeds. Setup then stops at the production termination checkpoint rather
+   than at an injected failure, so deleting that checkpoint fails the test. */
+void console_test_signal_termination_after( ConsoleSetupStep step );
+
+/* Test-only: disarms both injectors, which are process-global and sticky. */
+void console_test_clear_setup_injections();
+
+/* Test-only: the restored event of the most recently created session. Readable
+   after a constructor throws, when no session object survives to be asked.
+   Control blocks and their handles are never reclaimed, so this stays valid. */
+HANDLE console_test_last_restored_event();
+
+/* Installed via SetConsoleCtrlHandler. Runs on a system-owned thread that may
+   already be active when the session is torn down; it only records the cause
+   and signals termination, never touching console or MoshCore state itself. */
+BOOL WINAPI console_control_handler( DWORD type );
+
+/* Owns console setup/teardown and the console event loop. The constructor
+   performs every console mutation, installs the control handler, starts the
+   reader, and writes the open sequence; by the time it returns the session is
+   fully live. run() assumes that and performs no setup of its own. */
 class ConsoleSession {
 public:
-  ConsoleSession( MoshCore &core, const ConsoleState &state );
+  explicit ConsoleSession( MoshCore &core );
   ~ConsoleSession();
   ConsoleSession( const ConsoleSession & ) = delete;
   ConsoleSession &operator=( const ConsoleSession & ) = delete;
 
-  /* Main event loop. Fairness-only: per wakeup it:
+  /* Main event loop. Per wakeup it:
        - refreshes the cached timestamp after the wait returns
        - services termination
        - polls for a resize
@@ -87,7 +160,8 @@ public:
 
      Returns when the termination re-test observes the termination event, or
      when core.is_finished() is true after core.tick() at the top of an
-     iteration.
+     iteration. Restores the console on every exit path, normal or
+     exceptional, before returning or propagating.
 
      Otherwise it throws rather than returning. ConsoleError comes from socket
      reconciliation, the handle-count guard, the wait itself, the reader's
@@ -97,7 +171,16 @@ public:
      what callers should catch. */
   void run();
 
-  /* Test-only accessors for the event-loop acceptance harness. */
+  /* The sole cross-thread entry point: records the cause and signals
+     termination. Everything else stays on run()'s owner thread. */
+  void request_shutdown( ShutdownCause cause );
+
+  /* Test-only accessors for the event-loop acceptance harness. Every one of
+     these is meaningful as soon as the constructor returns, before run() is
+     ever called. */
+  HANDLE termination_event_for_test() const;
+  HANDLE restored_event_for_test() const;
+  ConsoleSnapshot original_console_for_test() const;
   size_t input_backlog_for_test() const;
   /* True if a drain ever left the input queue empty. Records the drain event
      itself rather than an end state, so it cannot be confused by whatever the
@@ -124,6 +207,10 @@ public:
      reader thread is still growing. Returns false if the backlog is short.
      Non-blocking — the caller establishes the backlog. */
   bool signal_termination_against_backlog_for_test( size_t minimum );
+  /* Report from the most recent restore attempt (constructor rollback,
+     run()'s exit path, or the destructor). CLEANUP_OP_NONE / ERROR_SUCCESS
+     until a restore has actually run. */
+  CleanupReport cleanup_report() const;
 private:
   class Impl;
   std::unique_ptr<Impl> impl;

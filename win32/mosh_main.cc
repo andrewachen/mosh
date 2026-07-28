@@ -46,28 +46,28 @@ const int USAGE_EXIT_CODE = 2;
 const int FRONTEND_FAILURE_EXIT_CODE = 3;
 const int EXCEPTION_EXIT_CODE = 4;
 
-class TerminalGuard {
-private:
-  const ConsoleState &state;
-  const MoshCore &core;
-
-public:
-  bool open_started;
-
-  TerminalGuard( const ConsoleState &cs, const MoshCore &session_core )
-    : state( cs ), core( session_core ), open_started( false ) {}
-
-  ~TerminalGuard()
-  {
-    if ( open_started ) {
-      try {
-        write_all( state.h_out, core.close_sequence() );
-      } catch ( ... ) {
-      }
-    }
-    console_raw_restore( &state );
+/* Names the first restore failure, if any, for the stderr message. Keeps the
+   mapping from CleanupOp to a human-readable name out of the session so a
+   renumbered enum cannot silently mislabel an error here. */
+const char *cleanup_op_name( int op )
+{
+  switch ( op ) {
+    case CLEANUP_OP_NONE:
+      return "none";
+    case CLEANUP_OP_CLOSE_SEQUENCE:
+      return "writing the close sequence";
+    case CLEANUP_OP_OUTPUT_CP:
+      return "restoring the output code page";
+    case CLEANUP_OP_INPUT_CP:
+      return "restoring the input code page";
+    case CLEANUP_OP_OUTPUT_MODE:
+      return "restoring the output mode";
+    case CLEANUP_OP_INPUT_MODE:
+      return "restoring the input mode";
+    default:
+      return "an unknown step";
   }
-};
+}
 
 bool set_environment( const char *name, const char *value, std::string *message )
 {
@@ -129,18 +129,22 @@ int main( int argc, char *argv[] )
     MoshCore core( argv[1], argv[2], argv[3], cols, rows, predict );
 
     int session_rc = 1;
+    CleanupReport cleanup = { ERROR_SUCCESS, CLEANUP_OP_NONE };
     try {
-      ConsoleState state;
-      console_raw_enter( &state );
-      {
-        TerminalGuard terminal( state, core );
-        terminal.open_started = true;
-        write_all( state.h_out, core.open_sequence() );
-        ConsoleSession session( core, state );
+      /* The constructor performs every console mutation and writes the open
+         sequence; by the time it returns the session is fully live. */
+      ConsoleSession session( core );
+      try {
         session.run();
-        session_rc = core.exited_cleanly() ? 0 : 1;
-        message = core.status_message();
+      } catch ( ... ) {
+        /* run() restores before propagating, so the report is available
+           here whether or not it threw. */
+        cleanup = session.cleanup_report();
+        throw;
       }
+      cleanup = session.cleanup_report();
+      session_rc = core.exited_cleanly() ? 0 : 1;
+      message = core.status_message();
     } catch ( const ConsoleError &error ) {
       session_rc = FRONTEND_FAILURE_EXIT_CODE;
       message = error.what();
@@ -154,6 +158,10 @@ int main( int argc, char *argv[] )
 
     if ( !message.empty() ) {
       std::fprintf( stderr, "%s\n", message.c_str() );
+    }
+    if ( cleanup.failed_op != CLEANUP_OP_NONE ) {
+      std::fprintf( stderr, "warning: %s failed while restoring the console (GetLastError=%lu)\n",
+                    cleanup_op_name( cleanup.failed_op ), cleanup.first_error );
     }
     return session_rc;
   } catch ( const ConsoleError &error ) {

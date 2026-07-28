@@ -37,9 +37,7 @@
 
 #include <algorithm>
 #include <atomic>
-#include <climits>
 #include <cstdint>
-#include <cstring>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -55,7 +53,39 @@ const size_t READ_BUFFER_SIZE = 4096;
 const size_t INPUT_BUDGET_BYTES = 65536;
 /* Bound retained paste data while leaving room for several large terminal pastes. */
 const size_t INPUT_QUEUE_CAP_BYTES = 4 * 1024 * 1024;
-static HANDLE g_termination_event = NULL;
+
+/* Process-retained control block a control-handler callback may still be
+   waiting on after the ConsoleSession that created it is gone. Never freed,
+   and neither event is ever closed: a callback that already loaded the
+   pointer may be about to wait on these handles, and freeing or closing
+   under that wait is undefined behavior. One block and two handles leak per
+   session construction: mosh.exe builds one session, though the acceptance
+   harness builds several in a process. */
+struct ShutdownControl {
+  HANDLE termination;
+  HANDLE restored;
+  std::atomic<ShutdownCause> cause;
+};
+
+/* Published once setup allocates both events, cleared on every teardown path.
+   The handler loads this once into a local and null-checks before use. */
+std::atomic<ShutdownControl *> g_shutdown_control( nullptr );
+
+/* Set by console_test_fail_after(); the ConsoleSetupStep to fail after, cast
+   to int, or -1 for no injected failure. Consulted only after the named
+   mutation has already succeeded. */
+std::atomic<int> g_fail_after_step( -1 );
+
+/* Set by console_test_signal_termination_after(); the ConsoleSetupStep after
+   which to signal the real termination event, cast to int, or -1 for none.
+   Unlike the failure injector this does not short-circuit: setup still reaches
+   the production termination checkpoint and fails there. */
+std::atomic<int> g_terminate_after_step( -1 );
+
+/* The restored event of the most recently created control block. Readable after
+   a constructor throws, when no session object survives to be asked. Safe to
+   expose because control blocks and their handles are never reclaimed. */
+std::atomic<HANDLE> g_last_restored_event( NULL );
 
 std::string error_message( const char *what, DWORD error )
 {
@@ -75,87 +105,54 @@ bool valid_handle( HANDLE handle )
   return handle != NULL && handle != INVALID_HANDLE_VALUE;
 }
 
-BOOL WINAPI ctrl_handler( DWORD type )
+/* Keeps the first failure recorded into *report; later failures are dropped
+   because the caller only wants to report the failure that actually broke
+   restoration, not a downstream one it caused. */
+void record_last_error( CleanupReport *report, int failed_op ) noexcept
 {
-  switch ( type ) {
-  case CTRL_C_EVENT:
-  case CTRL_BREAK_EVENT:
-  case CTRL_CLOSE_EVENT:
-  case CTRL_LOGOFF_EVENT:
-  case CTRL_SHUTDOWN_EVENT:
-    if ( g_termination_event != NULL ) {
-      SetEvent( g_termination_event );
-    }
-    return TRUE;
-  default:
-    return FALSE;
+  if ( report->first_error == ERROR_SUCCESS ) {
+    report->first_error = GetLastError();
+    report->failed_op = failed_op;
   }
 }
 
-class ControlHandlerGuard {
-private:
-  HANDLE event;
-
-public:
-  ControlHandlerGuard()
-    : event( CreateEvent( NULL, TRUE, FALSE, NULL ) )
-  {
-    if ( event == NULL ) {
-      throw_last_error( "CreateEvent for console termination" );
-    }
-    g_termination_event = event;
-    if ( !SetConsoleCtrlHandler( ctrl_handler, TRUE ) ) {
-      const DWORD error = GetLastError();
-      g_termination_event = NULL;
-      CloseHandle( event );
-      throw ConsoleError( error, error_message( "SetConsoleCtrlHandler", error ) );
-    }
-  }
-
-  ~ControlHandlerGuard()
-  {
-    SetConsoleCtrlHandler( ctrl_handler, FALSE );
-    g_termination_event = NULL;
-    CloseHandle( event );
-  }
-
-  HANDLE handle() const
-  {
-    return event;
-  }
-};
-
-DWORD restore_console( const ConsoleState &saved, bool restore_input_mode,
-                       bool restore_output_mode, bool restore_input_cp,
-                       bool restore_output_cp )
+/* Backstop for callers that already have a success/failure bool: if the
+   operation failed but nothing more specific was recorded, record a generic
+   failure rather than leaving the report silently blank. */
+void record_cleanup_failure( CleanupReport *report, bool succeeded, int failed_op ) noexcept
 {
-  DWORD failure = ERROR_SUCCESS;
-  if ( restore_output_cp && !SetConsoleOutputCP( saved.out_cp ) ) {
-    failure = GetLastError();
+  if ( !succeeded && report->first_error == ERROR_SUCCESS ) {
+    report->first_error = ERROR_WRITE_FAULT;
+    report->failed_op = failed_op;
   }
-  if ( restore_input_cp && !SetConsoleCP( saved.in_cp ) && failure == ERROR_SUCCESS ) {
-    failure = GetLastError();
-  }
-  if ( restore_output_mode && !SetConsoleMode( saved.h_out, saved.out_mode )
-       && failure == ERROR_SUCCESS ) {
-    failure = GetLastError();
-  }
-  if ( restore_input_mode && !SetConsoleMode( saved.h_in, saved.in_mode )
-       && failure == ERROR_SUCCESS ) {
-    failure = GetLastError();
-  }
-  return failure;
 }
 
-std::string rollback_message( const char *what, DWORD error, DWORD rollback_error )
+/* write_all() for the restore path: reports failure into *report instead of
+   throwing, so restoration can keep going through every remaining step. */
+bool write_all_noexcept( HANDLE handle, const std::string &bytes, CleanupReport *report,
+                         int failed_op ) noexcept
 {
-  std::string message = error_message( what, error );
-  if ( rollback_error != ERROR_SUCCESS ) {
-    std::ostringstream rollback;
-    rollback << message << "; console rollback failed (error " << rollback_error << ")";
-    return rollback.str();
+  size_t offset = 0;
+  while ( offset < bytes.size() ) {
+    const size_t remaining = bytes.size() - offset;
+    const DWORD requested = static_cast<DWORD>( std::min<size_t>( remaining, MAXDWORD ) );
+    DWORD written = 0;
+    if ( !WriteFile( handle, bytes.data() + offset, requested, &written, NULL ) ) {
+      record_last_error( report, failed_op );
+      return false;
+    }
+    if ( written == 0 ) {
+      /* GetLastError() is undefined for a zero-byte "success," matching the
+         throwing write_all(). */
+      if ( report->first_error == ERROR_SUCCESS ) {
+        report->first_error = ERROR_WRITE_FAULT;
+        report->failed_op = failed_op;
+      }
+      return false;
+    }
+    offset += written;
   }
-  return message;
+  return true;
 }
 
 class Reader {
@@ -473,68 +470,52 @@ public:
 };
 }
 
-void console_raw_enter( ConsoleState *saved )
+BOOL WINAPI console_control_handler( DWORD type )
 {
-  ConsoleState captured;
-  captured.h_in = GetStdHandle( STD_INPUT_HANDLE );
-  captured.h_out = GetStdHandle( STD_OUTPUT_HANDLE );
-  if ( !valid_handle( captured.h_in ) || !valid_handle( captured.h_out ) ) {
-    throw ConsoleError( ERROR_INVALID_HANDLE, "standard input or output is not a console handle" );
+  ShutdownCause cause;
+  switch ( type ) {
+  case CTRL_C_EVENT:
+  case CTRL_BREAK_EVENT:
+    cause = ShutdownCause::CTRL_BREAK;
+    break;
+  case CTRL_CLOSE_EVENT:
+  case CTRL_LOGOFF_EVENT:
+  case CTRL_SHUTDOWN_EVENT:
+    cause = ShutdownCause::CTRL_CLOSE;
+    break;
+  default:
+    return FALSE;
   }
-  if ( !GetConsoleMode( captured.h_in, &captured.in_mode ) ) {
-    throw_last_error( "GetConsoleMode stdin" );
+  /* Load once into a local: the global can go NULL the instant after this
+     handler loads it, but never while this local still holds the pointer, so
+     a single null-checked local is all the safety this needs. */
+  ShutdownControl *control = g_shutdown_control.load();
+  if ( control != NULL ) {
+    control->cause.store( cause );
+    SetEvent( control->termination );
   }
-  if ( !GetConsoleMode( captured.h_out, &captured.out_mode ) ) {
-    throw_last_error( "GetConsoleMode stdout" );
-  }
-  captured.in_cp = GetConsoleCP();
-  if ( captured.in_cp == 0 ) {
-    throw_last_error( "GetConsoleCP" );
-  }
-  captured.out_cp = GetConsoleOutputCP();
-  if ( captured.out_cp == 0 ) {
-    throw_last_error( "GetConsoleOutputCP" );
-  }
-
-  bool input_mode = false;
-  bool output_mode = false;
-  bool input_cp = false;
-  bool output_cp = false;
-  const DWORD raw_input = ( captured.in_mode | ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_EXTENDED_FLAGS )
-    & ~( ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT | ENABLE_QUICK_EDIT_MODE );
-  const DWORD vt_output = captured.out_mode | ENABLE_PROCESSED_OUTPUT
-    | ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN;
-  if ( !SetConsoleMode( captured.h_in, raw_input ) ) {
-    throw_last_error( "SetConsoleMode stdin" );
-  }
-  input_mode = true;
-  if ( !SetConsoleMode( captured.h_out, vt_output ) ) {
-    const DWORD error = GetLastError();
-    const DWORD rollback_error = restore_console( captured, input_mode, output_mode, input_cp, output_cp );
-    throw ConsoleError( error, rollback_message( "SetConsoleMode stdout", error, rollback_error ) );
-  }
-  output_mode = true;
-  if ( !SetConsoleCP( CP_UTF8 ) ) {
-    const DWORD error = GetLastError();
-    const DWORD rollback_error = restore_console( captured, input_mode, output_mode, input_cp, output_cp );
-    throw ConsoleError( error, rollback_message( "SetConsoleCP", error, rollback_error ) );
-  }
-  input_cp = true;
-  if ( !SetConsoleOutputCP( CP_UTF8 ) ) {
-    const DWORD error = GetLastError();
-    const DWORD rollback_error = restore_console( captured, input_mode, output_mode, input_cp, output_cp );
-    throw ConsoleError( error, rollback_message( "SetConsoleOutputCP", error, rollback_error ) );
-  }
-  output_cp = true;
-  *saved = captured;
+  return TRUE;
 }
 
-void console_raw_restore( const ConsoleState *saved )
+void console_test_fail_after( ConsoleSetupStep step )
 {
-  SetConsoleOutputCP( saved->out_cp );
-  SetConsoleCP( saved->in_cp );
-  SetConsoleMode( saved->h_out, saved->out_mode );
-  SetConsoleMode( saved->h_in, saved->in_mode );
+  g_fail_after_step.store( static_cast<int>( step ) );
+}
+
+void console_test_signal_termination_after( ConsoleSetupStep step )
+{
+  g_terminate_after_step.store( static_cast<int>( step ) );
+}
+
+void console_test_clear_setup_injections()
+{
+  g_fail_after_step.store( -1 );
+  g_terminate_after_step.store( -1 );
+}
+
+HANDLE console_test_last_restored_event()
+{
+  return g_last_restored_event.load();
 }
 
 void console_dims( int *cols, int *rows )
@@ -568,12 +549,25 @@ void write_all( HANDLE handle, const std::string &bytes )
 class ConsoleSession::Impl {
 public:
   MoshCore &core;
-  const ConsoleState &state;
-  ControlHandlerGuard termination_guard;
-  SocketEvents socket_events;
-  Reader reader;
+  ConsoleSnapshot original;
+  bool input_mode_set;
+  bool output_mode_set;
+  bool input_cp_set;
+  bool output_cp_set;
+  bool open_sequence_started;
+  /* Non-owning: deliberately leaked, see ShutdownControl above. Valid from
+     the point setup allocates it (early in the constructor) onward; never
+     reassigned after that. */
+  ShutdownControl *control;
+  std::unique_ptr<Reader> reader;
+  std::unique_ptr<SocketEvents> socket_events;
   int cols;
   int rows;
+  ConsoleLifecycleState state;
+  /* Guards restore() against running twice: once from run()'s exit path, once
+     more from the destructor if run() was never called. */
+  bool restored_flag;
+  CleanupReport cleanup;
 
   /* Per-iteration clock samples for the clock-refresh test. Written from inside
      run() without a lock, so the accessor's contract forbids reading them while
@@ -581,37 +575,254 @@ public:
   ConsoleSession::ClockRefreshSample clock_samples[CLOCK_SAMPLE_CAPACITY];
   size_t clock_sample_count;
 
-  Impl( MoshCore &core_ref, const ConsoleState &cs )
-    : core( core_ref ), state( cs ),
-      termination_guard(),
-      socket_events( core_ref ),
-      reader( cs.h_in ),
-      cols( 0 ), rows( 0 ),
+  explicit Impl( MoshCore &core_ref )
+    : core( core_ref ), original(), input_mode_set( false ), output_mode_set( false ),
+      input_cp_set( false ), output_cp_set( false ), open_sequence_started( false ),
+      control( NULL ), reader(), socket_events(), cols( 0 ), rows( 0 ),
+      state( ConsoleLifecycleState::RUNNING ), restored_flag( false ), cleanup(),
       clock_samples(), clock_sample_count( 0 )
   {
+    original.input = GetStdHandle( STD_INPUT_HANDLE );
+    original.output = GetStdHandle( STD_OUTPUT_HANDLE );
+    if ( !valid_handle( original.input ) || !valid_handle( original.output ) ) {
+      throw ConsoleError( ERROR_INVALID_HANDLE, "standard input or output is not a console handle" );
+    }
+    if ( !GetConsoleMode( original.input, &original.input_mode ) ) {
+      throw_last_error( "GetConsoleMode stdin" );
+    }
+    if ( !GetConsoleMode( original.output, &original.output_mode ) ) {
+      throw_last_error( "GetConsoleMode stdout" );
+    }
+    original.input_cp = GetConsoleCP();
+    if ( original.input_cp == 0 ) {
+      throw_last_error( "GetConsoleCP" );
+    }
+    original.output_cp = GetConsoleOutputCP();
+    if ( original.output_cp == 0 ) {
+      throw_last_error( "GetConsoleOutputCP" );
+    }
+
     CONSOLE_SCREEN_BUFFER_INFO initial_info;
-    if ( !GetConsoleScreenBufferInfo( state.h_out, &initial_info ) ) {
+    if ( !GetConsoleScreenBufferInfo( original.output, &initial_info ) ) {
       throw_last_error( "GetConsoleScreenBufferInfo" );
     }
     cols = initial_info.srWindow.Right - initial_info.srWindow.Left + 1;
     rows = initial_info.srWindow.Bottom - initial_info.srWindow.Top + 1;
     core.resize( cols, rows );
+
+    /* Nothing above this point mutated the console or registered anything
+       process-global, so every failure so far is a plain throw: there is
+       nothing yet to roll back and no restored event yet to signal. */
+
+    control = new ShutdownControl;
+    control->termination = CreateEvent( NULL, TRUE, FALSE, NULL );
+    if ( control->termination == NULL ) {
+      throw_last_error( "CreateEvent for console termination" );
+    }
+    control->restored = CreateEvent( NULL, TRUE, FALSE, NULL );
+    if ( control->restored == NULL ) {
+      throw_last_error( "CreateEvent for console restored" );
+    }
+    control->cause.store( ShutdownCause::IN_BAND );
+    g_last_restored_event.store( control->restored );
+
+    /* Publish before registering. A control event delivered in the gap between
+       the handler becoming callable and the pointer becoming visible would load
+       NULL, report the event handled, and drop it. Nothing is mutated yet, so a
+       registration failure only has to unpublish. */
+    g_shutdown_control.store( control );
+    if ( !SetConsoleCtrlHandler( console_control_handler, TRUE ) ) {
+      const DWORD error = GetLastError();
+      g_shutdown_control.store( NULL );
+      throw ConsoleError( error, error_message( "SetConsoleCtrlHandler", error ) );
+    }
+
+    /* Everything below mutates the console or owns a thread. A constructor that
+       throws does not run ~Impl, so this catch is the only unwind path: it has to
+       cover an allocation failure or any other non-ConsoleError as well, or a
+       failure here would leave the console raw and the handler registered. */
+    try {
+      setup_console();
+    } catch ( ... ) {
+      release_and_signal();
+      throw;
+    }
+  }
+
+  /* Applies the console mutations, starts the reader, and enters the alternate
+     screen. Each mutation is recorded before its checkpoint so a rollback undoes
+     exactly what was applied. */
+  void setup_console()
+  {
+    const DWORD raw_input = ( original.input_mode | ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_EXTENDED_FLAGS )
+      & ~( ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT | ENABLE_QUICK_EDIT_MODE );
+    if ( !SetConsoleMode( original.input, raw_input ) ) {
+      const DWORD error = GetLastError();
+      fail_setup( error, error_message( "SetConsoleMode stdin", error ) );
+    }
+    input_mode_set = true;
+    checkpoint( ConsoleSetupStep::INPUT_MODE );
+
+    const DWORD vt_output = original.output_mode | ENABLE_PROCESSED_OUTPUT
+      | ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN;
+    if ( !SetConsoleMode( original.output, vt_output ) ) {
+      const DWORD error = GetLastError();
+      fail_setup( error, error_message( "SetConsoleMode stdout", error ) );
+    }
+    output_mode_set = true;
+    checkpoint( ConsoleSetupStep::OUTPUT_MODE );
+
+    if ( !SetConsoleCP( CP_UTF8 ) ) {
+      const DWORD error = GetLastError();
+      fail_setup( error, error_message( "SetConsoleCP", error ) );
+    }
+    input_cp_set = true;
+    checkpoint( ConsoleSetupStep::INPUT_CODE_PAGE );
+
+    if ( !SetConsoleOutputCP( CP_UTF8 ) ) {
+      const DWORD error = GetLastError();
+      fail_setup( error, error_message( "SetConsoleOutputCP", error ) );
+    }
+    output_cp_set = true;
+    checkpoint( ConsoleSetupStep::OUTPUT_CODE_PAGE );
+
+    try {
+      reader.reset( new Reader( original.input ) );
+    } catch ( const ConsoleError &error ) {
+      fail_setup( error.win32_code, error.what() );
+    }
+    socket_events.reset( new SocketEvents( core ) );
+
+    /* Set before the write: a partial write may already have entered the
+       alternate screen, so restore() must issue the close sequence even if
+       this write fails partway through. */
+    open_sequence_started = true;
+    try {
+      write_all( original.output, core.open_sequence() );
+    } catch ( const ConsoleError &error ) {
+      fail_setup( error.win32_code, error.what() );
+    }
+  }
+
+  ~Impl()
+  {
+    release_and_signal();
+  }
+
+  /* Stops the reader, rolls back whatever setup applied, signals restored, and
+     releases the process-global registration. Idempotent, so the constructor's
+     unwind path, run(), and the destructor can each call it and only the first
+     has any effect. noexcept because a control handler is blocked on restored
+     and an exception escaping here would strand it.
+
+     The reader stops first: restore() returns the console to cooked input, and a
+     worker still blocked in ReadFile on CONIN$ could otherwise swallow typeahead
+     after the console has been declared restored. */
+  void release_and_signal() noexcept
+  {
+    if ( restored_flag ) {
+      return;
+    }
+    restored_flag = true;
+    if ( reader ) {
+      reader->stop();
+    }
+    cleanup = restore();
+    state = ConsoleLifecycleState::RESTORED;
+    SetEvent( control->restored );
+    SetConsoleCtrlHandler( console_control_handler, FALSE );
+    g_shutdown_control.store( NULL );
+  }
+
+  /* Tests whether test-injected or real termination has fired after the
+     named mutation succeeded, and if so rolls back and throws. Only the four
+     console mutations are checkpointed; the open-sequence write is not. */
+  void checkpoint( ConsoleSetupStep step )
+  {
+    /* Signalling rather than short-circuiting: a test that wants the termination
+       branch has to reach it through the same zero-timeout wait production uses,
+       otherwise the branch could be deleted and the test would still pass. */
+    if ( g_terminate_after_step.load() == static_cast<int>( step ) ) {
+      SetEvent( control->termination );
+    }
+    if ( g_fail_after_step.load() == static_cast<int>( step ) ) {
+      fail_setup( ERROR_CANCELLED, "console setup test-injected failure" );
+    }
+    if ( WaitForSingleObject( control->termination, 0 ) == WAIT_OBJECT_0 ) {
+      fail_setup( ERROR_OPERATION_ABORTED, "console setup aborted by termination request" );
+    }
+  }
+
+  /* Rolls back through release_and_signal(), then reports why setup stopped. The
+     constructor's catch also calls release_and_signal(), which is idempotent, so
+     the rollback happens exactly once whichever route the failure takes. */
+  void fail_setup( DWORD error, const std::string &message )
+  {
+    release_and_signal();
+    std::string full_message = message;
+    if ( cleanup.first_error != ERROR_SUCCESS ) {
+      std::ostringstream detail;
+      detail << full_message << "; console rollback failed (error " << cleanup.first_error << ")";
+      full_message = detail.str();
+    }
+    throw ConsoleError( error, full_message );
+  }
+
+  /* Best-effort and allocation-free: restores whatever has actually been
+     applied, keeping only the first failure. Safe to call before any
+     mutation has been applied (every flag is false, so every step is a
+     no-op) and safe to call more than once. */
+  CleanupReport restore() noexcept
+  {
+    CleanupReport report = { ERROR_SUCCESS, CLEANUP_OP_NONE };
+    if ( open_sequence_started ) {
+      record_cleanup_failure( &report,
+        write_all_noexcept( original.output, core.close_sequence(), &report, CLEANUP_OP_CLOSE_SEQUENCE ),
+        CLEANUP_OP_CLOSE_SEQUENCE );
+    }
+    if ( output_cp_set && !SetConsoleOutputCP( original.output_cp ) ) {
+      record_last_error( &report, CLEANUP_OP_OUTPUT_CP );
+    }
+    if ( input_cp_set && !SetConsoleCP( original.input_cp ) ) {
+      record_last_error( &report, CLEANUP_OP_INPUT_CP );
+    }
+    if ( output_mode_set && !SetConsoleMode( original.output, original.output_mode ) ) {
+      record_last_error( &report, CLEANUP_OP_OUTPUT_MODE );
+    }
+    if ( input_mode_set && !SetConsoleMode( original.input, original.input_mode ) ) {
+      record_last_error( &report, CLEANUP_OP_INPUT_MODE );
+    }
+    return report;
+  }
+
+  HANDLE termination_event() const
+  {
+    return control->termination;
+  }
+
+  HANDLE restored_event() const
+  {
+    return control->restored;
+  }
+
+  ConsoleSnapshot original_console() const
+  {
+    return original;
   }
 
   size_t input_backlog() const
   {
-    return reader.pending_bytes();
+    return reader->pending_bytes();
   }
 
   bool input_ever_drained() const
   {
-    return reader.ever_drained_to_empty();
+    return reader->ever_drained_to_empty();
   }
 
   bool signal_termination_against_backlog( size_t minimum )
   {
-    return reader.signal_termination_against_backlog(
-      termination_guard.handle(), minimum );
+    return reader->signal_termination_against_backlog( control->termination, minimum );
   }
 
   size_t clock_refresh_samples( ConsoleSession::ClockRefreshSample *out,
@@ -624,7 +835,36 @@ public:
     return count;
   }
 
+  CleanupReport cleanup_report() const
+  {
+    return cleanup;
+  }
+
+  /* The sole cross-thread entry point. Everything else touching core, the
+     reader, or console state stays on the thread inside run(). */
+  void request_shutdown( ShutdownCause cause )
+  {
+    control->cause.store( cause );
+    SetEvent( control->termination );
+  }
+
   void run()
+  {
+    try {
+      run_loop();
+    } catch ( ... ) {
+      release_and_signal();
+      throw;
+    }
+    release_and_signal();
+  }
+
+private:
+  /* The exact sequence run() and the destructor both need on every exit path:
+     restore, mark RESTORED, then unconditionally signal restored. A control
+     handler blocks on this event, so nothing that can throw or allocate may
+     sit between restore() returning and the SetEvent below. */
+  void run_loop()
   {
     while ( true ) {
       const int timeout = core.tick();
@@ -632,16 +872,16 @@ public:
         break;
       }
 
-      socket_events.reconcile( core.socket_fds() );
-      const std::map<intptr_t, WSAEVENT> &registered = socket_events.all();
+      socket_events->reconcile( core.socket_fds() );
+      const std::map<intptr_t, WSAEVENT> &registered = socket_events->all();
       if ( registered.size() + 2 > MAXIMUM_WAIT_OBJECTS ) {
         throw ConsoleError( ERROR_TOO_MANY_OPEN_FILES, "too many handles for WaitForMultipleObjects" );
       }
 
       std::vector<HANDLE> handles;
       std::vector<intptr_t> fds;
-      handles.push_back( reader.event() );
-      handles.push_back( termination_guard.handle() );
+      handles.push_back( reader->event() );
+      handles.push_back( control->termination );
       for ( std::map<intptr_t, WSAEVENT>::const_iterator it = registered.begin(); it != registered.end(); ++it ) {
         handles.push_back( it->second );
         fds.push_back( it->first );
@@ -679,18 +919,18 @@ public:
          Upstream gets this from pselect, which reports the whole ready set.
          Sockets are the one exception: at most one readable socket is serviced
          per wakeup, because on_readable can prune the set this snapshot names. */
-      if ( WaitForSingleObject( termination_guard.handle(), 0 ) == WAIT_OBJECT_0 ) {
+      if ( WaitForSingleObject( control->termination, 0 ) == WAIT_OBJECT_0 ) {
         break;
       }
       /* Surface a dead reader only once termination has not claimed this wakeup,
          so a console teardown exits cleanly instead of by exception. */
-      reader.check_failure();
+      reader->check_failure();
 
       /* Upstream resize work is signal-gated and a cheap ioctl. Windows has no
          SIGWINCH, so this unconditional synchronous console round trip stays
          after termination to avoid shutdown work upstream never pays. */
       CONSOLE_SCREEN_BUFFER_INFO info;
-      if ( !GetConsoleScreenBufferInfo( state.h_out, &info ) ) {
+      if ( !GetConsoleScreenBufferInfo( original.output, &info ) ) {
         throw_last_error( "GetConsoleScreenBufferInfo" );
       }
       const int new_cols = info.srWindow.Right - info.srWindow.Left + 1;
@@ -717,21 +957,21 @@ public:
           }
         }
       }
-      const std::string bytes = reader.take_bytes( INPUT_BUDGET_BYTES );
+      const std::string bytes = reader->take_bytes( INPUT_BUDGET_BYTES );
       if ( !bytes.empty() ) {
         core.feed_input( bytes.data(), bytes.size() );
       }
 
       const std::string &frame = core.next_frame();
       if ( !frame.empty() ) {
-        write_all( state.h_out, frame );
+        write_all( original.output, frame );
       }
     }
   }
 };
 
-ConsoleSession::ConsoleSession( MoshCore &core, const ConsoleState &state )
-  : impl( new Impl( core, state ) )
+ConsoleSession::ConsoleSession( MoshCore &core )
+  : impl( new Impl( core ) )
 {
 }
 
@@ -740,6 +980,26 @@ ConsoleSession::~ConsoleSession() = default;
 void ConsoleSession::run()
 {
   impl->run();
+}
+
+void ConsoleSession::request_shutdown( ShutdownCause cause )
+{
+  impl->request_shutdown( cause );
+}
+
+HANDLE ConsoleSession::termination_event_for_test() const
+{
+  return impl->termination_event();
+}
+
+HANDLE ConsoleSession::restored_event_for_test() const
+{
+  return impl->restored_event();
+}
+
+ConsoleSnapshot ConsoleSession::original_console_for_test() const
+{
+  return impl->original_console();
 }
 
 size_t ConsoleSession::input_backlog_for_test() const
@@ -765,4 +1025,9 @@ bool ConsoleSession::signal_termination_against_backlog_for_test( size_t minimum
 size_t ConsoleSession::clock_refresh_samples_for_test( ClockRefreshSample *out, size_t capacity ) const
 {
   return impl->clock_refresh_samples( out, capacity );
+}
+
+CleanupReport ConsoleSession::cleanup_report() const
+{
+  return impl->cleanup_report();
 }

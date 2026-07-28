@@ -31,9 +31,10 @@
 */
 
 /* ABOUTME: Acceptance harness for the native Windows console lifecycle, run on the inherited console. */
-/* ABOUTME: Modes: vt-mode asserts raw enter/restore output flags; fairness proves termination wins a contested wakeup; clock-refresh proves the timestamp refreshes after the wait. */
+/* ABOUTME: Modes: vt-mode asserts setup/restore console state; fairness proves termination wins a contested wakeup; clock-refresh proves the timestamp refreshes after the wait; transaction proves rollback after an injected setup failure; init-checkpoint proves it after a real mid-setup shutdown. */
 
 #include <atomic>
+#include <clocale>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -52,9 +53,10 @@ static void must( BOOL ok, const char *what );
 /* Point the process std handles at the real attached console for the duration
    of an in-process test. The msys2 CI shell redirects std handles to pipes, so
    GetStdHandle(STD_OUTPUT_HANDLE) is not the console; CONOUT$/CONIN$ always name
-   the attached console. console_raw_enter reads GetStdHandle, so repointing the
-   std handles lets it run its production path against the real console. stderr is
-   deliberately left untouched so failure diagnostics still reach the CI log. */
+   the attached console. ConsoleSession's constructor reads GetStdHandle, so
+   repointing the std handles lets it run its production path against the real
+   console. stderr is deliberately left untouched so failure diagnostics still
+   reach the CI log. */
 class ConsoleTestScope {
 public:
   ConsoleTestScope()
@@ -155,10 +157,18 @@ static int run_vt_mode()
   must( GetConsoleMode( h_out, &initial_out ), "GetConsoleMode(h_out)" );
   must( SetConsoleMode( h_out, initial_out & ~ENABLE_PROCESSED_OUTPUT ), "SetConsoleMode(clear PROCESSED_OUTPUT)" );
 
-  ConsoleState saved;
-  console_raw_enter( &saved );
+  TestServer server( 80, 24 );
+  MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
+                 80, 24, "never" );
+
+  ConsoleSnapshot snapshot;
   DWORD active_out_mode = 0;
-  must( GetConsoleMode( saved.h_out, &active_out_mode ), "GetConsoleMode(active)" );
+  {
+    ConsoleSession session( core );
+    snapshot = session.original_console_for_test();
+    must( GetConsoleMode( snapshot.output, &active_out_mode ), "GetConsoleMode(active)" );
+  }
+  /* session is out of scope here: the destructor has already restored. */
   if ( ( active_out_mode & ENABLE_PROCESSED_OUTPUT ) == 0 ) {
     fprintf( stderr, "FAIL: ENABLE_PROCESSED_OUTPUT not set\n" );
     return 1;
@@ -171,11 +181,25 @@ static int run_vt_mode()
     fprintf( stderr, "FAIL: DISABLE_NEWLINE_AUTO_RETURN not set\n" );
     return 1;
   }
-  console_raw_restore( &saved );
+  /* All four mutations, not just the output mode: this is the only mode that
+     exercises the destructor's restore after a construction that succeeded, so
+     anything it does not compare is unverified anywhere. */
   DWORD restored_out_mode = 0;
-  must( GetConsoleMode( saved.h_out, &restored_out_mode ), "GetConsoleMode(restored)" );
-  if ( restored_out_mode != saved.out_mode ) {
-    fprintf( stderr, "FAIL: mode not restored\n" );
+  DWORD restored_in_mode = 0;
+  must( GetConsoleMode( snapshot.output, &restored_out_mode ), "GetConsoleMode(restored out)" );
+  must( GetConsoleMode( snapshot.input, &restored_in_mode ), "GetConsoleMode(restored in)" );
+  const UINT restored_out_cp = GetConsoleOutputCP();
+  const UINT restored_in_cp = GetConsoleCP();
+  if ( restored_out_mode != snapshot.output_mode
+       || restored_in_mode != snapshot.input_mode
+       || restored_out_cp != snapshot.output_cp
+       || restored_in_cp != snapshot.input_cp ) {
+    fprintf( stderr,
+             "FAIL: console not fully restored (out_mode=%lu/%lu in_mode=%lu/%lu "
+             "out_cp=%u/%u in_cp=%u/%u)\n",
+             restored_out_mode, snapshot.output_mode, restored_in_mode,
+             snapshot.input_mode, restored_out_cp, snapshot.output_cp,
+             restored_in_cp, snapshot.input_cp );
     return 1;
   }
   return 0;
@@ -315,9 +339,6 @@ static int run_fairness()
 {
   ConsoleTestScope scope;
 
-  ConsoleState saved;
-  console_raw_enter( &saved );
-
   TestServer server( 80, 24 );
   MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
                  80, 24, "never" );
@@ -335,7 +356,8 @@ static int run_fairness()
     return 1;
   }
 
-  auto session = std::make_unique<ConsoleSession>( core, saved );
+  auto session = std::make_unique<ConsoleSession>( core );
+  const HANDLE h_in = session->original_console_for_test().input;
   /* Stamped immediately before run() is entered; the watchdog waits against it
      rather than starting its own interval when it happens to be scheduled. */
   std::atomic<ULONGLONG> deadline_at( 0 );
@@ -381,7 +403,7 @@ static int run_fairness()
        past the cap keep polling until the deadline rather than calling a
        merely slow reader a setup failure. */
     if ( batches < FAIRNESS_FILL_MAX_BATCHES ) {
-      if ( !WriteConsoleInputA( saved.h_in, records, RECORDS_PER_FILL_BATCH,
+      if ( !WriteConsoleInputA( h_in, records, RECORDS_PER_FILL_BATCH,
                                 &last_written ) ) {
         fprintf( stderr, "FAIL: WriteConsoleInputA failed (GetLastError=%lu)\n",
                  GetLastError() );
@@ -404,10 +426,10 @@ static int run_fairness()
     must( SetEvent( deadline_start.get() ), "SetEvent(deadline_start)" );
     session->run();
   } catch ( const std::exception &e ) {
-    fprintf( stderr, "FAIL: session.run() threw: %s\n", e.what() );
+    fprintf( stderr, "FAIL: fairness: session.run() threw: %s\n", e.what() );
     thrown = 1;
   } catch ( ... ) {
-    fprintf( stderr, "FAIL: session.run() threw a non-standard exception\n" );
+    fprintf( stderr, "FAIL: fairness: session.run() threw a non-standard exception\n" );
     thrown = 1;
   }
   must( SetEvent( session_done.get() ), "SetEvent(session_done)" );
@@ -458,9 +480,7 @@ static const size_t CLOCK_REFRESH_SAMPLE_CAPACITY = 64;
 /* Ends run() from a second thread once the loop has had time to turn over
    several waits. It shares nothing with the test thread but the session pointer
    and a cancel event, and contributes nothing to the verdict, so it carries none
-   of the attribution problems a thread that raced run() would. Signaling against
-   a zero minimum asks only for the termination event: this mode deliberately
-   leaves the input queue empty. */
+   of the attribution problems a thread that raced run() would. */
 class TerminationTimerGuard {
 public:
   TerminationTimerGuard( ConsoleSession *session, HANDLE cancel, DWORD delay_ms )
@@ -486,7 +506,10 @@ private:
     if ( WaitForSingleObject( cancel, delay_ms ) != WAIT_TIMEOUT ) {
       return;
     }
-    session->signal_termination_against_backlog_for_test( 0 );
+    /* The documented cross-thread entry point, which is also what a control
+       handler would call, so this mode covers the real path rather than a
+       test-only one that happens to signal the same event. */
+    session->request_shutdown( ShutdownCause::CTRL_BREAK );
   }
 
   HANDLE cancel_;
@@ -517,9 +540,6 @@ static int run_clock_refresh()
 {
   ConsoleTestScope scope;
 
-  ConsoleState saved;
-  console_raw_enter( &saved );
-
   TestServer server( 80, 24 );
   MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
                  80, 24, "never" );
@@ -544,7 +564,7 @@ static int run_clock_refresh()
     return 1;
   }
 
-  auto session = std::make_unique<ConsoleSession>( core, saved );
+  auto session = std::make_unique<ConsoleSession>( core );
   std::atomic<ULONGLONG> deadline_at( 0 );
 
   /* Between them the two guards own threads that reach back into `scope`,
@@ -563,10 +583,10 @@ static int run_clock_refresh()
     must( SetEvent( deadline_start.get() ), "SetEvent(deadline_start)" );
     session->run();
   } catch ( const std::exception &e ) {
-    fprintf( stderr, "FAIL: session.run() threw: %s\n", e.what() );
+    fprintf( stderr, "FAIL: clock-refresh: session.run() threw: %s\n", e.what() );
     thrown = 1;
   } catch ( ... ) {
-    fprintf( stderr, "FAIL: session.run() threw a non-standard exception\n" );
+    fprintf( stderr, "FAIL: clock-refresh: session.run() threw a non-standard exception\n" );
     thrown = 1;
   }
   must( SetEvent( session_done.get() ), "SetEvent(session_done)" );
@@ -613,10 +633,148 @@ static int run_clock_refresh()
   return 0;
 }
 
+/* How setup is made to stop at a given step. INJECT_FAILURE takes the injected
+   branch of the checkpoint; SIGNAL_TERMINATION sets the real termination event
+   and lets setup stop at the same zero-timeout wait production uses, so that
+   branch cannot be deleted without failing a test. */
+enum class RollbackTrigger { INJECT_FAILURE, SIGNAL_TERMINATION };
+
+/* Arms `trigger` for `step`, constructs a ConsoleSession expecting the
+   constructor to roll back and throw, then checks the console against its
+   pre-construction state. Proves the named step's checkpoint fires, that every
+   mutation applied before it is undone, and that restoration was announced. */
+static int run_rollback_case( ConsoleSetupStep step, RollbackTrigger trigger,
+                              const char *label )
+{
+  ConsoleTestScope scope;
+
+  HANDLE h_out = GetStdHandle( STD_OUTPUT_HANDLE );
+  HANDLE h_in = GetStdHandle( STD_INPUT_HANDLE );
+  DWORD before_out_mode = 0;
+  DWORD before_in_mode = 0;
+  must( GetConsoleMode( h_out, &before_out_mode ), "GetConsoleMode(h_out, before)" );
+  must( GetConsoleMode( h_in, &before_in_mode ), "GetConsoleMode(h_in, before)" );
+  const UINT before_out_cp = GetConsoleOutputCP();
+  const UINT before_in_cp = GetConsoleCP();
+
+  TestServer server( 80, 24 );
+  MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
+                 80, 24, "never" );
+
+  console_test_clear_setup_injections();
+  const DWORD expected_code = trigger == RollbackTrigger::INJECT_FAILURE
+    ? ERROR_CANCELLED : ERROR_OPERATION_ABORTED;
+  if ( trigger == RollbackTrigger::INJECT_FAILURE ) {
+    console_test_fail_after( step );
+  } else {
+    console_test_signal_termination_after( step );
+  }
+
+  bool threw = false;
+  DWORD actual_code = ERROR_SUCCESS;
+  try {
+    ConsoleSession session( core );
+  } catch ( const ConsoleError &error ) {
+    threw = true;
+    actual_code = error.win32_code;
+  } catch ( const std::exception &e ) {
+    console_test_clear_setup_injections();
+    fprintf( stderr, "FAIL: %s: constructor threw the wrong exception type: %s\n",
+             label, e.what() );
+    return 1;
+  }
+  console_test_clear_setup_injections();
+  if ( !threw ) {
+    fprintf( stderr, "FAIL: %s: constructor did not stop at the checkpoint\n", label );
+    return 1;
+  }
+  /* The code distinguishes which branch of the checkpoint stopped setup, so a
+     termination case cannot pass by taking the injected-failure path. */
+  if ( actual_code != expected_code ) {
+    fprintf( stderr, "FAIL: %s: stopped with error %lu, expected %lu\n",
+             label, actual_code, expected_code );
+    return 1;
+  }
+  /* No session survives a throwing constructor, so the restored event is read
+     from the control block, which outlives it deliberately. */
+  const HANDLE restored = console_test_last_restored_event();
+  if ( restored == NULL || WaitForSingleObject( restored, 0 ) != WAIT_OBJECT_0 ) {
+    fprintf( stderr, "FAIL: %s: rollback did not signal restored\n", label );
+    return 1;
+  }
+
+  DWORD after_out_mode = 0;
+  DWORD after_in_mode = 0;
+  must( GetConsoleMode( h_out, &after_out_mode ), "GetConsoleMode(h_out, after)" );
+  must( GetConsoleMode( h_in, &after_in_mode ), "GetConsoleMode(h_in, after)" );
+  const UINT after_out_cp = GetConsoleOutputCP();
+  const UINT after_in_cp = GetConsoleCP();
+  if ( after_out_mode != before_out_mode || after_in_mode != before_in_mode
+       || after_out_cp != before_out_cp || after_in_cp != before_in_cp ) {
+    fprintf( stderr, "FAIL: %s: console state not fully rolled back\n", label );
+    return 1;
+  }
+  return 0;
+}
+
+/* Fails after INPUT_MODE (one mutation to unwind) and after INPUT_CODE_PAGE
+   (three: input mode, output mode, input code page), proving rollback chains
+   of different depths all unwind completely rather than just the single-step
+   case. */
+static int run_transaction()
+{
+  if ( run_rollback_case( ConsoleSetupStep::INPUT_MODE,
+                          RollbackTrigger::INJECT_FAILURE, "transaction/input-mode" ) != 0 ) {
+    return 1;
+  }
+  if ( run_rollback_case( ConsoleSetupStep::INPUT_CODE_PAGE,
+                          RollbackTrigger::INJECT_FAILURE, "transaction/input-code-page" ) != 0 ) {
+    return 1;
+  }
+  return 0;
+}
+
+/* Publishes a real shutdown between setup mutations, once after each of the
+   four, and proves setup stops at the production termination checkpoint, undoes
+   every mutation applied so far, and signals restored. Unlike transaction this
+   goes through no injected failure: the checkpoint's zero-timeout wait on the
+   termination event is what has to fire. */
+static int run_init_checkpoint()
+{
+  static const ConsoleSetupStep steps[] = {
+    ConsoleSetupStep::INPUT_MODE,
+    ConsoleSetupStep::OUTPUT_MODE,
+    ConsoleSetupStep::INPUT_CODE_PAGE,
+    ConsoleSetupStep::OUTPUT_CODE_PAGE,
+  };
+  static const char *labels[] = {
+    "init-checkpoint/input-mode", "init-checkpoint/output-mode",
+    "init-checkpoint/input-code-page", "init-checkpoint/output-code-page",
+  };
+  for ( size_t i = 0; i < sizeof( steps ) / sizeof( steps[0] ); ++i ) {
+    if ( run_rollback_case( steps[i], RollbackTrigger::SIGNAL_TERMINATION,
+                            labels[i] ) != 0 ) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 int main( int argc, char *argv[] )
 {
   if ( argc < 2 ) {
     fprintf( stderr, "usage: %s <mode>\n", argv[0] );
+    return 1;
+  }
+
+  /* MoshCore requires the host to establish a UTF-8 locale before construction,
+     as mosh.exe and the core test both do. Without it wcrtomb() cannot encode
+     the non-ASCII characters the overlay renderer produces, and the frame path
+     builds a string from a failed conversion length. Only a run long enough to
+     draw an overlay reaches that, which is why the modes that exit on their
+     first wakeup never needed it. */
+  if ( setlocale( LC_ALL, ".UTF-8" ) == NULL ) {
+    fprintf( stderr, "fatal: setlocale(LC_ALL, \".UTF-8\") failed\n" );
     return 1;
   }
 
@@ -629,6 +787,12 @@ int main( int argc, char *argv[] )
     }
     if ( strcmp( argv[1], "clock-refresh" ) == 0 ) {
       return run_clock_refresh();
+    }
+    if ( strcmp( argv[1], "transaction" ) == 0 ) {
+      return run_transaction();
+    }
+    if ( strcmp( argv[1], "init-checkpoint" ) == 0 ) {
+      return run_init_checkpoint();
     }
   } catch ( const std::exception &e ) {
     fprintf( stderr, "FAIL: uncaught exception: %s\n", e.what() );
