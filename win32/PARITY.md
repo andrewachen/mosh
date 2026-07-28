@@ -23,17 +23,17 @@ Severity is **high** for correctness, security, or resource-exhaustion consequen
 | `PLATFORM` | 7 |
 | `POLICY` | 1 |
 | `DEFERRED` | 0 |
-| `DEFECT` | 22 |
+| `DEFECT` | 21 |
 | `OPEN` | 0 |
-| **Total** | **30** |
+| **Total** | **29** |
 
-Six repaired or confirmed behavior records — connection-timeout shutdown, reader input ending, Ctrl-C and Ctrl-Break shutdown, bounded close-handler restoration attempts, post-wait timestamp freezing, and UCRT wide-printf semantics — are recorded at the end and are not counted as findings.
+Seven repaired or confirmed behavior records — connection-timeout shutdown, reader input ending, Ctrl-C and Ctrl-Break shutdown, bounded close-handler restoration attempts, post-wait timestamp freezing, resize framebuffer ownership, and UCRT wide-printf semantics — are recorded at the end and are not counted as findings.
 
 ## How the defects cluster
 
 Six are **configuration omissions**, each independent and individually cheap: `MOSH_ESCAPE_KEY` (A1), `MOSH_PREDICTION_OVERWRITE` (A2), the `[mosh] ` title prefix (A3), `-v` diagnostics (A4), `MOSH_NO_TERM_INIT` (A20), and the escape-suspend sequence (A16).
 
-Eleven are **event-loop and shutdown drift**: A5, A6, A7, A8, A9, A12, A15, A17, A18, A22, and A23. `STMClient::main()` was re-derived rather than extracted, so every ordering and exception-boundary decision was re-made independently, and each drifted on its own.
+Ten are **event-loop and shutdown drift**: A5, A6, A7, A8, A9, A12, A15, A18, A22, and A23. `STMClient::main()` was re-derived rather than extracted, so every ordering and exception-boundary decision was re-made independently, and each drifted on its own.
 
 Whether the correct remedy is a shared platform-neutral loop coordinator (taking normalized events, returning actions and deadlines) or platform-specific loops held together by parity tests is an open architectural question — a literal extraction of `STMClient::main()` is unlikely to stay simple, because the POSIX and Win32 waiting, input, resize, and termination contracts genuinely differ.
 
@@ -86,7 +86,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A2. `MOSH_PREDICTION_OVERWRITE=yes` is omitted
 
 * **Upstream:** Enables insertion-overwrite prediction when the variable is exactly `yes` (`src/frontend/stmclient.h:119`), read at `src/frontend/mosh-client.cc:178`.
-* **Port:** Accepts only a display-preference argument and never calls `PredictionEngine::set_predict_overwrite()` (`win32/mosh_core.cc:121`, `win32/mosh_main.cc:128`).
+* **Port:** Accepts only a display-preference argument and never calls `PredictionEngine::set_predict_overwrite()` (`win32/mosh_core.cc:121`, `win32/mosh_main.cc:172`).
 * **Consequence:** Insert and delete prediction can visibly differ from upstream before the server echo arrives.
 * **Class:** `DEFECT`, low. The shared prediction engine already exposes the operation.
 
@@ -101,7 +101,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A4. Upstream's `-v` diagnostics are unavailable
 
 * **Upstream:** Parses repeatable `-v` (`src/frontend/mosh-client.cc:129`) and calls both `network->set_verbose()` and `Select::set_verbose()` (`src/frontend/stmclient.cc:260`).
-* **Port:** Accepts only `<ip> <port> <key> [predict]` (`win32/mosh_main.cc:93`) and never sets transport verbosity (`win32/mosh_core.cc:149`).
+* **Port:** Accepts `<user@host>` or `<ip> <port> <key> [predict]`, neither of which takes a verbosity flag (`win32/mosh_main.cc:96`), and never sets transport verbosity (`win32/mosh_core.cc:150`).
 * **Consequence:** Neither transport diagnostics nor poll diagnostics can be requested, making field troubleshooting harder.
 * **Class:** `DEFECT`, low.
 * **Fix:** Two tiers with very different costs. Transport verbosity is a flag plus one existing setter. Reproducing `Select`'s poll diagnostics has no shared setter to call and requires instrumenting the Win32 loop; see A18, which covers the behavior those diagnostics describe.
@@ -109,18 +109,19 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### I7. The executable is a standalone CLI, not a wrapper-invoked client
 
 * **Upstream:** `mosh-client` is wrapper-facing: it parses `-c`/`-v`, reads prediction settings from the environment, and returns `!success` (`src/frontend/mosh-client.cc:129`).
-* **Port:** A standalone executable taking IP and port as positional arguments, returning distinct `2`, `3`, or `4` for usage, frontend, and exception errors (`win32/mosh_main.cc:105`).
-* **Consequence:** Scripts written against `mosh-client` do not invoke `mosh.exe` compatibly, and error classes carry different numeric statuses.
+* **Port:** A standalone executable that either spawns `ssh` for a `<user@host>` target and reads the endpoint from the server's `MOSH CONNECT` reply, or takes a raw endpoint positionally, returning distinct `2`, `3`, or `4` for usage, frontend, and exception errors (`win32/mosh_main.cc:46`).
+* **Consequence:** Scripts written against `mosh-client` do not invoke `mosh.exe` compatibly, and error classes carry different numeric statuses. `mosh.exe` also collapses upstream's wrapper-plus-client pair into one process, so there is no separate client binary to invoke.
 * **Class:** `POLICY`, low. `mosh.exe` is deliberately standalone and is not required to mirror `mosh-client`'s invocation or exit statuses.
 * **Scope:** This finding covers invocation shape and exit status only. Credential transport is a separate question and is recorded as S1 — "standalone" does not imply "key on the command line."
 
-#### S1. The session key is passed as a command-line argument
+#### S1. The developer endpoint form still passes the session key as a command-line argument
 
 * **Upstream:** Reads the key from `MOSH_KEY`, copies it into a `std::string`, and immediately calls `unsetenv( "MOSH_KEY" )`, failing hard if the unset fails (`src/frontend/mosh-client.cc:168`).
-* **Port:** Takes the key as `argv[3]` and passes it straight to the `MoshCore` constructor (`win32/mosh_main.cc:129`). The usage string documents it as a positional argument (`win32/mosh_main.cc:95`).
-* **Consequence:** Windows retains the full command line in the process parameter block for the process lifetime. The key is therefore readable by same-user and administrator process inspection, and can reach diagnostic tooling, telemetry, and crash dumps. Unlike upstream's environment variable, a command line cannot be cleared after it is read.
-* **Class:** `DEFECT`, **high** — security. Being a standalone executable does not require putting the key in `argv`.
-* **Fix:** Move the key off the command line. The remedy is not yet chosen, and the candidates differ materially. An inherited anonymous pipe or handle is the strongest channel but presumes a launcher, which I7 says is not part of the product shape — choosing it means also specifying how a direct user invokes `mosh.exe`. A no-echo interactive read covers the direct-user case without a launcher. Either way the existing positional form has to be retired, not kept alongside.
+* **Port:** The `<user@host>` form obtains the key from the server's `MOSH CONNECT` reply over the `ssh` pipe, so it never reaches a command line, an environment variable, or a log. The developer endpoint form still takes the key as `argv[3]` (`win32/mosh_main.cc:173`), and the usage string documents it as a positional argument (`win32/mosh_main.cc:98`). Both forms scrub their copy once the `MoshCore` constructor has consumed it.
+* **Consequence:** For the developer form, Windows retains the full command line in the process parameter block for the process lifetime. The key is therefore readable by same-user and administrator process inspection, and can reach diagnostic tooling, telemetry, and crash dumps. Unlike upstream's environment variable, a command line cannot be cleared after it is read — scrubbing the `std::string` copy does not touch it.
+* **Class:** `DEFECT`, **high** — security. The exposure is narrower than it was, but it is reachable through a documented invocation, and the severity rubric does not discount a security consequence for being reachable by fewer users.
+* **Fix:** Retire the positional key. The launcher question this finding used to leave open is now settled: the `<user@host>` path is the direct-user path and already carries the key off the command line, so nothing depends on keeping the positional form as the way a user starts a session. What remains is deciding whether the developer form drops the key argument entirely or reads it from a channel that is not the command line.
+* **Residual in the repaired path:** the bootstrap's intermediate key copies — the parsed reply and the pipe drain buffers — are freed without being zeroed, so a crash-dump-class adversary can still recover the key from freed heap. This is not a divergence: upstream's `mosh-client` zeroes none of its key copies either.
 * **Why upstream's environment pattern does not transfer unchanged:** the property upstream actually gets from `exec`ing the client is narrow — no *separate long-lived parent* retains the key. It is not erasure. The replacement process still starts with the key in its initial environment block, and `unsetenv` removes the entry from `environ` without overwriting those bytes, so `/proc/<pid>/environ` can keep exposing it. On Windows a user who types `set MOSH_KEY=...` before running `mosh.exe` loses even that narrow property: the key stays in a long-lived parent shell `mosh.exe` cannot reach, and that parent passes it to every later child. Environment input is therefore acceptable only from an ephemeral launcher supplying a scoped process-creation environment block, and even then it is a deliberately weaker compatibility mode.
 * **The environment path cannot satisfy S2's ordering requirement through child code.** Microsoft's [CreateProcess documentation](https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw) defines `lpEnvironment` as the environment block for the new process; the child cannot establish dump protection before its environment is created. The key is therefore in child memory during loader and startup failures — a window that clearing the views later cannot close. Either drop environment transport from the protected paths, require a launcher handshake in which the child establishes dump policy, reports readiness, and only then receives the key over a tightly inherited pipe, or establish the required protection through installer or system policy before `CreateProcess` creates the child's environment. If the weaker mode is kept, state plainly that pre-entry-point exposure is outside its guarantee; do not claim it meets the same fail-closed release invariant.
 * **The launcher handshake has its own security obligations:** it introduces another key-holding process whose crash behavior must be specified, and the child cannot enforce the ephemeral-launcher provenance on which the environment mode depends.
@@ -194,7 +195,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A22. A tick-side network error is cleared before it can be rendered
 
 * **Upstream:** A `NetworkException` from `network->tick()` unwinds to the catch outside the loop body (`src/frontend/stmclient.cc:562`), which sets the overlay network error and sleeps. The send-error block that would clear it (`src/frontend/stmclient.cc:553`) is skipped for that pass, so the error survives to the next frame.
-* **Port:** `MoshCore::tick()` catches the exception inline and sets the overlay network error (`win32/mosh_core.cc:398`), then falls through into the send-error block in the same call. When `get_send_error()` is empty — the normal case for a `tick()` throw — the `else` branch calls `clear_network_error()` (`win32/mosh_core.cc:415`), erasing the message before `next_frame()` ever runs.
+* **Port:** `MoshCore::tick()` catches the exception inline and sets the overlay network error (`win32/mosh_core.cc:400`), then falls through into the send-error block in the same call. When `get_send_error()` is empty — the normal case for a `tick()` throw — the `else` branch calls `clear_network_error()` (`win32/mosh_core.cc:417`), erasing the message before `next_frame()` ever runs.
 * **Consequence:** Transport errors raised by `tick()` are never shown to the user. Upstream displays them. This is a silent loss, not a timing difference: the notification is set and cleared within one function call.
 * **Reachable producer:** `Connection::send()` calls `hop_port()` on the client when *both* the last port choice and the last successful round trip are older than `PORT_HOP_INTERVAL` (10 s) — `src/network/network.cc:483`. `hop_port()` constructs a `Socket`, whose constructor throws `NetworkException` on `socket`, `ioctlsocket`, or `setsockopt` failure (`src/network/network.cc:159`). Note the second condition: a healthy client whose acknowledgements keep arriving never hops, so this fires only after roughly ten seconds without a successful round trip — when the connection is already in trouble and the user most needs to be told. That is also why an empty `send_error` is the normal case for a `tick()` throw: the `sendto` on that pass already succeeded, and the failure happens in the port hop afterwards.
 * **Class:** `DEFECT`, medium.
@@ -204,7 +205,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A7. A nonfatal crypto exception on the tick path requests a delay upstream does not
 
 * **Upstream:** Displays a nonfatal `CryptoException` and begins the next pass immediately; its crypto catch contains no sleep (`src/frontend/stmclient.cc:572`).
-* **Port:** Sets `retry_network_tick` and raises the returned wait time to at least 200 ms (`MoshCore::tick`, `win32/mosh_core.cc:425`).
+* **Port:** Sets `retry_network_tick` and raises the returned wait time to at least 200 ms (`MoshCore::tick`, `win32/mosh_core.cc:427`).
 * **Consequence:** The requested floor is not what the process actually waits. `run_loop()` caps the returned timeout at `RESIZE_POLL_CAP_MS` (100 ms) and any ready handle shortens it further, so the observable effect is that an otherwise shorter idle wait is raised to at most 100 ms. It is neither upstream's behavior (no delay) nor upstream's network-exception backoff (an unconditional 200 ms sleep).
 * **Class:** `DEFECT`, low.
 * **Fix:** A6 and A7 should be decided together — whether parity requires upstream's full-loop 200 ms pause or a network-only retry deadline. The current code splits the difference in a way that matches neither.
@@ -217,15 +218,6 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 * **Port:** Queries `GetConsoleScreenBufferInfo` after every wakeup — at most every 100 ms when idle, because of the `RESIZE_POLL_CAP_MS` cap — and calls `core.resize()` on a dimension change (`win32/console_io.cc:1187`).
 * **Consequence:** Resize detection is delayed by up to the polling interval and costs a console round trip on idle wakeups.
 * **Class:** `PLATFORM`, low. There is no SIGWINCH equivalent for the native console.
-
-#### A17. Resize eagerly replaces both framebuffers and forces a repaint
-
-* **Upstream:** `STMClient::process_resize()` queues the resize instruction and resets prediction. It does not touch any framebuffer; the server's echoed state changes the rendered dimensions (`src/frontend/stmclient.cc:418`).
-* **Port:** `MoshCore::resize()` additionally constructs new `local_framebuffer` and `new_state` at the new dimensions and sets `repaint_requested` (`win32/mosh_core.cc:382`).
-* **Consequence:** Discarding `local_framebuffer` discards the diff baseline, so the next frame is a full repaint of the still-old-sized remote state at the new dimensions — followed by another full repaint when the server echoes the resize. The user sees two repaints and a transient mismatch instead of one clean transition.
-* **Class:** `DEFECT`, medium. Independent of A8 (shutdown-path guard) and A9 (frame placement).
-* **Invariant to restore:** a host resize updates transport intent and prediction state; remote state remains the sole authority for framebuffer dimensions.
-* **Verification:** a dimension-changing resize does not by itself discard the diff baseline or force a full repaint, and the echoed resize produces exactly one dimension transition.
 
 #### A8. During shutdown the port skips the prediction reset
 
@@ -263,14 +255,14 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### I6c. Console restoration is not reliable during close handling
 
 * **Windows contract:** Microsoft's [HandlerRoutine documentation](https://learn.microsoft.com/windows/console/handlerroutine) states that console functions "may not work reliably" while processing `CTRL_CLOSE_EVENT`, `CTRL_LOGOFF_EVENT`, or `CTRL_SHUTDOWN_EVENT`, because console cleanup may already have run before the handler executes.
-* **Port:** The close path attempts to restore input and output modes before it signals `restored` (`Impl::restore`, `win32/console_io.cc:967`, `win32/console_io.cc:982`; `Impl::release_and_signal`, `win32/console_io.cc:909`, `win32/console_io.cc:918`, `win32/console_io.cc:920`). The completion event means only that the attempt completed; the cleanup report records whether it succeeded (`win32/mosh_main.cc:165`).
+* **Port:** The close path attempts to restore input and output modes before it signals `restored` (`Impl::restore`, `win32/console_io.cc:967`, `win32/console_io.cc:982`; `Impl::release_and_signal`, `win32/console_io.cc:909`, `win32/console_io.cc:918`, `win32/console_io.cc:920`). The completion event means only that the attempt completed; the cleanup report records whether it succeeded (`win32/mosh_main.cc:182`).
 * **Consequence:** Even when the handler waits within the close deadline, restoration can fail. The deadline machinery can bound the attempt; it cannot guarantee a restored console. Any user-visible cleanup report is best-effort because console output is itself among the operations documented as unreliable during close handling. Acceptance criteria for close must distinguish an attempt completing from restoration succeeding.
 * **Class:** `PLATFORM`, medium.
 
 #### A12. Send errors become sticky final status messages
 
 * **Upstream:** Shows `get_send_error()` as a transient overlay network error, clears it, and clears the overlay when no error remains (`src/frontend/stmclient.cc:553`).
-* **Port:** Does the same overlay work but also copies every send error into `impl->status` (`MoshCore::tick`, `win32/mosh_core.cc:410`), which `mosh_main` prints at session end (`win32/mosh_main.cc:147`).
+* **Port:** Does the same overlay work but also copies every send error into `impl->status` (`MoshCore::tick`, `win32/mosh_core.cc:413`), which `mosh_main` prints at session end (`win32/mosh_main.cc:177`).
 * **Consequence:** A transient send error that fully recovered is still printed to stderr when the session later exits.
 * **Class:** `DEFECT`, low. `status` is never cleared on recovery.
 
@@ -299,7 +291,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A21. Exit-time diagnostics and the exit banner are omitted
 
 * **Upstream:** After restoring the terminal, prints either detailed initial-connection troubleshooting (firewall, UDP port range, `-p`) or a warning that `mosh-server` may still be running (`src/frontend/stmclient.cc:220`), and finally `[mosh is exiting.]` (`src/frontend/mosh-client.cc:215`).
-* **Port:** `mosh_main` prints only `status_message()` when nonempty (`win32/mosh_main.cc:147`); there is no banner.
+* **Port:** `mosh_main` prints only `status_message()` when nonempty (`win32/mosh_main.cc:177`); there is no banner.
 * **Consequence:** A failed initial connection gives no firewall or UDP guidance, an unclean exit gives no server-still-running warning, and a clean exit has no banner.
 * **Class:** `DEFECT`, medium — the connection-failure guidance is the single most useful diagnostic upstream prints, and this is the platform where UDP is most likely to be firewalled.
 * **Note:** split from A14 because the owners differ. A14 is a frame the session emits; this is text `main` prints after restoration.
@@ -335,8 +327,15 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### The cached timestamp is frozen after the wait
 
 * **Upstream:** `Select::select()` freezes the timestamp after `pselect` returns (`src/util/select.h:186`).
-* **Port:** `run_loop()` calls `core.refresh_clock()` after `WaitForMultipleObjects` returns and before any dispatch (`win32/console_io.cc:1152`); `MoshCore::refresh_clock` freezes the shared timestamp (`win32/mosh_core.cc:431`).
+* **Port:** `run_loop()` calls `core.refresh_clock()` after `WaitForMultipleObjects` returns and before any dispatch (`win32/console_io.cc:1152`); `MoshCore::refresh_clock` freezes the shared timestamp (`win32/mosh_core.cc:433`).
 * **Status:** parity. Inbound state timestamps and RTT samples use wakeup time in both.
+
+#### Resize leaves the framebuffers to the remote state
+
+* **Upstream:** `STMClient::process_resize()` queues the resize instruction and resets prediction. It does not touch any framebuffer; the server's echoed state changes the rendered dimensions (`src/frontend/stmclient.cc:418`).
+* **Port:** `MoshCore::resize()` queues the instruction and resets prediction, and leaves `local_framebuffer` and `new_state` alone (`win32/mosh_core.cc:382`).
+* **Status:** parity. Reallocating the framebuffers would discard the diff baseline and force a full repaint of the still-old-sized remote state, followed by a second repaint when the server echoes the resize. Remote state is now the sole authority for framebuffer dimensions in both.
+* **Note:** the shutdown-path guard in front of both statements remains a divergence — see A8.
 
 #### UCRT wide-printf semantics
 
