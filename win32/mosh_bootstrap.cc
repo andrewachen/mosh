@@ -173,10 +173,10 @@ std::wstring build_ssh_command_line( const std::wstring &ssh_path, const std::st
      keeps one stream shape to parse. The tradeoff is that mosh-server 1.2.4 and
      older, which exit when their initial TIOCGWINSZ fails, are unsupported; 1.2.5
      falls back to 80x24. Whether -T or a forced -tt is the better pin is open;
-     see PARITY.md I8. ProxyJump and ProxyCommand are pinned for a different
-     reason (PARITY.md I9): with no client-visible-address discovery, a proxied
-     SSH would succeed and report an address the client cannot route to, so
-     refusing the route turns a silent UDP timeout into an immediate error. */
+     see PARITY.md I8. ProxyJump and ProxyCommand are pinned for an unrelated
+     reason: plain SSH only is a support restriction, deliberately broader than
+     it needs to be, since a proxied route can still announce a routable UDP
+     address. See PARITY.md I9. */
   return L"\"" + ssh_path + L"\""
     + L" -n -T -S none -o ProxyJump=none -o ProxyCommand=none "
     + widen( win_quote_arg( target ) ) + L" -- "
