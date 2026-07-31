@@ -163,13 +163,19 @@ std::wstring widen( const std::string &s )
 
 std::wstring build_ssh_command_line( const std::wstring &ssh_path, const std::string &target )
 {
-  /* -n: no PTY (stdin from NUL). Intentional divergence from upstream mosh.pl's
-     default -tt: we parse mosh-server's startup banner from ssh's piped stdout, and
-     a PTY would CRLF-translate and merge stderr into that stream, corrupting the
-     MOSH CONNECT parse. The tradeoff is that mosh-server <= 1.2.4 (which needs a PTY
-     for its initial TIOCGWINSZ) is unsupported; modern servers do not need one. */
+  /* -T forces no remote PTY; -n takes stdin from NUL. Both are needed and they do
+     different things: -n only redirects this side's stdin, while a user's
+     RequestTTY=force would still allocate a terminal without -T. Intentional
+     divergence from upstream mosh.pl's default -tt. The reason is determinism, not
+     a specific decoding failure: we parse mosh-server's startup banner from ssh's
+     piped stdout, and a PTY makes that stream configuration-dependent — line
+     discipline applies, and stderr arrives merged rather than separate. Pinning it
+     keeps one stream shape to parse. The tradeoff is that mosh-server 1.2.4 and
+     older, which exit when their initial TIOCGWINSZ fails, are unsupported; 1.2.5
+     falls back to 80x24. -S, ProxyJump, and ProxyCommand are pinned for the same
+     reason: user configuration must not change what the bootstrap is parsing. */
   return L"\"" + ssh_path + L"\""
-    + L" -n -S none -o ProxyJump=none -o ProxyCommand=none "
+    + L" -n -T -S none -o ProxyJump=none -o ProxyCommand=none "
     + widen( win_quote_arg( target ) ) + L" -- "
     + widen( win_quote_arg( build_remote_command() ) );
 }

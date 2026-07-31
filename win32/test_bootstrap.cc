@@ -307,7 +307,7 @@ static void test_build_ssh_command_line()
 {
   const std::wstring ssh_path = L"C:\\Windows\\System32\\OpenSSH\\ssh.exe";
   const std::wstring expected =
-    L"\"C:\\Windows\\System32\\OpenSSH\\ssh.exe\" -n -S none -o ProxyJump=none -o ProxyCommand=none user@host -- "
+    L"\"C:\\Windows\\System32\\OpenSSH\\ssh.exe\" -n -T -S none -o ProxyJump=none -o ProxyCommand=none user@host -- "
     L"\"sh -c '[ -n \\\"$SSH_CONNECTION\\\" ] && printf \\\"\\nMOSH SSH_CONNECTION %s\\n\\\" \\\"$SSH_CONNECTION\\\"' && mosh-server 'new' '-c' '256' '-s' '-l' 'LC_ALL=C.UTF-8'\"";
   assert( build_ssh_command_line( ssh_path, "user@host" ) == expected );
 }

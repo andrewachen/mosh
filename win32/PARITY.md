@@ -21,11 +21,11 @@ Severity is **high** for correctness, security, or resource-exhaustion consequen
 | Class | Findings |
 |---|---:|
 | `PLATFORM` | 7 |
-| `POLICY` | 1 |
+| `POLICY` | 2 |
 | `DEFERRED` | 0 |
 | `DEFECT` | 22 |
 | `OPEN` | 0 |
-| **Total** | **30** |
+| **Total** | **31** |
 
 Eight repaired or confirmed behavior records — connection-timeout shutdown, reader input ending, interrupt control events versus a typed Ctrl-C, bounded close-handler restoration attempts, post-wait timestamp freezing, resize framebuffer ownership, UCRT wide-printf semantics, and the retired command-line key channel — are recorded at the end and are not counted as findings.
 
@@ -124,6 +124,14 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 * **Consequence:** Scripts written against `mosh-client` do not invoke `mosh.exe` compatibly, and error classes carry different numeric statuses. `mosh.exe` also collapses upstream's wrapper-plus-client pair into one process, so there is no separate client binary to invoke.
 * **Class:** `POLICY`, low. `mosh.exe` is deliberately standalone and is not required to mirror `mosh-client`'s invocation or exit statuses.
 * **Scope:** This finding covers invocation shape and exit status only. Credential transport is a separate question, recorded as S1 and now repaired — "standalone" does not imply "key on the command line."
+
+#### I8. The bootstrap forces no remote PTY, where upstream requests one
+
+* **Upstream:** the wrapper defaults `$ssh_pty` to 1 (`scripts/mosh.pl:84`) and so passes `-tt` (`scripts/mosh.pl:359`), merging the server's stderr into the stream it parses (`scripts/mosh.pl:356`). `--no-ssh-pty` turns that off (`scripts/mosh.pl:167`).
+* **Port:** passes `-T` unconditionally alongside `-n` (`win32/mosh_bootstrap.cc:164`), with no option to request a terminal. `-n` alone would not settle it: it redirects only the client's stdin, so a `RequestTTY=force` in the user's configuration would still allocate one.
+* **Consequence:** `mosh-server` 1.2.4 and older exit when their initial `TIOCGWINSZ` fails and cannot be reached from this client; 1.2.5 falls back to 80x24 and works. Servers whose configuration insists on a terminal are equally unreachable.
+* **Class:** `POLICY`, low. The bootstrap parses a startup banner out of `ssh`'s piped stdout, and pinning the stream shape is what makes that parse independent of the user's SSH configuration — the same reason `-S`, `ProxyJump`, and `ProxyCommand` are pinned. Restoring an opt-in terminal would mean parsing a second stream shape and testing both.
+* **Verification:** the expected command line is asserted exactly (`win32/test_bootstrap.cc:310`). That proves the option is emitted, not that a hostile configuration cannot defeat it; a case with `RequestTTY force` in a controlled configuration, asserting the remote sees no terminal, belongs to M4's end-to-end matrix.
 
 #### S2. Core-dump protection is a no-op and is never called
 

@@ -52,14 +52,20 @@ where that address is the one the client can reach over UDP. Behind NAT, a load
 balancer, or a jump host it is not, and the bootstrap disables `ProxyJump` and
 `ProxyCommand` rather than following them. The remote command also pins
 `LC_ALL=C.UTF-8`, which servers lacking that locale — some macOS and BSD hosts —
-will reject. And because `ssh` is invoked with `-n`, the server gets no PTY, so
-`mosh-server` must be new enough not to need one for its initial window-size
-query: 1.2.4 and older are out.
+will reject. And `ssh` is invoked with `-T`, which forces no remote PTY — `-n`
+alone would not, since it only redirects this side's stdin and a user's
+`RequestTTY=force` would still allocate a terminal — so `mosh-server` must be
+new enough to survive a failed initial window-size query: 1.2.4 and older exit,
+1.2.5 falls back to 80x24.
 
 The supported case is therefore narrower than "a Linux host": a host the client
 can reach directly over UDP at its `SSH_CONNECTION` address, with `C.UTF-8`
-available and a `mosh-server` past 1.2.4, reached over a plain `ssh` connection
-with no proxy or jump host. Everything outside that matrix is out of scope and
+available and `mosh-server` 1.2.5 or later, reached over a plain `ssh`
+connection with no proxy or jump host. `RequestTTY`, `ProxyJump`, and
+`ProxyCommand` are the settings the bootstrap overrides outright; everything
+else in a user's SSH configuration — host aliases, `HostName`, ports,
+identities, `RemoteCommand`, `SessionType` — is still honored and can still
+prevent a bootstrap that this document does not promise to diagnose. Everything outside that matrix is out of scope and
 not scheduled for repair. The retired direct-endpoint form was the workaround
 for the reachability half of it, and removing it is worth more than the
 topologies it covered.
