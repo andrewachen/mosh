@@ -172,8 +172,11 @@ std::wstring build_ssh_command_line( const std::wstring &ssh_path, const std::st
      discipline applies, and stderr arrives merged rather than separate. Pinning it
      keeps one stream shape to parse. The tradeoff is that mosh-server 1.2.4 and
      older, which exit when their initial TIOCGWINSZ fails, are unsupported; 1.2.5
-     falls back to 80x24. -S, ProxyJump, and ProxyCommand are pinned for the same
-     reason: user configuration must not change what the bootstrap is parsing. */
+     falls back to 80x24. Whether -T or a forced -tt is the better pin is open;
+     see PARITY.md I8. ProxyJump and ProxyCommand are pinned for a different
+     reason (PARITY.md I9): with no client-visible-address discovery, a proxied
+     SSH would succeed and report an address the client cannot route to, so
+     refusing the route turns a silent UDP timeout into an immediate error. */
   return L"\"" + ssh_path + L"\""
     + L" -n -T -S none -o ProxyJump=none -o ProxyCommand=none "
     + widen( win_quote_arg( target ) ) + L" -- "
