@@ -173,9 +173,12 @@ std::wstring build_ssh_command_line( const std::wstring &ssh_path, const std::st
      keeps one stream shape to parse. The tradeoff is that mosh-server 1.2.4 and
      older, which exit when their initial TIOCGWINSZ fails, are unsupported; 1.2.5
      falls back to 80x24. Whether -T or a forced -tt is the better pin is open;
-     see PARITY.md I8. ProxyJump, ProxyCommand, and -S are pinned for unrelated
-     reasons that were never recorded, and they refuse routes that would work:
-     PARITY.md I10 holds that open question. */
+     see PARITY.md I8. ProxyJump and ProxyCommand are pinned for a reason that
+     was never recorded, and they refuse routes that would work: PARITY.md I10
+     holds that open question. -S none is NOT part of it and must not be lifted
+     with them — connection sharing would hand the plaintext MOSH CONNECT line,
+     key included, to a pre-existing control master outside this process's Job
+     Object. See PARITY.md S2. */
   return L"\"" + ssh_path + L"\""
     + L" -n -T -S none -o ProxyJump=none -o ProxyCommand=none "
     + widen( win_quote_arg( target ) ) + L" -- "
