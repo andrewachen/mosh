@@ -51,12 +51,16 @@ separate reasons that should not be run together. `mosh.exe` connects to the
 address the server reports in `SSH_CONNECTION` and implements no discovery of
 its own, so behind NAT or a load balancer that address is the server's private
 one and the session times out — `win32/PARITY.md` I9, out of scope by
-decision. Separately, the bootstrap pins `ProxyJump`, `ProxyCommand`, and `-S`
-off, so a host reachable only through a jump fails at `ssh`. That second
+decision. Separately, the bootstrap pins `ProxyJump` and `ProxyCommand` off,
+so a host reachable only through a jump fails at `ssh`. That second
 restriction is broader than the first requires: a bastion mandated for TCP/22
 can coexist with a directly routable UDP address, and such a session is
 refused anyway. It has no recorded justification and is carried as an open
-question, `win32/PARITY.md` I10. The remote command also pins
+question, `win32/PARITY.md` I10 — refused by the current implementation, with
+the policy unresolved rather than decided. Connection sharing is pinned off
+too, by `-S none`, and that one is decided: a pre-existing control master
+would hold the plaintext session key outside this process's Job Object, which
+is not the trust boundary S2 assumes. The remote command also pins
 `LC_ALL=C.UTF-8`, which servers lacking that locale — some macOS and BSD hosts —
 will reject. And `ssh` is invoked with `-T`, which forces no remote PTY — `-n`
 alone would not, since it only redirects this side's stdin and a user's
@@ -67,12 +71,14 @@ new enough to survive a failed initial window-size query: 1.2.4 and older exit,
 The supported case is therefore narrower than "a Linux host": a host the client
 can reach directly over UDP at its `SSH_CONNECTION` address, with `C.UTF-8`
 available and `mosh-server` 1.2.5 or later, reached over a plain `ssh`
-connection with no proxy or jump host. `RequestTTY`, `ProxyJump`, and
-`ProxyCommand` are the settings the bootstrap overrides outright; everything
-else in a user's SSH configuration — host aliases, `HostName`, ports,
-identities, `RemoteCommand`, `SessionType` — is still honored and can still
-prevent a bootstrap that this document does not promise to diagnose. Everything outside that matrix is out of scope and
-not scheduled for repair. The retired direct-endpoint form was the workaround
+connection with no proxy or jump host. `RequestTTY`, `ProxyJump`,
+`ProxyCommand`, and `ControlPath` — the last via `-S none` — are the settings
+the bootstrap overrides outright; everything else in a user's SSH
+configuration — host aliases, `HostName`, ports, identities, `RemoteCommand`,
+`SessionType` — is still honored and can still prevent a bootstrap that this
+document does not promise to diagnose. Of what falls outside that matrix, the
+discovery gap is out of scope and not scheduled; the proxy refusal is
+unresolved and tracked as I10. The retired direct-endpoint form was the workaround
 for the reachability half of it, and removing it is worth more than the
 topologies it covered.
 
