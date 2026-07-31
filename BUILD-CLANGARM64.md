@@ -46,11 +46,17 @@ privileged its holder appears. Administrators and attached debuggers are out
 of scope for the same reason. No part of this repair should be read as
 defending against any of them.
 
-The supported topology is bounded, and deliberately so. `mosh.exe` connects to
-the address the server reports in `SSH_CONNECTION`, so a session works only
-where that address is the one the client can reach over UDP. Behind NAT, a load
-balancer, or a jump host it is not, and the bootstrap disables `ProxyJump` and
-`ProxyCommand` rather than following them. The remote command also pins
+The supported topology is bounded, and deliberately so, though for two
+separate reasons that should not be run together. `mosh.exe` connects to the
+address the server reports in `SSH_CONNECTION` and implements no discovery of
+its own, so behind NAT or a load balancer that address is the server's private
+one and the session times out — `win32/PARITY.md` I9, out of scope by
+decision. Separately, the bootstrap pins `ProxyJump`, `ProxyCommand`, and `-S`
+off, so a host reachable only through a jump fails at `ssh`. That second
+restriction is broader than the first requires: a bastion mandated for TCP/22
+can coexist with a directly routable UDP address, and such a session is
+refused anyway. It has no recorded justification and is carried as an open
+question, `win32/PARITY.md` I10. The remote command also pins
 `LC_ALL=C.UTF-8`, which servers lacking that locale — some macOS and BSD hosts —
 will reject. And `ssh` is invoked with `-T`, which forces no remote PTY — `-n`
 alone would not, since it only redirects this side's stdin and a user's
