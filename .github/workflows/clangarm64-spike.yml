@@ -170,7 +170,7 @@ jobs:
         # engine spike. A bare invocation cannot open a session (no target
         # args), so it prints usage and exits with the defined usage code (2 —
         # USAGE_EXIT_CODE in win32/mosh_main.cc). Asserting that exact code
-        # proves the shipped binary loads, resolves its imports, runs C++
+        # proves the binary this job builds loads, resolves its imports, runs C++
         # static init, and reaches its entry path on native ARM64 — a signal
         # distinct from the static PE/ABI checks and from the separate
         # test_core.exe / test_loopback.exe binaries. Capture into evidence so
@@ -188,6 +188,46 @@ jobs:
             echo "mosh.exe ran and exited with the usage code (2) on native ARM64"; \
           else \
             echo "ERROR: mosh.exe exited $rc on native ARM64 (expected usage code 2)"; exit 1; fi
+
+      - name: Reject the retired direct-endpoint invocation
+        shell: msys2 {0}
+        # mosh.exe has no direct-endpoint grammar: it accepts one destination and
+        # gets the session key from the server over the ssh pipe. A Windows command
+        # line cannot be cleared after it is read, so an argument that carried the
+        # key would stay readable by same-user process inspection for the whole
+        # process lifetime. This step guards that one grammar: an <ip> <port> <key>
+        # invocation must be refused with the usage code rather than opening a
+        # session, and the usage text must not advertise a key, a prediction mode,
+        # or a positional endpoint. It does not — and cannot — establish that no
+        # credential reaches a command line: the destination argument is an untyped
+        # string that a caller may fill with anything. timeout bounds the probe so a
+        # regression that reaches the transport fails the step instead of hanging
+        # the job.
+        #
+        # The key must be well-formed. Base64Key requires exactly 22 base64
+        # characters that round-trip to 16 octets, so a malformed placeholder
+        # could be refused by key validation rather than by argument
+        # classification — and this step would then report success against an
+        # implementation that still accepts a real key positionally. Twenty-two
+        # 'A's is the canonical encoding of an all-zero key: valid, and secret
+        # to no one.
+        run: |
+          mkdir -p evidence
+          dummy_key=AAAAAAAAAAAAAAAAAAAAAA
+          set +e
+          timeout 20 ./mosh.exe 203.0.113.7 60001 "$dummy_key" >evidence/positional-output.txt 2>&1
+          rc=$?
+          set -e
+          printf 'command=./mosh.exe 203.0.113.7 60001 %s\nexit_status=%s\nexpected=2\n' "$dummy_key" "$rc" >evidence/positional-result.txt
+          cat evidence/positional-output.txt
+          cat evidence/positional-result.txt
+          if [ "$rc" -ne 2 ]; then \
+            echo "ERROR: an endpoint-shaped invocation exited $rc (expected the usage code 2)"; exit 1; fi
+          ./mosh.exe >evidence/usage-text.txt 2>&1 || true
+          if grep -qiE 'key|predict|<ip>' evidence/usage-text.txt; then \
+            echo "ERROR: the usage text still advertises a key, a prediction mode, or a positional endpoint"; \
+            cat evidence/usage-text.txt; exit 1; fi
+          echo "the retired direct-endpoint invocation is refused"
 
       - name: Collect durable evidence bundle
         if: always()

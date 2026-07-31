@@ -316,12 +316,14 @@ static char *A( const char *s ) { return const_cast<char *>( s ); }
 
 static void test_classify_invocation()
 {
-  char *dev[]  = { A("mosh"), A("203.0.113.7"), A("60001"), A("KEY") };
-  assert( classify_invocation( 4, dev ) == Invocation::DevPath );
-  char *devp[] = { A("mosh"), A("203.0.113.7"), A("60001"), A("KEY"), A("always") };
-  assert( classify_invocation( 5, devp ) == Invocation::DevPath );
-  char *badp[] = { A("mosh"), A("203.0.113.7"), A("60001"), A("KEY"), A("bogus") };
-  assert( classify_invocation( 5, badp ) == Invocation::Usage );
+  /* An endpoint is never accepted positionally: a 4- or 5-argument list is
+     usage, whether or not its trailing token names a prediction mode. */
+  char *endpoint[] = { A("mosh"), A("203.0.113.7"), A("60001"), A("KEY") };
+  assert( classify_invocation( 4, endpoint ) == Invocation::Usage );
+  char *endpoint_predict[] = { A("mosh"), A("203.0.113.7"), A("60001"), A("KEY"), A("always") };
+  assert( classify_invocation( 5, endpoint_predict ) == Invocation::Usage );
+  char *endpoint_bogus[] = { A("mosh"), A("203.0.113.7"), A("60001"), A("KEY"), A("bogus") };
+  assert( classify_invocation( 5, endpoint_bogus ) == Invocation::Usage );
   char *boot[] = { A("mosh"), A("user@host") };
   assert( classify_invocation( 2, boot ) == Invocation::Bootstrap );
   char *dash[] = { A("mosh"), A("-X") };

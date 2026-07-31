@@ -3,23 +3,72 @@
 ## Current M2 status
 
 `mosh.exe` is now the native Windows console frontend, not the M0 standalone
-engine spike. It accepts `mosh.exe <user@host>`, which spawns `ssh` and reads
-the endpoint from the server's `MOSH CONNECT` reply, and the raw form
-`mosh.exe <ip> <port> <key> [predict]`; the CI bare invocation verifies the
-well-defined usage exit code `2`. That invocation returns before it opens a
-console or constructs `MoshCore`, so it is not console, core, or crypto runtime
-evidence. Console/session runtime validation remains native Windows ARM64 work.
+engine spike. It accepts one destination, `mosh.exe <user@host>`, which spawns
+`ssh` and reads the endpoint from the server's `MOSH CONNECT` reply; the CI bare
+invocation verifies the well-defined usage exit code `2`. That invocation
+returns before it opens a console or constructs `MoshCore`, so it is not
+console, core, or crypto runtime evidence. Console/session runtime validation
+remains native Windows ARM64 work.
 
 ### Known limitations
 
-The SSH bootstrap carries the session key in-process, so the default
-`<user@host>` invocation never puts it on a command line. The raw form still
-takes the key as an argument, where process listings can expose it, and it is
-compiled into and advertised by the same binary — calling it "development" does
-not make it unreachable in a release artifact. Nothing currently gates it.
-`win32/PARITY.md` finding S1 holds the disposition and the remaining decision:
-drop the key argument or put the form behind a build option that release CI
-asserts is absent.
+Three claims about the session key are easy to conflate here, and only the
+narrowest of them is tested. The source accepts exactly one argument shape,
+`mosh.exe <user@host>`, and nothing in the program reads a session key from
+`argv`; the SSH bootstrap carries the key in-process instead, and the `ssh`
+command line is fully built before the server has issued a key. CI proves
+less: it asserts that the binary it builds refuses an endpoint-shaped
+invocation and that the usage text advertises no key or positional endpoint,
+which guards the retired spelling rather than establishing that no credential
+can reach any command line. Nothing here has been run against a packaged
+release artifact. M4 owns that gate, as two separable claims: that the
+packaged `mosh.exe` follows the documented resolution rules under controlled
+`PATH` layouts and DLL search conditions, and that one known-good OpenSSH
+version completes the credential-flow check. No gate can certify an arbitrary
+`ssh.exe` a user later puts on `PATH`; that stays an unverified external
+dependency by construction. `win32/PARITY.md` records the invariants a broader
+check would have to cover. It also disposes of `ssh.exe`, which holds the same
+key: a `PATH`-resolved OpenSSH client is a trusted external dependency, with
+the residual risk accepted, on the grounds that upstream trusts it more
+loosely still.
+
+Say what that buys, in capabilities rather than identities. The adversary S1
+answers is one that can *observe* — list processes and read their command
+lines, or collect telemetry that does. Against that reader, keeping the key
+out of the parameter block is a real gain. Two capabilities are excluded
+outright, however they were obtained: reading another process's memory, and
+controlling which executable `ssh` resolves to — modifying the resolved binary
+itself, or placing one in a writable entry that the search reaches first.
+Writing some later `PATH` directory does not qualify; it never wins the match.
+Neither exclusion requires the user's full token, since a delegated ACL on one
+early directory is enough, so the boundary is the capability rather than how
+privileged its holder appears. Administrators and attached debuggers are out
+of scope for the same reason. No part of this repair should be read as
+defending against any of them.
+
+The supported topology is bounded, and deliberately so. `mosh.exe` connects to
+the address the server reports in `SSH_CONNECTION`, so a session works only
+where that address is the one the client can reach over UDP. Behind NAT, a load
+balancer, or a jump host it is not, and the bootstrap disables `ProxyJump` and
+`ProxyCommand` rather than following them. The remote command also pins
+`LC_ALL=C.UTF-8`, which servers lacking that locale — some macOS and BSD hosts —
+will reject. And because `ssh` is invoked with `-n`, the server gets no PTY, so
+`mosh-server` must be new enough not to need one for its initial window-size
+query: 1.2.4 and older are out.
+
+The supported case is therefore narrower than "a Linux host": a host the client
+can reach directly over UDP at its `SSH_CONNECTION` address, with `C.UTF-8`
+available and a `mosh-server` past 1.2.4, reached over a plain `ssh` connection
+with no proxy or jump host. Everything outside that matrix is out of scope and
+not scheduled for repair. The retired direct-endpoint form was the workaround
+for the reachability half of it, and removing it is worth more than the
+topologies it covered.
+
+Crash-dump exposure is untouched by all of that and remains open: the Windows
+counterpart of `disable_dumping_core()` is a no-op and is never called, so a
+crash while the key is in memory can still persist it through Windows Error
+Reporting or any other minidump path. That is a release blocker (see Spike-only
+shims below), and `win32/PARITY.md` finding S2 holds its disposition.
 
 ## Historical M0 standalone-engine spike record
 
@@ -527,9 +576,8 @@ conhost's VT bytes behind an auto-reset event, converts CESU-8 surrogate pairs
 to UTF-8 across read boundaries, polls screen dimensions at most 100 ms apart,
 and reconciles `WSAEVENT` registrations after every mutating core tick. Reader
 and socket-event RAII owners cancel/join and release resources on normal and
-exceptional exits. The raw development argument form is
-`mosh.exe <ip> <port> <key> [predict]`; missing or malformed arguments print
-usage and return exit code 2.
+exceptional exits. `mosh.exe` takes one `<user@host>` destination; every other
+argument shape prints usage and returns exit code 2.
 
 The makefile links `mosh_main.o`, `console_io.o`, and `mosh_core.o` into
 `mosh.exe`, and compiles `console_io_include_check.cc` through both `all` and

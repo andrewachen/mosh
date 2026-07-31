@@ -93,10 +93,7 @@ std::string bundled_terminfo_path()
 
 void print_usage( const char *program )
 {
-  std::fprintf( stderr,
-    "Usage: %s <user@host>                         (connect via ssh)\n"
-    "       %s <ip> <port> <key> [predict]         (developer/raw endpoint)\n",
-    program, program );
+  std::fprintf( stderr, "Usage: %s <user@host>  (connect via ssh)\n", program );
 }
 
 }  // namespace
@@ -140,8 +137,7 @@ int run_console_session( const char *ip, const char *port, std::string *key,
 
 int main( int argc, char *argv[] )
 {
-  const Invocation mode = classify_invocation( argc, argv );
-  if ( mode == Invocation::Usage ) { print_usage( argv[0] ); return USAGE_EXIT_CODE; }
+  if ( classify_invocation( argc, argv ) == Invocation::Usage ) { print_usage( argv[0] ); return USAGE_EXIT_CODE; }
 
   try {
     /* existing setlocale(".UTF-8") + TERM/TERMINFO setup */
@@ -160,19 +156,14 @@ int main( int argc, char *argv[] )
     int cols = 0, rows = 0;
     console_dims( &cols, &rows );                 // preflight before spawning ssh
 
-    int session_rc;
     CleanupReport cleanup = { ERROR_SUCCESS, CLEANUP_OP_NONE, ERROR_SUCCESS };
-    if ( mode == Invocation::Bootstrap ) {
-      BootstrapResult ep;
-      const std::string err = mosh_bootstrap( argv[1], &ep );
-      if ( !err.empty() ) { std::fprintf( stderr, "%s\n", err.c_str() ); return FRONTEND_FAILURE_EXIT_CODE; }
-      session_rc = run_console_session( ep.ip.c_str(), ep.port.c_str(), &ep.key, "adaptive", cols, rows,
-                                        &message, &cleanup );
-    } else {
-      const char *predict = argc == 5 ? argv[4] : "adaptive";
-      std::string devkey( argv[3] );
-      session_rc = run_console_session( argv[1], argv[2], &devkey, predict, cols, rows, &message, &cleanup );
-    }
+    BootstrapResult ep;
+    const std::string err = mosh_bootstrap( argv[1], &ep );
+    if ( !err.empty() ) { std::fprintf( stderr, "%s\n", err.c_str() ); return FRONTEND_FAILURE_EXIT_CODE; }
+    /* The prediction display preference has no source: the bootstrap reply does
+       not carry one and no environment variable is read. See PARITY.md A25. */
+    const int session_rc = run_console_session( ep.ip.c_str(), ep.port.c_str(), &ep.key, "adaptive", cols, rows,
+                                                &message, &cleanup );
     if ( !message.empty() ) {
       std::fprintf( stderr, "%s\n", message.c_str() );
     }

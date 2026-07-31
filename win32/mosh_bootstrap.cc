@@ -134,14 +134,14 @@ std::string resolve_endpoint( const ServerReply &r, const std::string &target, B
   if ( end == r.port.c_str() || *end != '\0' || port < 1 || port > 65535 )
     return "mosh: server reported an invalid UDP port (" + r.port + ")";
   /* Client UDP target: prefer the server-reported MOSH IP, else the SSH_CONNECTION
-     server address (mosh.pl:445-448). LIMITATION (M3, direct-endpoint only): this
-     build implements neither upstream's default "proxy" method (a client-side ssh
-     ProxyCommand that captures the client-visible address) nor the "local" method
-     (client-side DNS of the target), so MOSH IP is never populated and this always
-     uses the SSH_CONNECTION address. For a server behind NAT or a load balancer that
-     is the server's own (often private) address, which the client may be unable to
-     reach; the UDP session then times out. Client-visible-address discovery is
-     tracked for M4. */
+     server address (mosh.pl:445-448). Neither of upstream's discovery methods is
+     implemented — not the default "proxy" method (a client-side ssh ProxyCommand
+     that captures the client-visible address) nor "local" (client-side DNS of the
+     target) — so MOSH IP is never populated and the SSH_CONNECTION address is what
+     is used. The supported topology is therefore one where that address is the one
+     the client can reach: behind NAT or a load balancer it is the server's own,
+     often private, address and the UDP session times out. Out of scope by
+     decision, not pending; see BUILD-CLANGARM64.md "Known limitations". */
   const std::string ip = !r.mosh_ip.empty() ? r.mosh_ip : r.sship;
   if ( ip.empty() )
     return "mosh: requires a direct UDP endpoint to " + target + "; proxied SSH is unsupported";
@@ -362,17 +362,9 @@ static bool is_clean_destination( const char *s )
   return true;
 }
 
-bool valid_predict( const char *p )
-{
-  const std::string s( p );
-  return s == "adaptive" || s == "always" || s == "never" || s == "experimental";
-}
-
 Invocation classify_invocation( int argc, char *argv[] )
 {
   if ( argc == 2 ) return ( argv[1][0] == '-' || argv[1][0] == '\0' ) ? Invocation::Usage : Invocation::Bootstrap;
-  if ( argc == 4 ) return Invocation::DevPath;
-  if ( argc == 5 && valid_predict( argv[4] ) ) return Invocation::DevPath;
   return Invocation::Usage;
 }
 

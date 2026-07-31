@@ -70,12 +70,12 @@ std::wstring build_ssh_command_line( const std::wstring &ssh_path, const std::st
 /* Spawn ssh, resolve the numeric endpoint. "" on success (fills *out), else error. */
 std::string mosh_bootstrap( const char *target, BootstrapResult *out );
 
-enum class Invocation { Usage, DevPath, Bootstrap };
-/* True for the mosh predictive-coding modes accepted on the command line. */
-bool valid_predict( const char *predict );
-/* Select the invocation path from argv shape: 2 = bootstrap (user@host),
-   4-5 = dev/raw endpoint (ip port key [predict]), else usage. Option-looking
-   destinations (leading '-') are routed to usage, not bootstrap. */
+enum class Invocation { Usage, Bootstrap };
+/* Select the invocation path from argv shape: 2 = bootstrap (user@host), else
+   usage. Option-looking destinations (leading '-') are routed to usage, not
+   bootstrap. An endpoint is never accepted positionally: a command line cannot
+   be cleared once read, so a session key given that way stays readable by
+   same-user process inspection for the process lifetime. */
 Invocation classify_invocation( int argc, char *argv[] );
 
 #endif /* MOSH_BOOTSTRAP_H */
