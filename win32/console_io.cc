@@ -708,6 +708,20 @@ void write_all( HANDLE handle, const std::string &bytes )
   }
 }
 
+DWORD PollThrottle::bound( DWORD requested )
+{
+  if ( requested != 0 ) {
+    consecutive_polls = 0;
+    return requested;
+  }
+  /* The count saturates so a long-running poll cannot wrap it and win another
+     burst of zero waits. */
+  if ( consecutive_polls < MAX_CONSECUTIVE_POLLS ) {
+    ++consecutive_polls;
+  }
+  return consecutive_polls < MAX_CONSECUTIVE_POLLS ? 0 : 1;
+}
+
 class ConsoleSession::Impl {
 public:
   MoshCore &core;
@@ -747,6 +761,10 @@ public:
      after run() returns, because the loop keeps pumping afterward and will
      drain the queue in the normal course of shutting down. */
   bool input_drained_at_shutdown;
+
+  /* Bounds how often the loop may be asked to poll when a source keeps
+     requesting a zero wait, so a source that stays due does not spin a core. */
+  PollThrottle poll_throttle;
 
   explicit Impl( MoshCore &core_ref )
     : core( core_ref ), original(), input_mode_set( false ), output_mode_set( false ),
@@ -1127,7 +1145,15 @@ private:
       if ( handles.size() > MAXIMUM_WAIT_OBJECTS ) {
         throw ConsoleError( ERROR_TOO_MANY_OPEN_FILES, "too many handles for WaitForMultipleObjects" );
       }
-      DWORD wait_timeout = static_cast<DWORD>( std::max( 0, std::min( timeout, static_cast<int>( RESIZE_POLL_CAP_MS ) ) ) );
+      const DWORD requested = static_cast<DWORD>( std::max( 0, std::min( timeout, static_cast<int>( RESIZE_POLL_CAP_MS ) ) ) );
+      /* The throttle bounds the interval the sources ask for. The deadline clamp
+         below is deliberately excluded: it drives to zero as the restoration
+         reserve approaches, and that zero costs a single wait, because the
+         reserve check just past the wait applies the identical predicate to the
+         same deadline and breaks in this same iteration, ahead of the resize,
+         socket, input, and frame work. A 1 ms floor there would only delay the
+         break. */
+      DWORD wait_timeout = poll_throttle.bound( requested );
       const ULONGLONG active_deadline = control->deadline.load();
       if ( active_deadline != NO_TERMINATION_DEADLINE ) {
         const DWORD remaining = deadline_remaining( active_deadline );

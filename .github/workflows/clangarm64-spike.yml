@@ -114,6 +114,46 @@ jobs:
           ./test_console_lifecycle.exe deadline-publication
           ./test_console_lifecycle.exe deadline-escalation
           ./test_console_lifecycle.exe deadline-wedged-reader
+          ./test_console_lifecycle.exe poll-throttle
+
+      - name: Verify the event loop's wait timeout comes from the poll throttle
+        shell: msys2 {0}
+        # PollThrottle keeps a source that repeatedly asks for a zero-length wait
+        # from spinning a core. Its unit test proves the arithmetic; nothing can
+        # drive the loop itself through a sustained zero, so this guards the shape
+        # the loop's use of it depends on: one wait, its timeout initialized from
+        # the throttle, and no assignment to that timeout beyond the deadline
+        # clamp and the unrelated one in the reader's teardown wait. A tripwire,
+        # not a proof — it cannot see a rewrite that reaches a wait by some other
+        # route. It does catch the throttle being deleted, reordered below the
+        # clamp, or having its result overwritten before the wait.
+        run: |
+          waits=$(grep -c 'WaitForMultipleObjects(' win32/console_io.cc || true)
+          if [ "$waits" -ne 1 ]; then
+            echo "ERROR: expected exactly one WaitForMultipleObjects call site, found $waits"
+            echo "(prose naming the call with a parenthesis counts too; reword it or adjust this gate)"
+            grep -n 'WaitForMultipleObjects(' win32/console_io.cc
+            exit 1
+          fi
+          if ! grep -q 'WaitForMultipleObjects(.*, wait_timeout );' win32/console_io.cc; then
+            echo "ERROR: the wait does not take wait_timeout as its timeout"
+            grep -n 'WaitForMultipleObjects(' win32/console_io.cc
+            exit 1
+          fi
+          if ! grep -q 'DWORD wait_timeout = poll_throttle.bound( requested );' win32/console_io.cc; then
+            echo "ERROR: the wait timeout is no longer initialized from the poll throttle"
+            grep -n 'wait_timeout' win32/console_io.cc
+            exit 1
+          fi
+          assignments=$(grep -c 'wait_timeout = ' win32/console_io.cc || true)
+          if [ "$assignments" -ne 3 ]; then
+            echo "ERROR: expected 3 assignments to a wait_timeout, found $assignments"
+            echo "(the throttle initializer, the deadline clamp, and the reader teardown wait)"
+            echo "a new one can discard the throttled value before the wait reads it"
+            grep -n 'wait_timeout = ' win32/console_io.cc
+            exit 1
+          fi
+          echo "the sole wait's timeout comes from the poll throttle and only the deadline clamp adjusts it"
 
       - name: Verify wide printf uses POSIX semantics where mosh needs them
         shell: msys2 {0}

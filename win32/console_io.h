@@ -156,6 +156,27 @@ HANDLE console_test_last_restored_event();
    and signals termination, never touching console or MoshCore state itself. */
 BOOL WINAPI console_control_handler( DWORD type );
 
+/* Bounds how often the loop may be asked to poll. A zero wait time is a
+   legitimate request: a source has work due now. Sustained zeros are not,
+   because nothing else in the loop bounds how often it may re-ask, so a source
+   that stays due spins a core. Counting consecutive zero requests and imposing
+   a 1 ms floor from the tenth onward leaves a genuine poll burst free of added
+   latency while giving a stuck source somewhere to block. The floor bounds the
+   requested timeout, not the iteration rate: a wait whose handle is already
+   signalled still returns at once, exactly as upstream's pselect does.
+   Upstream applies the identical rule in Select::select()
+   (src/util/select.h:131, MAX_POLLS = 10). */
+class PollThrottle {
+public:
+  PollThrottle() : consecutive_polls( 0 ) {}
+  /* The wait to use for a caller asking for `requested`. A nonzero request
+     passes through and clears the count. */
+  DWORD bound( DWORD requested );
+  static const unsigned MAX_CONSECUTIVE_POLLS = 10;
+private:
+  unsigned consecutive_polls;
+};
+
 /* Owns console setup/teardown and the console event loop. The constructor
    performs every console mutation, installs the control handler, starts the
    reader, and writes the open sequence; by the time it returns the session is

@@ -1181,6 +1181,128 @@ static int run_graceful_shutdown()
   return 0;
 }
 
+/* Proves the PollThrottle arithmetic that keeps run_loop() from spinning when a
+   source keeps requesting a zero wait. Constructs PollThrottle objects directly
+   and never touches a ConsoleSession or the event loop. */
+static int run_poll_throttle()
+{
+  /* Case 1: a nonzero request passes through unchanged, even when repeated past the
+     boundary count. */
+  {
+    PollThrottle throttle;
+    DWORD got = throttle.bound( 100 );
+    if ( got != 100 ) {
+      fprintf( stderr, "FAIL: poll-throttle: nonzero request returned %lu, expected 100\n",
+               got );
+      return 1;
+    }
+    for ( unsigned i = 0; i < PollThrottle::MAX_CONSECUTIVE_POLLS + 1; ++i ) {
+      got = throttle.bound( 100 );
+      if ( got != 100 ) {
+        fprintf( stderr, "FAIL: poll-throttle: repeated nonzero request returned %lu on call %u, expected 100\n",
+                 got, i + 2 );
+        return 1;
+      }
+    }
+  }
+
+  /* Case 2: the first nine consecutive zero requests each return 0. */
+  {
+    PollThrottle throttle;
+    for ( unsigned i = 0; i < PollThrottle::MAX_CONSECUTIVE_POLLS - 1; ++i ) {
+      DWORD got = throttle.bound( 0 );
+      if ( got != 0 ) {
+        fprintf( stderr, "FAIL: poll-throttle: early zero request returned %lu on call %u, expected 0\n",
+                 got, i + 1 );
+        return 1;
+      }
+    }
+  }
+
+  /* Case 3: the tenth consecutive zero returns 1, and every further zero also
+     returns 1. Driven well past the boundary to catch a counter that wraps or
+     resets itself and hands out another burst of zero waits. */
+  {
+    PollThrottle throttle;
+    DWORD got = throttle.bound( 0 );
+    for ( unsigned i = 1; i < PollThrottle::MAX_CONSECUTIVE_POLLS; ++i ) {
+      got = throttle.bound( 0 );
+    }
+    if ( got != 1 ) {
+      fprintf( stderr, "FAIL: poll-throttle: tenth consecutive zero returned %lu, expected 1\n",
+               got );
+      return 1;
+    }
+    for ( unsigned i = 0; i < 10000; ++i ) {
+      got = throttle.bound( 0 );
+      if ( got != 1 ) {
+        fprintf( stderr, "FAIL: poll-throttle: sustained zero returned %lu on call %u after the floor engaged, expected 1\n",
+                 got, i + 1 );
+        return 1;
+      }
+    }
+  }
+
+  /* Case 4: a nonzero request clears the count. Nine zeros, then a nonzero
+     request passes through and resets, then the next nine zeros each return 0
+     and the tenth returns 1. */
+  {
+    PollThrottle throttle;
+    for ( unsigned i = 0; i < PollThrottle::MAX_CONSECUTIVE_POLLS - 1; ++i ) {
+      DWORD got = throttle.bound( 0 );
+      if ( got != 0 ) {
+        fprintf( stderr, "FAIL: poll-throttle: pre-clear zero returned %lu on call %u, expected 0\n",
+                 got, i + 1 );
+        return 1;
+      }
+    }
+    DWORD got = throttle.bound( 100 );
+    if ( got != 100 ) {
+      fprintf( stderr, "FAIL: poll-throttle: clearing nonzero request returned %lu, expected 100\n",
+               got );
+      return 1;
+    }
+    for ( unsigned i = 0; i < PollThrottle::MAX_CONSECUTIVE_POLLS - 1; ++i ) {
+      got = throttle.bound( 0 );
+      if ( got != 0 ) {
+        fprintf( stderr, "FAIL: poll-throttle: post-clear zero returned %lu on call %u, expected 0\n",
+                 got, i + 1 );
+        return 1;
+      }
+    }
+    got = throttle.bound( 0 );
+    if ( got != 1 ) {
+      fprintf( stderr, "FAIL: poll-throttle: post-clear tenth zero returned %lu, expected 1\n",
+               got );
+      return 1;
+    }
+  }
+
+  /* Case 5: a nonzero request clears the count after the floor has engaged.
+     Driven well past the boundary so the floor is engaged, then a nonzero
+     request passes through, then the next zero returns 0 — not 1. */
+  {
+    PollThrottle throttle;
+    for ( unsigned i = 0; i < 2 * PollThrottle::MAX_CONSECUTIVE_POLLS; ++i ) {
+      throttle.bound( 0 );
+    }
+    DWORD got = throttle.bound( 100 );
+    if ( got != 100 ) {
+      fprintf( stderr, "FAIL: poll-throttle: floor-clearing nonzero request returned %lu, expected 100\n",
+               got );
+      return 1;
+    }
+    got = throttle.bound( 0 );
+    if ( got != 0 ) {
+      fprintf( stderr, "FAIL: poll-throttle: first zero after floor cleared returned %lu, expected 0\n",
+               got );
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
 int main( int argc, char *argv[] )
 {
   if ( argc < 2 ) {
@@ -1238,6 +1360,9 @@ int main( int argc, char *argv[] )
     }
     if ( strcmp( argv[1], "deadline-wedged-reader" ) == 0 ) {
       return run_mid_teardown_close();
+    }
+    if ( strcmp( argv[1], "poll-throttle" ) == 0 ) {
+      return run_poll_throttle();
     }
   } catch ( const std::exception &e ) {
     fprintf( stderr, "FAIL: uncaught exception: %s\n", e.what() );
