@@ -15,5 +15,10 @@ if BUILD_SERVER
   bin_PROGRAMS += mosh-server
 endif
 
-mosh_client_SOURCES = mosh-client.cc stmclient.cc stmclient.h terminaloverlay.cc terminaloverlay.h
+mosh_client_SOURCES = mosh-client.cc stmclient.cc stmclient.h startup_config.cc startup_config.h terminaloverlay.cc terminaloverlay.h
 mosh_server_SOURCES = mosh-server.cc
+
+check_PROGRAMS = test_startup_config
+test_startup_config_SOURCES = test_startup_config.cc startup_config.cc startup_config.h terminaloverlay.h
+test_startup_config_LDADD =
+TESTS = test_startup_config

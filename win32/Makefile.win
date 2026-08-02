@@ -56,7 +56,7 @@ NETWORK_SRCS = src/network/network.cc src/network/compressor.cc src/network/tran
 WIN32_SRCS = win32/wincompat.cc
 
 # Frontend overlay (prediction, notification, title) - needed by mosh_core
-FRONTEND_SRCS = src/frontend/terminaloverlay.cc
+FRONTEND_SRCS = src/frontend/terminaloverlay.cc src/frontend/startup_config.cc
 
 CRYPTO_OBJS = $(patsubst %.cc,$(BUILD)/%.o,$(CRYPTO_SRCS))
 PROTO_OBJS = $(patsubst %.cc,$(BUILD)/%.o,$(PROTO_SRCS))
@@ -200,6 +200,10 @@ $(BUILD)/%.o: %.cc src/include/config.h
 $(BUILD)/src/frontend/terminaloverlay.o: src/frontend/terminaloverlay.cc src/include/config.h src/protobufs/transportinstruction.pb.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) -DMOSH_NEEDS_WCWIDTH $(POSIX_WIDE_STDIO) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD)/src/frontend/startup_config.o: src/frontend/startup_config.cc src/frontend/startup_config.h src/include/config.h src/protobufs/transportinstruction.pb.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
 
 $(BUILD)/win32/test_console_lifecycle.o: win32/test_console_lifecycle.cc src/include/config.h win32/console_io.h win32/mosh_core.h $(BUILD)/win32/console_io.o
 	@mkdir -p $(dir $@)
