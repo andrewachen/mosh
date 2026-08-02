@@ -39,6 +39,7 @@
 #include <sys/ioctl.h>
 #include <termios.h>
 
+#include "src/frontend/startup_config.h"
 #include "src/frontend/terminaloverlay.h"
 #include "src/network/networktransport.h"
 #include "src/statesync/completeterminal.h"
@@ -102,21 +103,15 @@ public:
       repaint_requested( false ), lf_entered( false ), quit_sequence_started( false ), clean_shutdown( false ),
       verbose( s_verbose )
   {
-    if ( predict_mode ) {
-      if ( !strcmp( predict_mode, "always" ) ) {
-        overlays.get_prediction_engine().set_display_preference( Overlay::PredictionEngine::Always );
-      } else if ( !strcmp( predict_mode, "never" ) ) {
-        overlays.get_prediction_engine().set_display_preference( Overlay::PredictionEngine::Never );
-      } else if ( !strcmp( predict_mode, "adaptive" ) ) {
-        overlays.get_prediction_engine().set_display_preference( Overlay::PredictionEngine::Adaptive );
-      } else if ( !strcmp( predict_mode, "experimental" ) ) {
-        overlays.get_prediction_engine().set_display_preference( Overlay::PredictionEngine::Experimental );
-      } else {
-        fprintf( stderr, "Unknown prediction mode %s.\n", predict_mode );
-        exit( 1 );
-      }
+    Overlay::PredictionEngine::DisplayPreference pref;
+    std::string predict_error;
+    if ( !parse_prediction_display( predict_mode, &pref, &predict_error ) ) {
+      fprintf( stderr, "%s: %s\n", "mosh-client", predict_error.c_str() );
+      exit( 1 );
     }
-    if ( predict_overwrite && !strcmp( predict_overwrite, "yes" ) ) {
+    overlays.get_prediction_engine().set_display_preference( pref );
+
+    if ( parse_prediction_overwrite( predict_overwrite ) ) {
       overlays.get_prediction_engine().set_predict_overwrite( true );
     }
   }
