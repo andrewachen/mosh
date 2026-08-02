@@ -108,7 +108,7 @@ public:
   bool escape_requires_lf;
   std::wstring escape_key_help;
 
-  Impl( const char *ip, const char *port, const char *key, int cols, int rows, const char *predict )
+  Impl( const char *ip, const char *port, const char *key, int cols, int rows, const StartupOptions &opts )
     : local_terminal( cols, rows ), overlays(), network(), display( false ), local_framebuffer( cols, rows ),
       new_state( cols, rows ), open(), close(), frame(), status(), connecting_notification(), repaint_requested( true ),
       lf_entered( false ), quit_sequence_started( false ), finished( false ), clean_shutdown( false ), escape_key( 0x1e ),
@@ -118,19 +118,7 @@ public:
     mosh_winsock_init();
 #endif
 
-    if ( predict ) {
-      if ( !strcmp( predict, "always" ) ) {
-        overlays.get_prediction_engine().set_display_preference( PredictionEngine::Always );
-      } else if ( !strcmp( predict, "never" ) ) {
-        overlays.get_prediction_engine().set_display_preference( PredictionEngine::Never );
-      } else if ( !strcmp( predict, "adaptive" ) ) {
-        overlays.get_prediction_engine().set_display_preference( PredictionEngine::Adaptive );
-      } else if ( !strcmp( predict, "experimental" ) ) {
-        overlays.get_prediction_engine().set_display_preference( PredictionEngine::Experimental );
-      } else {
-        throw std::runtime_error( std::string( "Unknown prediction mode " ) + predict + "." );
-      }
-    }
+    overlays.get_prediction_engine().set_display_preference( opts.predict_display );
 
     char escape_pass_name_buf[16];
     char escape_key_name_buf[16];
@@ -308,7 +296,7 @@ public:
   }
 };
 
-MoshCore::MoshCore( const char *ip, const char *port, const char *key, int cols, int rows, const char *predict )
+MoshCore::MoshCore( const char *ip, const char *port, const char *key, int cols, int rows, const StartupOptions &opts )
   : impl( nullptr )
 {
   /* Functional locale probe: the framebuffer encodes wide characters with
@@ -323,7 +311,7 @@ MoshCore::MoshCore( const char *ip, const char *port, const char *key, int cols,
   }
 
   freeze_timestamp();
-  impl = new Impl( ip, port, key, cols, rows, predict );
+  impl = new Impl( ip, port, key, cols, rows, opts );
 }
 
 MoshCore::~MoshCore()

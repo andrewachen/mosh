@@ -39,6 +39,8 @@
 #include <vector>
 #include <cstdint>
 
+#include "win32/startup_options.h"
+
 class MoshCore {
 private:
   /* PIMPL idiom - implementation details hidden in .cc */
@@ -46,9 +48,8 @@ private:
   Impl *impl;
 
 public:
-  /* predict: "adaptive" | "always" | "never" | "experimental" */
   MoshCore( const char *ip, const char *port, const char *key,
-            int cols, int rows, const char *predict );
+            int cols, int rows, const StartupOptions &opts );
   ~MoshCore();
   MoshCore( const MoshCore& ) = delete;
   MoshCore& operator=( const MoshCore& ) = delete;

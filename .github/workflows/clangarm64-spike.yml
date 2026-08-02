@@ -69,6 +69,13 @@ jobs:
           make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" test_bootstrap bootstrap_child
           ./test_bootstrap.exe
 
+      - name: Build and run startup-options test
+        shell: msys2 {0}
+        timeout-minutes: 2
+        run: |
+          make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" test_startup_options
+          ./test_startup_options.exe
+
       - name: Build and run console lifecycle test
         shell: msys2 {0}
         # Covers the build plus thirteen modes. Fairness backlog establishment

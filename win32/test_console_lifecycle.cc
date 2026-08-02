@@ -42,6 +42,7 @@
 #include <memory>
 #include <thread>
 
+#include "src/frontend/terminaloverlay.h"
 #include "win32/console_io.h"
 #include "win32/mosh_core.h"
 #include "win32/test_server.h"
@@ -49,6 +50,13 @@
 class ConsoleTestScope;
 static ConsoleTestScope *active_console_scope = NULL;
 static void must( BOOL ok, const char *what );
+
+static StartupOptions never_prediction()
+{
+  StartupOptions opts;
+  opts.predict_display = Overlay::PredictionEngine::Never;
+  return opts;
+}
 
 /* Point the process std handles at the real attached console for the duration
    of an in-process test. The msys2 CI shell redirects std handles to pipes, so
@@ -159,7 +167,7 @@ static int run_vt_mode()
 
   TestServer server( 80, 24 );
   MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
-                 80, 24, "never" );
+                 80, 24, never_prediction() );
 
   ConsoleSnapshot snapshot;
   DWORD active_out_mode = 0;
@@ -335,7 +343,7 @@ static int run_fairness()
 
   TestServer server( 80, 24 );
   MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
-                 80, 24, "never" );
+                 80, 24, never_prediction() );
 
   UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
   if ( session_done.get() == NULL ) {
@@ -539,7 +547,7 @@ static int run_clock_refresh()
 
   TestServer server( 80, 24 );
   MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
-                 80, 24, "never" );
+                 80, 24, never_prediction() );
 
   UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
   if ( session_done.get() == NULL ) {
@@ -656,7 +664,7 @@ static int run_rollback_case( ConsoleSetupStep step, RollbackTrigger trigger,
 
   TestServer server( 80, 24 );
   MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
-                 80, 24, "never" );
+                 80, 24, never_prediction() );
 
   console_test_clear_setup_injections();
   const DWORD expected_code = trigger == RollbackTrigger::INJECT_FAILURE
@@ -772,7 +780,7 @@ static int run_reader_end( ConsoleReaderTestOutcome outcome, const char *label )
   ConsoleTestScope scope;
   TestServer server( 80, 24 );
   MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
-                 80, 24, "never" );
+                 80, 24, never_prediction() );
   console_test_set_reader_outcome( outcome );
 
   UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
@@ -899,7 +907,7 @@ static int run_deadline_case( DeadlineCase which )
   ConsoleTestScope scope;
   TestServer server( 80, 24 );
   MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
-                 80, 24, "never" );
+                 80, 24, never_prediction() );
   console_test_set_shutdown_budget( INJECTED_SHUTDOWN_BUDGET_MS );
   UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
   must( session_done.get() != NULL, "CreateEvent(session_done)" );
@@ -969,7 +977,7 @@ static int run_mid_teardown_close()
   ConsoleTestScope scope;
   TestServer server( 80, 24 );
   MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
-                 80, 24, "never" );
+                 80, 24, never_prediction() );
   console_test_set_reader_outcome( ConsoleReaderTestOutcome::NONTERMINATING );
 
   UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
@@ -1023,7 +1031,7 @@ static int run_connection_timeout()
   TestServer server( 80, 24 );
   const ULONGLONG started = GetTickCount64();
   MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
-                 80, 24, "never" );
+                 80, 24, never_prediction() );
 
   UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
   must( session_done.get() != NULL, "CreateEvent(session_done)" );
@@ -1060,7 +1068,7 @@ static int run_upstream_length()
   ConsoleTestScope scope;
   TestServer server( 80, 24 );
   MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
-                 80, 24, "never" );
+                 80, 24, never_prediction() );
 
   UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
   must( session_done.get() != NULL, "CreateEvent(session_done)" );
@@ -1103,7 +1111,7 @@ static int run_graceful_shutdown()
 
   TestServer server( 80, 24 );
   MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
-                 80, 24, "never" );
+                 80, 24, never_prediction() );
 
   UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
   if ( session_done.get() == NULL ) {

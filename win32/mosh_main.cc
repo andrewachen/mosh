@@ -35,6 +35,7 @@
 
 #include "win32/console_io.h"
 #include "win32/mosh_bootstrap.h"
+#include "win32/startup_options.h"
 #include "src/network/network.h"
 
 #include <clocale>
@@ -104,12 +105,12 @@ void scrub_key( std::string *key )   // idempotent
 }
 
 int run_console_session( const char *ip, const char *port, std::string *key,
-                         const char *predict, int cols, int rows, std::string *message,
+                         const StartupOptions &opts, int cols, int rows, std::string *message,
                          CleanupReport *cleanup )
 {
   int session_rc = 1;
   try {
-    MoshCore core( ip, port, key->c_str(), cols, rows, predict );
+    MoshCore core( ip, port, key->c_str(), cols, rows, opts );
     scrub_key( key );                          // base64 key consumed by the ctor
     /* The constructor performs every console mutation and writes the open
        sequence; by the time it returns the session is fully live. */
@@ -156,13 +157,20 @@ int main( int argc, char *argv[] )
     int cols = 0, rows = 0;
     console_dims( &cols, &rows );                 // preflight before spawning ssh
 
+    StartupEnv env;
+    env.predict_display = std::getenv( "MOSH_PREDICTION_DISPLAY" );
+    StartupOptions opts;
+    std::string opt_error;
+    if ( !parse_startup_options( env, &opts, &opt_error ) ) {
+      std::fprintf( stderr, "%s\n", opt_error.c_str() );
+      return USAGE_EXIT_CODE;
+    }
+
     CleanupReport cleanup = { ERROR_SUCCESS, CLEANUP_OP_NONE, ERROR_SUCCESS };
     BootstrapResult ep;
     const std::string err = mosh_bootstrap( argv[1], &ep );
     if ( !err.empty() ) { std::fprintf( stderr, "%s\n", err.c_str() ); return FRONTEND_FAILURE_EXIT_CODE; }
-    /* The prediction display preference has no source: the bootstrap reply does
-       not carry one and no environment variable is read. See PARITY.md A25. */
-    const int session_rc = run_console_session( ep.ip.c_str(), ep.port.c_str(), &ep.key, "adaptive", cols, rows,
+    const int session_rc = run_console_session( ep.ip.c_str(), ep.port.c_str(), &ep.key, opts, cols, rows,
                                                 &message, &cleanup );
     if ( !message.empty() ) {
       std::fprintf( stderr, "%s\n", message.c_str() );
