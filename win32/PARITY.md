@@ -1,6 +1,6 @@
 # MoshCore / STMClient behavioral-parity inventory
 
-`win32/mosh_core.cc` preserves the shared transport, overlay, prediction, and framebuffer algorithms, but it is not a literal extraction of `STMClient`: the host loop, console lifecycle, startup configuration, and several lifecycle and error paths differ. This inventory records those differences so each one is either justified or scheduled, rather than discovered later as a bug.
+`win32/mosh_core.cc` preserves the shared transport, overlay, prediction, and framebuffer algorithms, but it is not a literal extraction of `STMClient`: the host loop, console lifecycle, and several lifecycle and error paths differ. This inventory records those differences so each one is either justified or scheduled, rather than discovered later as a bug. The escape-key, prediction, overwrite, and title-prefix configuration parsers are shared with `STMClient` via `src/frontend/startup_config`, so both frontends parse those settings identically.
 
 Findings name the symbol they concern and give a line number as a search hint only. Line numbers drift; symbol names do not. Treat a line number that does not match as a stale hint, not as evidence the finding is obsolete.
 
@@ -20,20 +20,22 @@ Severity is **high** for correctness, security, or resource-exhaustion consequen
 
 | Class | Findings |
 |---|---:|
-| `PLATFORM` | 7 |
+| `PLATFORM` | 8 |
 | `POLICY` | 2 |
 | `DEFERRED` | 0 |
-| `DEFECT` | 22 |
-| `OPEN` | 2 |
-| **Total** | **33** |
+| `DEFECT` | 16 |
+| `OPEN` | 3 |
+| **Total** | **29** |
 
-Nine repaired or confirmed behavior records — connection-timeout shutdown, reader input ending, interrupt control events versus a typed Ctrl-C, bounded close-handler restoration attempts, post-wait timestamp freezing, resize framebuffer ownership, UCRT wide-printf semantics, the retired command-line key channel, and the bounded zero-length wait — are recorded at the end and are not counted as findings. The last of those is implemented rather than fully verified; the coverage it still owes is counted, as A26.
+Fifteen repaired or confirmed behavior records — connection-timeout shutdown, reader input ending, interrupt control events versus a typed Ctrl-C, bounded close-handler restoration attempts, post-wait timestamp freezing, resize framebuffer ownership, UCRT wide-printf semantics, the retired command-line key channel, the bounded zero-length wait, `MOSH_NO_TERM_INIT`, `MOSH_ESCAPE_KEY`, `MOSH_PREDICTION_OVERWRITE`, the prediction display preference, the `[mosh] ` title prefix, and transport verbosity — are recorded at the end and are not counted as findings. The bounded zero-length wait is implemented rather than fully verified; the coverage it still owes is counted, as A26.
 
 ## How the defects cluster
 
-Seven are **configuration omissions**, each independent and individually cheap: `MOSH_ESCAPE_KEY` (A1), `MOSH_PREDICTION_OVERWRITE` (A2), the prediction display preference (A25), the `[mosh] ` title prefix (A3), `-v` diagnostics (A4), `MOSH_NO_TERM_INIT` (A20), and the escape-suspend sequence (A16).
+Startup parsing is resolved for A1, A2, A3, and A25 through the shared `src/frontend/startup_config` module used by both frontends. A4's transport-verbosity tier is parsed independently by each frontend's getopt loop, and A20's presence check is independent in the Windows startup path; their behavior currently matches but can drift separately. The remaining configuration-adjacent defects are teardown behavior, not parsing: A13's escape-shutdown wording and A14's full normal-exit cleanup transition remain open, with A21 retaining the related exit diagnostics.
 
-Ten are **event-loop and shutdown drift**: A5, A6, A7, A8, A9, A12, A15, A22, A23, and A24. `STMClient::main()` was re-derived rather than extracted, so every ordering and exception-boundary decision was re-made independently, and each drifted on its own.
+The event-loop, timing, and diagnostics cluster is **A5, A6, A7, A8, A9, A12, A15, A22, A23, A24, A26, and A27**. `STMClient::main()` was re-derived rather than extracted, so every ordering, exception-boundary, and poll-diagnostics decision was re-made independently; A27 is the unimplemented Select verbosity level-two-and-above tier of A4 and remains coupled to A26's wait seam.
+
+A28 is an open behavior decision in the escape-suspend path: A16 covers only the genuinely platform-forced absence of SIGSTOP, while A28 covers the unresolved choice between an unsupported notification and literal pass-through, including whether the escape-prefix byte is forwarded.
 
 Whether the correct remedy is a shared platform-neutral loop coordinator (taking normalized events, returning actions and deadlines) or platform-specific loops held together by parity tests is an open architectural question — a literal extraction of `STMClient::main()` is unlikely to stay simple, because the POSIX and Win32 waiting, input, resize, and termination contracts genuinely differ.
 
@@ -41,7 +43,7 @@ What must be settled first is the **behavioral contract**, not the code organiza
 
 Only the genuinely coupled findings wait on that contract: A5 and A9 (phase ordering) and A6, A7, and A15 (exception boundaries and retry timing). The cluster's one high-severity defect did not wait on it and is now repaired: the zero-wait throttle was an independent safety invariant with a local contract test, and holding a resource-exhaustion fix behind a speculative refactor would have been the wrong trade. S2 is now the inventory's only remaining high, and it is a release blocker. A22 is local error-state bookkeeping and is likewise independently fixable.
 
-The remaining defects are exit-path omissions (A13, A14, A21), the loop's missing test boundary (A26), and one security defect (S2).
+The remaining defects are exit-path omissions (A13, A14, A21), the loop's missing test boundary and level-two diagnostics gap (A26, A27), and one security defect (S2). A28 is an open suspend-behavior decision alongside these defects.
 
 ### The host loop, for reference
 
@@ -73,54 +75,6 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 * **Consequence:** The executable uses the Windows Console VT contract rather than the user's terminfo.
 * **Class:** `PLATFORM`, low. Windows has no termios, and the native console requires `SetConsoleMode` plus VT escapes.
 
-#### A20. `MOSH_NO_TERM_INIT` is ignored and the alternate screen is unconditional
-
-* **Upstream:** `Display::open()`/`close()` emit `smcup`/`rmcup` only when terminfo initialization was not suppressed; `MOSH_NO_TERM_INIT` suppresses it (`src/terminal/terminaldisplayinit.cc:83`).
-* **Port:** Wraps `display.open()`/`close()` in literal `\033[?1049h`/`\033[?1049l` unconditionally (`MoshCore::Impl::Impl`, `win32/mosh_core.cc:154`).
-* **Consequence:** A user who sets `MOSH_NO_TERM_INIT` to keep the session on the primary screen buffer gets the alternate screen anyway, and scrollback is hidden for the session.
-* **Class:** `DEFECT`, low. This is a separate decision from I1 — nothing about the Windows console forces the alternate screen. Splitting it out matters because I1 is not correctable and this is.
-* **Fix:** Gate the two literal sequences on the same environment variable.
-
-#### A1. `MOSH_ESCAPE_KEY` configuration is omitted
-
-* **Upstream:** Parses `MOSH_ESCAPE_KEY`, accepts one ASCII key or disables the parser on an empty value, derives the literal-pass spelling and line-start rule, and rejects dangerous controls (`src/frontend/stmclient.cc:130`).
-* **Port:** Hardcodes Ctrl-^ / `^` / no line-start requirement and builds only that help string (`win32/mosh_core.cc:114`, `win32/mosh_core.cc:135`); there is no environment lookup.
-* **Consequence:** A Windows user cannot select another escape prefix or disable the escape parser. Bytes upstream would pass through as literal data instead invoke the local command parser.
-* **Class:** `DEFECT`, medium. Pure parser configuration; no console constraint applies.
-
-#### A2. `MOSH_PREDICTION_OVERWRITE=yes` is omitted
-
-* **Upstream:** Enables insertion-overwrite prediction when the variable is exactly `yes` (`src/frontend/stmclient.h:119`), read at `src/frontend/mosh-client.cc:178`.
-* **Port:** Accepts only a display-preference argument and never calls `PredictionEngine::set_predict_overwrite()` (`win32/mosh_core.cc:121`, `win32/mosh_main.cc:165`).
-* **Consequence:** Insert and delete prediction can visibly differ from upstream before the server echo arrives.
-* **Class:** `DEFECT`, low. The shared prediction engine already exposes the operation.
-
-#### A25. The prediction display preference has no source
-
-* **Upstream:** `mosh-client` reads `MOSH_PREDICTION_DISPLAY` from the environment, where an absent variable is allowed (`src/frontend/mosh-client.cc:174`); the wrapper sets it from `--predict` (`scripts/mosh.pl:463`).
-* **Port:** `MoshCore` maps all four upstream preference values and throws on an unrecognized one (`win32/mosh_core.cc:121`), but its only caller passes the literal `"adaptive"` (`win32/mosh_main.cc:165`) and no environment variable is read.
-* **Consequence:** A Windows user cannot select `always`, `never`, or `experimental`. On a high-latency link the underlined prediction display cannot be forced on, and on a local link it cannot be turned off.
-* **Class:** `DEFECT`, low. The engine already implements every preference; only the source is missing.
-* **Note:** upstream's environment variable is the natural source. Supplying one is a distinct change from retiring the command-line key channel and is deliberately not bundled with it, so the removal stays a removal.
-* **Contract for the fix:** read and *validate* `MOSH_PREDICTION_DISPLAY` before calling `mosh_bootstrap`, then hand the already-validated preference to `MoshCore`. The accepted values are `always`, `never`, `adaptive`, and `experimental`. An absent variable is not an error and selects nothing: the engine's own default is `Adaptive` (`src/frontend/terminaloverlay.h:311`), which is what the sole call site passes literally today. Any other value, the empty string included, is refused rather than silently downgraded. The ordering is the substance of this contract, not a detail. `mosh_bootstrap` starts a detached `mosh-server` on the remote host before `MoshCore` is constructed (`win32/mosh_main.cc:161`, `win32/mosh_main.cc:165`), so leaning on `MoshCore`'s existing throw (`win32/mosh_core.cc:131`) would refuse the value only after stranding a remote server to sit out its no-client timeout. Upstream refuses first as well, in the wrapper, before it opens `ssh` (`scripts/mosh.pl:185`, `scripts/mosh.pl:143`). Validated locally, the remaining divergence is exit status alone, of the kind recorded under I7. The preference is a display choice with no bearing on the endpoint or the key, so reading it does not reopen the channel S1 closed.
-* **Acceptance coverage for the fix:** an invalid value and an empty value each fail without spawning `ssh`; an absent variable leaves `Adaptive`; each of the four accepted values reaches the core.
-* **The rule generalizes, and should be applied that way:** every locally detectable configuration error must be resolved before `mosh_bootstrap` starts a remote server. That covers the rest of the configuration family — `MOSH_ESCAPE_KEY` (A1), `MOSH_PREDICTION_OVERWRITE` (A2), `MOSH_NO_TERM_INIT` (A20) — along with terminal initialization and any dump protection S2 introduces, which upstream establishes before it acquires the key at all. Each should also take an owned, parsed snapshot at validation time rather than carrying a `getenv` pointer across process creation: a typed preference leaves `MoshCore` nothing to re-validate, so there is no second validation point to drift from the first.
-
-#### A3. The `[mosh] ` title prefix is never set
-
-* **Upstream:** `STMClient::init()` sets the prefix unless `MOSH_TITLE_NOPREFIX` is set (`src/frontend/stmclient.cc:125`); `STMClient::shutdown()` clears it before the final frame (`src/frontend/stmclient.cc:209`).
-* **Port:** Never sets or clears an overlay title prefix (`win32/mosh_core.cc:111`).
-* **Consequence:** Remote title updates are not marked as mosh titles during the session.
-* **Class:** `DEFECT`, low. `Display(false)` still has title support (`src/terminal/terminaldisplayinit.cc:83`), so this is not forced by the display choice.
-* **Note:** Upstream's shutdown *clears* the prefix; it never saves or restores whatever title existed before mosh started. Because the port never adds a prefix, both implementations leave the same bare remote title after exit. Only the in-session prefix differs.
-
-#### A4. Upstream's `-v` diagnostics are unavailable
-
-* **Upstream:** Parses repeatable `-v` (`src/frontend/mosh-client.cc:129`) and calls both `network->set_verbose()` and `Select::set_verbose()` (`src/frontend/stmclient.cc:260`).
-* **Port:** Accepts only `<user@host>`, which takes no verbosity flag (`win32/mosh_bootstrap.cc:365`), and never sets transport verbosity (`win32/mosh_core.cc:150`).
-* **Consequence:** Neither transport diagnostics nor poll diagnostics can be requested, making field troubleshooting harder.
-* **Class:** `DEFECT`, low.
-* **Fix:** Two tiers with very different costs. Transport verbosity is a flag plus one existing setter. Reproducing `Select`'s poll diagnostics has no shared setter to call and requires instrumenting the Win32 loop. The behavior those diagnostics report — the throttle on a repeatedly requested zero wait — is present; only the reporting is missing.
 
 #### I7. The executable is a standalone CLI, not a wrapper-invoked client
 
@@ -312,20 +266,31 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 * **Consequence:** The on-screen message differs, and the port prints a terse status where upstream prints its detailed firewall and UDP diagnostic (see A21).
 * **Class:** `DEFECT`, low.
 
-#### A16. The escape-suspend sequence does nothing
+#### A16. The escape-suspend suspension mechanism is unavailable
 
-* **Upstream:** Ctrl-^ followed by Ctrl-Z closes the display, restores termios, prints `[mosh is suspended.]`, raises `SIGSTOP`, and calls `resume()` on continuation (`src/frontend/stmclient.cc:353`).
+* **Upstream:** Ctrl-^ followed by Ctrl-Z closes the display, restores termios, prints `[mosh is suspended.]`, raises `SIGSTOP`, and calls `resume()` on continuation (`src/frontend/stmclient.cc:302`, `src/frontend/stmclient.cc:318`).
+* **Port:** The escape-suspend branch has no Windows suspension mechanism (`win32/mosh_core.cc:252`).
+* **Consequence:** Windows cannot suspend and resume the session through the upstream `SIGSTOP` mechanism.
+* **Class:** `PLATFORM`, low. Windows has no `SIGSTOP`; the suspension mechanism itself is genuinely unavailable and not correctable. The port's separate choice to swallow the sequence silently is A28.
+
+#### A28. Escape-suspend substitute behavior is unresolved
+
+* **Upstream:** Always closes the display, restores termios, prints `[mosh is suspended.]`, calls `kill(0, SIGSTOP)`, and resumes on continuation (`src/frontend/stmclient.cc:302`, `src/frontend/stmclient.cc:311`, `src/frontend/stmclient.cc:316`, `src/frontend/stmclient.cc:318`). It has no no-`SIGSTOP` fallback branch.
+* **Proposed Windows behaviors:** Report that suspension is unsupported, or pass the escape-prefix plus Ctrl-Z through as literal input. These are alternatives under consideration, not upstream behavior.
 * **Port:** `feed_input` matches byte `0x1a` after the escape prefix and deliberately does nothing (`win32/mosh_core.cc:252`).
-* **Consequence:** A user typing the documented suspend sequence gets no feedback and no suspension; the bytes are swallowed. Upstream's own console-facing behavior — restoring the terminal and printing a message — has no Windows counterpart even though it is achievable.
-* **Class:** `DEFECT`, low.
-* **Note:** Windows has no `SIGSTOP`, so full parity is not available. The current no-op is not the only option: the sequence could be rejected with a notification, or mapped to a console-appropriate action. The comment at that line explains why `SIGSTOP` is absent but not why silence is the right substitute.
+* **Consequence:** A user typing the escape-suspend sequence receives no notification and loses the input bytes, but the substitute behavior and whether the escape-prefix byte is forwarded remain undecided.
+* **Class:** `OPEN`, low. A16 owns the platform limitation; choosing an unsupported notification versus literal pass-through has materially different remote-input semantics.
+* **Related:** A16 owns the unavailable suspension mechanism; A28 owns the unresolved substitute behavior.
 
-#### A14. The final cleanup frame is omitted
+#### A14. Normal-exit cleanup is not one complete transition
 
-* **Upstream:** `STMClient::shutdown()` clears the notification string and title prefix, marks the server heard, and renders one final frame before restoring the terminal (`src/frontend/stmclient.cc:204`).
-* **Port:** Restores the console and emits `close_sequence()` without a final `next_frame()` (`win32/console_io.cc:985`, `win32/console_io.cc:990`).
-* **Consequence:** The last rendered screen retains whatever overlay state — notifications, prediction underlines — was live when the loop exited.
-* **Class:** `DEFECT`, low.
+* **Upstream:** On a normal exit, `STMClient::shutdown()` clears the notification, marks the server heard, clears the title prefix, and renders one final frame through the ordinary render path (`src/frontend/stmclient.cc:153`, `src/frontend/stmclient.cc:156`, `src/frontend/stmclient.cc:157`, `src/frontend/stmclient.cc:158`, `src/frontend/stmclient.cc:159`).
+* **Port:** Restoration emits `close_sequence()` without a single MoshCore cleanup transition that performs the three explicit overlay mutations — notification clear, server-heard mark, and title-prefix clear — and then the final frame before restoration (`win32/console_io.cc:985`, `win32/console_io.cc:991`).
+* **Consequence:** Normal exits can retain stale notifications and title state on the last rendered screen, and cleanup responsibilities are split across unrelated paths. The final frame follows the ordinary cull/apply render path and does not imply a separate prediction reset.
+* **Class:** `DEFECT`, low. A14 owns the full normal-exit cleanup transition, including the final frame; it is not merely a missing frame.
+* **Timing rule:** For deadline-driven or failed-output exits, the final frame is skipped in favor of immediate restoration. A synchronous final frame must not consume the close-handler restoration reserve; see A24.
+* **Acceptance:** Cover local quit, peer-initiated shutdown, connection timeout, shutdown-ack timeout, fatal error, close-deadline termination, and output-write failure. The first six exercise the normal or immediate-restoration transition as applicable; output-write failure must verify restoration occurs without another frame attempt, and close-deadline termination must verify immediate restoration without a synchronous final frame.
+* **Source note:** `STMClient::shutdown()` explicitly performs only the three listed overlay mutations and `output_new_frame()`; prediction invalidation is not a separate shutdown operation.
 
 #### A21. Exit-time diagnostics and the exit banner are omitted
 
@@ -333,24 +298,80 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 * **Port:** `mosh_main` prints only `status_message()` when nonempty (`win32/mosh_main.cc:168`); there is no banner.
 * **Consequence:** A failed initial connection gives no firewall or UDP guidance, an unclean exit gives no server-still-running warning, and a clean exit has no banner.
 * **Class:** `DEFECT`, medium — the connection-failure guidance is the single most useful diagnostic upstream prints, and this is the platform where UDP is most likely to be firewalled.
-* **Note:** split from A14 because the owners differ. A14 is a frame the session emits; this is text `main` prints after restoration.
+* **Note:** split from A14 because the owners differ. A14 is the session's cleanup transition; this is text `main` prints after restoration.
 * **Caution when implementing:** upstream's troubleshooting text recommends the `-p` option for selecting a UDP port. `mosh.exe` has no port selection of any kind — the endpoint comes from the server's `MOSH CONNECT` reply (I7) — so that sentence has no analogue and must be omitted rather than reworded. Do not reintroduce a positional port to give it one; whether client-side port selection should exist at all is a separate question this finding does not settle.
+
+#### A27. Select poll diagnostics are unimplemented above transport verbosity
+
+* **Upstream:** Repeatable `-vv` (verbosity greater than one) enables `Select` diagnostics, emitting per-poll and rate-limiting/throttle diagnostics (`src/util/select.h:128`, `src/util/select.h:132`, `src/util/select.h:137`). A single `-v` emits no Select diagnostics.
+* **Port:** The Win32 `PollThrottle` enforces the wait floor but emits no poll or throttle diagnostics (`win32/console_io.cc:711`); `-vv` reaches transport only.
+* **Consequence:** `-vv` and higher cannot expose the poll timing and throttling information available upstream.
+* **Class:** `DEFECT`, low.
+* **Related:** A4 is the confirmed transport-verbosity tier; A27 is its unimplemented Select tier for verbosity level two and above and is coupled to A26's missing wait seam.
 
 ---
 
 ## Confirmed parity
 
-#### Connection timeout enters graceful shutdown
+#### A20. `MOSH_NO_TERM_INIT` gates only the alternate-screen pair
 
-* **Upstream:** After more than 15,000 ms without a remote state, sets the notification and calls `network->start_shutdown()` (`src/frontend/stmclient.cc:539`); the transport then bounds shutdown by 16 packets or 10 seconds (`src/network/transportsender-impl.h:373`).
-* **Port:** Uses the same `CONNECTION_TIMEOUT = 15000` (`win32/mosh_core.cc:64`) and calls `network->start_shutdown()` after setting the notification (`MoshCore::Impl::update_lifecycle`, `win32/mosh_core.cc:184`, `win32/mosh_core.cc:187`).
-* **Status:** parity. The 15-second detection threshold and the transition into the bounded shutdown protocol match.
+* **Upstream:** `Display::open()`/`close()` emit `smcup`/`rmcup` only when terminfo initialization was not suppressed; `MOSH_NO_TERM_INIT` suppresses it (`src/terminal/terminaldisplayinit.cc:83`).
+* **Port:** Reads `MOSH_NO_TERM_INIT` during startup parsing (`win32/mosh_main.cc:167`, `win32/startup_options.cc:53`) and gates the literal alternate-screen pair around `display.open()`/`display.close()` (`win32/mosh_core.cc:146`).
+* **Consequence:** Setting `MOSH_NO_TERM_INIT` keeps the session on the primary screen buffer, matching upstream. Application-cursor mode is unaffected; only the alternate-screen pair is gated.
+* **Status:** parity. The Windows startup path gates the same alternate-screen pair; application-cursor mode remains unaffected.
+* **Verification:** `win32/test_startup_options.cc` covers absent/set `MOSH_NO_TERM_INIT` in `test_no_term_init()`; `test_console_lifecycle.exe no-term-init` covers the emitted alternate-screen behavior.
+
+#### A1. `MOSH_ESCAPE_KEY` is parsed identically by both frontends
+
+* **Upstream:** Parses `MOSH_ESCAPE_KEY`, accepts one ASCII key or disables the parser on an empty value, derives the literal-pass spelling and line-start rule, and rejects dangerous controls (`src/frontend/startup_config.cc:42`).
+* **Port:** `parse_startup_options` uses the shared `parse_escape_key` result, and `MoshCore` consumes the parsed key, literal-pass keys, line-start rule, and help spelling (`win32/startup_options.cc:51`, `win32/mosh_core.cc:116`, `win32/mosh_core.cc:128`).
+* **Consequence:** Windows accepts the same escape-key settings and disables the parser for an empty value, with the same literal-pass and line-start behavior as `STMClient`.
+* **Status:** parity. The parser is shared with `STMClient` via `src/frontend/startup_config`, so both frontends parse identically.
+* **Verification:** `win32/test_startup_options.cc::test_escape_key()` covers the parsed snapshot; `test_console_lifecycle.exe escape-key` covers custom, non-escape, and disabled parser behavior; default Ctrl-^ quit is covered by `win32/test_console_lifecycle.cc:1075` and `:1157`.
+
+#### A2. `MOSH_PREDICTION_OVERWRITE=yes` is parsed identically by both frontends
+
+* **Upstream:** Enables insertion-overwrite prediction when the variable is exactly `yes` (`src/frontend/startup_config.cc:125`, used by `src/frontend/stmclient.h:114`).
+* **Port:** `parse_startup_options` parses the same value and `MoshCore` enables `PredictionEngine::set_predict_overwrite()` when it is true (`win32/startup_options.cc:50`, `win32/mosh_core.cc:123`).
+* **Consequence:** Insert and delete prediction use the same overwrite setting before the server echo arrives.
+* **Status:** parity. The parser is shared with `STMClient` via `src/frontend/startup_config`, so both frontends parse identically.
+* **Verification:** `win32/test_startup_options.cc::test_prediction_overwrite()` covers the `yes` snapshot; the startup-options test also covers the shared parser wiring used by both frontends.
+
+#### A25. The prediction display preference is parsed identically by both frontends
+
+* **Upstream:** `STMClient` and the Windows startup path use the shared `parse_prediction_display` parser, accepting `always`, `never`, `adaptive`, and `experimental`, with an absent variable selecting `Adaptive` (`src/frontend/startup_config.cc:101`).
+* **Port:** Reads and validates `MOSH_PREDICTION_DISPLAY` before `mosh_bootstrap`, then passes the typed preference to `MoshCore` (`win32/mosh_main.cc:163`, `win32/startup_options.cc:45`, `win32/mosh_core.cc:123`).
+* **Consequence:** Windows exposes the same four prediction display preferences and rejects invalid values before starting the remote server.
+* **Status:** parity. The parser is shared with `STMClient` via `src/frontend/startup_config`, so both frontends parse identically.
+* **Verification:** `win32/test_startup_options.cc::test_prediction_display()` covers absent, accepted, and invalid preference snapshots.
+
+#### A3. The `[mosh] ` title prefix is applied like `STMClient`
+
+* **Upstream:** `STMClient::init()` sets the prefix unless `MOSH_TITLE_NOPREFIX` is set, and `STMClient::shutdown()` clears it before the final frame (`src/frontend/stmclient.cc:127`, `src/frontend/stmclient.cc:158`).
+* **Port:** The shared parser determines whether the prefix is wanted, `MoshCore` applies `[mosh] ` during construction, and `begin_shutdown()` clears it on a local quit (`win32/startup_options.cc:52`, `win32/mosh_core.cc:154`, `win32/mosh_core.cc:308`).
+* **Consequence:** Remote title updates are marked as mosh titles during the session and the prefix is cleared on a local quit. On a peer-initiated exit, the title can remain stale until A14's complete normal-exit cleanup transition is implemented; this is an accepted deferred coupling between A3 and A14.
+* **Status:** parity within the implemented lifecycle. The parser is shared with `STMClient` via `src/frontend/startup_config`, so both frontends parse identically; peer-initiated final cleanup remains deferred under A14.
+* **Verification:** `win32/test_startup_options.cc::test_title_prefix()` covers absent/set `MOSH_TITLE_NOPREFIX`; the A14 acceptance matrix must cover peer-initiated teardown timing.
+
+#### A4. Repeatable `-v` enables transport diagnostics
+
+* **Upstream:** Parses repeatable `-v` and calls `network->set_verbose()` (`src/frontend/mosh-client.cc:129`, `src/frontend/stmclient.cc:220`).
+* **Port:** `parse_invocation` uses `getopt` to count repeatable `-v` options, and `MoshCore` applies the count to the transport (`win32/mosh_bootstrap.cc:377`, `win32/mosh_bootstrap.cc:384`, `win32/mosh_core.cc:142`).
+* **Consequence:** Windows can request transport verbosity with `-v`; poll diagnostics remain outside this finding.
+* **Status:** parity for transport verbosity only. The option parser uses `getopt`; `Select` poll diagnostics are not implemented. The unimplemented poll-diagnostics tier is tracked separately as A27.
+* **Verification:** `win32/test_bootstrap.cc::test_parse_invocation()` covers repeatable `-v`/`-vv`; the CI “mosh.exe rejects bad invocations” usage-code check covers invalid option forms and the supported invocation contract.
 
 #### Reader input ending enters graceful shutdown
 
 * **Upstream:** `process_user_input()` returns false for EOF and a read error (`src/frontend/stmclient.cc:316`); the main loop then breaks if not yet connected, or calls `network->start_shutdown()` if connected (`src/frontend/stmclient.cc:490`).
 * **Port:** `Reader::read_loop` marks a `ReadFile` failure as input ended (`win32/console_io.cc:358`); the owner observes `has_ended()` and begins graceful shutdown with `ShutdownCause::IO_LOSS` (`win32/console_io.cc:1203`). A successful zero-byte result follows the same path (`win32/console_io.cc:370`).
 * **Status:** read-failure parity. Treating a successful zero-byte console read as end-of-input is engineering judgment, not a documented Windows EOF guarantee. Microsoft's [ReadFile documentation](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-readfile) specifies end-of-file behavior for file reads but not console handles. Microsoft's [high-level console input documentation](https://learn.microsoft.com/windows/console/high-level-console-input-and-output-functions) instead says that, with line input disabled, `ReadFile` on console input does not return until at least one character is available. A successful zero-byte console read is therefore undocumented in both directions. The chosen teardown avoids an unbounded immediate retry spin: a spurious zero costs a clean shutdown; a wrong backoff can consume a core indefinitely.
+
+#### Connection timeout enters graceful shutdown
+
+* **Upstream:** After more than 15,000 ms without a remote state, sets the notification and calls `network->start_shutdown()` (`src/frontend/stmclient.cc:539`); the transport then bounds shutdown by 16 packets or 10 seconds (`src/network/transportsender-impl.h:373`).
+* **Port:** Uses the same `CONNECTION_TIMEOUT = 15000` (`win32/mosh_core.cc:64`) and calls `network->start_shutdown()` after setting the notification (`MoshCore::Impl::update_lifecycle`, `win32/mosh_core.cc:184`, `win32/mosh_core.cc:187`).
+* **Status:** parity. The 15-second detection threshold and the transition into the bounded shutdown protocol match.
 
 #### An interrupt control event enters protocol shutdown; a typed Ctrl-C does not
 
@@ -388,12 +409,12 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### No supported invocation puts the session key on `mosh.exe`'s command line (S1, repaired)
 
 * **Upstream:** `mosh-client` reads the key from `MOSH_KEY` (`src/frontend/mosh-client.cc:167`) and immediately calls `unsetenv( "MOSH_KEY" )`, exiting if the unset fails (`src/frontend/mosh-client.cc:183`).
-* **Port:** The sole invocation is `mosh.exe <user@host>`, which obtains the key from the server's `MOSH CONNECT` reply over the `ssh` pipe. An endpoint is never accepted positionally: `classify_invocation` routes every argument shape other than a single destination to usage (`win32/mosh_bootstrap.cc:365`, `win32/mosh_main.cc:140`), so no supported invocation asks a user to put a key there and nothing in the program reads one from `argv`.
-* **The property, stated so it can be enforced:** no interface requires or interprets a session key from `argv`; the server-issued key first exists after every child command line has been built (`build_ssh_command_line` takes only the ssh path and the destination, `win32/mosh_bootstrap.cc:164`, and is called before the reply is read, `win32/mosh_bootstrap.cc:382`); and `mosh.exe` never writes the key back into an argument, an environment block, or a diagnostic of its own — the child inherits stderr, so what `ssh.exe` prints is the child's to answer for, and S2 disposes of that child. What the program cannot do is keep a caller from typing a secret into the destination argument itself — that string is untyped, and it is copied into both this command line and `ssh.exe`'s. Argument classification governs what the program *accepts and reads*, not what a caller can place in a process parameter block that Windows populates before `main` runs.
+* **Port:** The supported invocation is `mosh.exe [-v ...] <user@host>` — zero or more value-free, non-credential-bearing verbosity flags plus exactly one destination — which obtains the key from the server's `MOSH CONNECT` reply over the `ssh` pipe. An endpoint is never accepted positionally: `parse_invocation` routes every argument shape other than optional verbosity flags and a single destination to usage (`win32/mosh_bootstrap.cc:377`, `win32/mosh_main.cc:143`), so no supported invocation asks a user to put a key there and nothing in the program reads one from `argv`. The only accepted option is the value-free `-v`; it carries no credential.
+* **The property, stated so it can be enforced:** no interface requires or interprets a session key from `argv`; the server-issued key first exists after every child command line has been built (`build_ssh_command_line` takes only the ssh path and the destination, `win32/mosh_bootstrap.cc:165`, and is called before the reply is read, `win32/mosh_bootstrap.cc:410`); and `mosh.exe` never writes the key back into an argument, an environment block, or a diagnostic of its own — the child inherits stderr, so what `ssh.exe` prints is the child's to answer for, and S2 disposes of that child. What the program cannot do is keep a caller from typing a secret into the destination argument itself — that string is untyped, and it is copied into both this command line and `ssh.exe`'s. Argument classification governs what the program *accepts and reads*, not what a caller can place in a process parameter block that Windows populates before `main` runs.
 * **What this record does not cover:** only `mosh.exe`'s own command line. `ssh.exe` necessarily holds the key too — it decrypts and buffers the `MOSH CONNECT` line before writing it to the pipe — and it is selected from `PATH`, so its provenance and its crash behavior are part of the same trust boundary and are governed by neither this repair nor anything `mosh.exe` can establish about a child it did not build. S2 now names it and disposes of it: a PATH-resolved OpenSSH client is a trusted external dependency, with the residual risk accepted.
 * **Status:** parity on the property that matters — no supported path puts the session key where a Windows process parameter block would hold it, because such a block cannot be cleared once read. The mechanism differs deliberately. Upstream's environment channel does not transfer: a user who sets `MOSH_KEY` in a shell leaves the key in a long-lived parent the client cannot reach, and a child cannot establish dump protection before its own environment block exists, so the key is present during loader and startup failures. The pipe handoff avoids both.
 * **Verification:** the classifier rejects endpoint-shaped argument lists (`win32/test_bootstrap.cc:322`), and CI asserts that the binary it builds refuses such an invocation with the usage code and that its usage text advertises no key, prediction mode, or positional endpoint. The CI probe uses a *valid* 22-character key, because `Base64Key` rejects a malformed one and an invocation refused by key validation would look identical to one refused by argument classification.
-* **What the verification proves:** that the retired syntax stays retired. It is a regression guard, not a proof that no credential can reach a command line — it would not catch a future `--key` option, a differently named credential argument, or a key interpolated into some later child's command line. The invariants that would need their own checks are that the accepted grammar contains only a destination, and that every child command line is built before the server-issued key exists. The check with the right shape is a fixture that plants a unique sentinel in place of the server's key, records every spawned child's command line and environment block, captures everything `mosh.exe` writes, and asserts the sentinel appears only on the path that consumes it. Routing all production process creation through one launcher would make that assertion hold for children added later, instead of only the one that exists now.
+* **What the verification proves:** that the retired syntax stays retired. It is a regression guard, not a proof that no credential can reach a command line — it would not catch a future `--key` option, a differently named credential argument, or a key interpolated into some later child's command line. The invariants that would need their own checks are that the accepted grammar contains only value-free verbosity flags and a single destination (no credential-bearing option or operand), and that every child command line is built before the server-issued key exists. The check with the right shape is a fixture that plants a unique sentinel in place of the server's key, records every spawned child's command line and environment block, captures everything `mosh.exe` writes, and asserts the sentinel appears only on the path that consumes it. Routing all production process creation through one launcher would make that assertion hold for children added later, instead of only the one that exists now.
 * **If a direct-endpoint facility is ever wanted again:** the retired one was advertised in the usage text, so removing it is a deliberate breaking change and not the deletion of unreachable development code. It never reached a release, which is the evidence that matters and is stronger than "no consumer is known": the fork publishes no releases, and the only tag carrying a `win32/` tree is `attic/task-4a-v1`, a development snapshot that does advertise the form (`win32/mosh_main.cc:72` there). Tagged, then, but never shipped. One workflow still left with it. Supplying an endpoint directly was the only way to reach a host whose server-side `SSH_CONNECTION` address the client cannot route to — behind NAT or a load balancer — since `mosh.exe <user@host>` derives its UDP target from that address. Those topologies are out of scope by decision, recorded under I9; the workflow is not replaced, it is withdrawn. A jump-only host is a different case with a different status: refused by the pinned proxy options, policy unresolved, tracked as I10. What the removal genuinely costs nothing is the rest: an ordinary session is `mosh.exe <user@host>`, and a synthetic endpoint is constructed in-process by the unit tests, which never build a command line. Restoring that reachability would not require restoring this interface, and the two should not be conflated: an address is routing metadata, only the key is secret. An endpoint override that keeps the ssh bootstrap for the key, or upstream's own client-visible-address discovery (`local` or `proxy`), would serve the withdrawn topologies with nothing secret in `argv` at all. I9 holds what such an override would have to cover. That is the shape to reach for if the scope decision is ever revisited. What follows applies only to the narrower case of a session established with no bootstrap at all. Should such a facility become necessary, it must take the key over a channel whose contents the receiving process can bound: an inherited pipe, or an equivalent handoff that happens after the process has started. Not an environment variable, not an interactive paste, and not another command-line spelling. The command line is the settled one: whatever its spelling, it lands in a process parameter block that cannot be cleared once read, which is precisely what this record repaired — a `--key` option would reintroduce it exactly. The other two are ruled out under the threat model this repair assumed — a same-user reader — rather than absolutely. An environment variable inherited from the user's shell sits in a long-lived parent the client cannot scrub, and is present in the child's own block during loader and startup failures, before the child can protect itself; an ephemeral launcher would avoid the first half of that but not the second. An interactive paste puts the key through console input and screen buffers whose lifetime the reader does not control by default; no-echo input narrows that, and a design that relies on it has to say so and show it. The channel is the constraint; the protocol is not designed here. A real proposal would still have to settle who obtains the key, how the child identifies the handle it was given, handle-inheritance limits, cancellation and timeout, and zeroization on both sides — none of which can be chosen sensibly before a consumer exists.
 * **Residual:** the bootstrap's intermediate key copies — the parsed reply and the pipe drain buffers — are freed without being zeroed, so a crash-dump-class adversary can still recover the key from freed heap. This is not a divergence: upstream's `mosh-client` zeroes none of its key copies either. Crash-dump exposure itself is S2, which is unaffected by this repair.
 
