@@ -41,10 +41,12 @@
 
 struct StartupOptions {
   Overlay::PredictionEngine::DisplayPreference predict_display = Overlay::PredictionEngine::Adaptive;
+  EscapeConfig escape;
 };
 
 struct StartupEnv {
   const char *predict_display = nullptr;  /* MOSH_PREDICTION_DISPLAY */
+  const char *escape_key = nullptr;  /* MOSH_ESCAPE_KEY */
 };
 
 /* Build the validated snapshot from the environment. Returns false and sets

@@ -159,6 +159,7 @@ int main( int argc, char *argv[] )
 
     StartupEnv env;
     env.predict_display = std::getenv( "MOSH_PREDICTION_DISPLAY" );
+    env.escape_key = std::getenv( "MOSH_ESCAPE_KEY" );
     StartupOptions opts;
     std::string opt_error;
     if ( !parse_startup_options( env, &opts, &opt_error ) ) {

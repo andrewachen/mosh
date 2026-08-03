@@ -47,5 +47,6 @@ bool parse_startup_options( const StartupEnv &env, StartupOptions *out, std::str
     return false;
   }
 
+  out->escape = parse_escape_key( env.escape_key );
   return true;
 }

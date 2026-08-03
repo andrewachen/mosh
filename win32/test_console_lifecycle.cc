@@ -156,6 +156,55 @@ static void must( BOOL ok, const char *what )
 }
 
 /* Returns nonzero on assertion failure so CI can detect a RED build. */
+static int run_escape_key()
+{
+  TestServer server( 80, 24 );
+
+  /* Custom control escape (Ctrl-A) + '.' begins shutdown. */
+  {
+    StartupOptions opts = never_prediction();
+    opts.escape.key = 0x01;
+    opts.escape.pass_key = 'A';
+    opts.escape.pass_key2 = 'A';
+    opts.escape.requires_lf = false;
+    MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(), 80, 24, opts );
+    const char quit[] = { 0x01, '.' };
+    core.feed_input( quit, sizeof quit );
+    if ( core.status_message() != "Exiting..." ) {
+      fprintf( stderr, "FAIL: escape-key: custom escape did not begin shutdown (status=\"%s\")\n",
+               core.status_message().c_str() );
+      return 1;
+    }
+  }
+  /* The former default 0x1e is now an ordinary byte. */
+  {
+    StartupOptions opts = never_prediction();
+    opts.escape.key = 0x01;
+    opts.escape.pass_key = 'A';
+    opts.escape.pass_key2 = 'A';
+    MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(), 80, 24, opts );
+    const char seq[] = { 0x1e, '.' };
+    core.feed_input( seq, sizeof seq );
+    if ( !core.status_message().empty() ) {
+      fprintf( stderr, "FAIL: escape-key: non-escape 0x1e began shutdown\n" );
+      return 1;
+    }
+  }
+  /* Disabled parser (key == -1): no byte begins shutdown. */
+  {
+    StartupOptions opts = never_prediction();
+    opts.escape.key = -1;
+    MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(), 80, 24, opts );
+    const char seq[] = { 0x1e, '.' };
+    core.feed_input( seq, sizeof seq );
+    if ( !core.status_message().empty() ) {
+      fprintf( stderr, "FAIL: escape-key: disabled parser began shutdown\n" );
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static int run_vt_mode()
 {
   ConsoleTestScope scope;   /* std handles now name the real console */
@@ -1330,6 +1379,9 @@ int main( int argc, char *argv[] )
   }
 
   try {
+    if ( strcmp( argv[1], "escape-key" ) == 0 ) {
+      return run_escape_key();
+    }
     if ( strcmp( argv[1], "vt-mode" ) == 0 ) {
       return run_vt_mode();
     }

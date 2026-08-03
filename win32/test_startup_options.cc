@@ -38,6 +38,20 @@
 #include "src/frontend/terminaloverlay.h"
 #include "win32/startup_options.h"
 
+static int test_escape_key()
+{
+  StartupEnv env;
+  env.escape_key = "\x01";  /* Ctrl-A */
+  StartupOptions opts;
+  std::string err;
+  if ( !parse_startup_options( env, &opts, &err )
+       || opts.escape.key != 0x01 || opts.escape.pass_key != 'A' ) {
+    fprintf( stderr, "FAIL: snapshot did not carry the parsed escape key\n" );
+    return 1;
+  }
+  return 0;
+}
+
 static int test_prediction_display()
 {
   {
@@ -76,6 +90,9 @@ static int test_prediction_display()
 
 int main()
 {
+  if ( test_escape_key() != 0 ) {
+    return 1;
+  }
   if ( test_prediction_display() != 0 ) {
     return 1;
   }

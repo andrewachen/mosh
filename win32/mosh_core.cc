@@ -46,6 +46,7 @@
 #include <vector>
 
 #include "src/crypto/crypto.h"
+#include "src/frontend/startup_config.h"
 #include "src/frontend/terminaloverlay.h"
 #include "src/network/networktransport.h"
 #include "src/network/networktransport-impl.h"
@@ -111,8 +112,9 @@ public:
   Impl( const char *ip, const char *port, const char *key, int cols, int rows, const StartupOptions &opts )
     : local_terminal( cols, rows ), overlays(), network(), display( false ), local_framebuffer( cols, rows ),
       new_state( cols, rows ), open(), close(), frame(), status(), connecting_notification(), repaint_requested( true ),
-      lf_entered( false ), quit_sequence_started( false ), finished( false ), clean_shutdown( false ), escape_key( 0x1e ),
-      escape_pass_key( '^' ), escape_pass_key2( '^' ), escape_requires_lf( false ), escape_key_help()
+      lf_entered( false ), quit_sequence_started( false ), finished( false ), clean_shutdown( false ),
+      escape_key( opts.escape.key ), escape_pass_key( opts.escape.pass_key ), escape_pass_key2( opts.escape.pass_key2 ),
+      escape_requires_lf( opts.escape.requires_lf ), escape_key_help()
   {
 #ifdef _WIN32
     mosh_winsock_init();
@@ -120,15 +122,13 @@ public:
 
     overlays.get_prediction_engine().set_display_preference( opts.predict_display );
 
-    char escape_pass_name_buf[16];
-    char escape_key_name_buf[16];
-    snprintf( escape_pass_name_buf, sizeof escape_pass_name_buf, "\"%c\"", escape_pass_key );
-    snprintf( escape_key_name_buf, sizeof escape_key_name_buf, "Ctrl-%c", escape_pass_key );
-    std::string escape_pass_name( escape_pass_name_buf );
-    std::string escape_key_name( escape_key_name_buf );
-    escape_key_help = L"Commands: \".\" quits, " + std::wstring( escape_pass_name.begin(), escape_pass_name.end() )
-                      + L" gives literal " + std::wstring( escape_key_name.begin(), escape_key_name.end() );
-    overlays.get_notification_engine().set_escape_key_string( escape_key_name );
+    if ( escape_key > 0 ) {
+      std::string pass_name, key_name;
+      escape_key_names( opts.escape, &pass_name, &key_name );
+      escape_key_help = L"Commands: \".\" quits, " + std::wstring( pass_name.begin(), pass_name.end() )
+                        + L" gives literal " + std::wstring( key_name.begin(), key_name.end() );
+      overlays.get_notification_engine().set_escape_key_string( key_name );
+    }
 
     wchar_t connecting[128];
     swprintf( connecting, sizeof connecting / sizeof *connecting, L"Nothing received from server on UDP port %s.", port );
