@@ -205,6 +205,32 @@ static int run_escape_key()
   return 0;
 }
 
+static int run_no_term_init()
+{
+  TestServer server( 80, 24 );
+  {
+    StartupOptions opts = never_prediction();
+    opts.no_term_init = false;
+    MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(), 80, 24, opts );
+    if ( core.open_sequence().find( "\033[?1049h" ) == std::string::npos
+         || core.close_sequence().find( "\033[?1049l" ) == std::string::npos ) {
+      fprintf( stderr, "FAIL: no-term-init: alternate screen missing by default\n" );
+      return 1;
+    }
+  }
+  {
+    StartupOptions opts = never_prediction();
+    opts.no_term_init = true;
+    MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(), 80, 24, opts );
+    if ( core.open_sequence().find( "\033[?1049h" ) != std::string::npos
+         || core.close_sequence().find( "\033[?1049l" ) != std::string::npos ) {
+      fprintf( stderr, "FAIL: no-term-init: alternate screen present when suppressed\n" );
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static int run_vt_mode()
 {
   ConsoleTestScope scope;   /* std handles now name the real console */
@@ -1381,6 +1407,9 @@ int main( int argc, char *argv[] )
   try {
     if ( strcmp( argv[1], "escape-key" ) == 0 ) {
       return run_escape_key();
+    }
+    if ( strcmp( argv[1], "no-term-init" ) == 0 ) {
+      return run_no_term_init();
     }
     if ( strcmp( argv[1], "vt-mode" ) == 0 ) {
       return run_vt_mode();

@@ -125,6 +125,23 @@ static int test_title_prefix()
   return 0;
 }
 
+static int test_no_term_init()
+{
+  StartupEnv env;
+  StartupOptions opts;
+  std::string err;
+  if ( !parse_startup_options( env, &opts, &err ) || opts.no_term_init ) {
+    fprintf( stderr, "FAIL: absent MOSH_NO_TERM_INIT should be false\n" );
+    return 1;
+  }
+  env.no_term_init = "";
+  if ( !parse_startup_options( env, &opts, &err ) || !opts.no_term_init ) {
+    fprintf( stderr, "FAIL: set MOSH_NO_TERM_INIT should be true\n" );
+    return 1;
+  }
+  return 0;
+}
+
 int main()
 {
   if ( test_escape_key() != 0 ) {
@@ -137,6 +154,9 @@ int main()
     return 1;
   }
   if ( test_title_prefix() != 0 ) {
+    return 1;
+  }
+  if ( test_no_term_init() != 0 ) {
     return 1;
   }
   printf( "test_startup_options: all cases passed\n" );

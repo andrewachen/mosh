@@ -143,8 +143,13 @@ public:
     network->set_send_delay( 1 );
     network->get_current_state().push_back( Parser::Resize( cols, rows ) );
 
-    open = "\033[?1049h" + display.open();
-    close = display.close() + "\033[?1049l";
+    if ( opts.no_term_init ) {
+      open = display.open();
+      close = display.close();
+    } else {
+      open = "\033[?1049h" + display.open();
+      close = display.close() + "\033[?1049l";
+    }
 
     if ( opts.title_prefix ) {
       overlays.set_title_prefix( std::wstring( L"[mosh] " ) );

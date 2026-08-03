@@ -123,6 +123,7 @@ jobs:
         run: |
           make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" test_console_lifecycle
           ./test_console_lifecycle.exe escape-key
+          ./test_console_lifecycle.exe no-term-init
           ./test_console_lifecycle.exe vt-mode
           ./test_console_lifecycle.exe fairness
           ./test_console_lifecycle.exe clock-refresh
