@@ -71,13 +71,17 @@ LIBS = src/crypto/libmoshcrypto.a src/protobufs/libmoshprotos.a src/util/libmosh
 
 .PHONY: all clean protobufs check config
 
-all: $(LIBS) mosh.exe test_loopback test_core test_console_lifecycle test_bootstrap test_startup_options bootstrap_child $(BUILD)/win32/console_io_include_check.o
+all: $(LIBS) mosh.exe test_loopback test_core test_console_lifecycle test_bootstrap test_startup_options test_terminal_width bootstrap_child $(BUILD)/win32/console_io_include_check.o
 
 check: all
 	test -f mosh.exe
 	test -f test_core.exe
 	test -f test_bootstrap.exe
 	test -f test_startup_options.exe
+	test -f test_terminal_width.exe
+	# test_terminal_width.exe is executed by the native windows-11-arm CI step, not
+	# here: check also runs under the Linux dockcross cross-compile image, which
+	# cannot execute an ARM64 Windows PE.
 	# Run each inspector as its own command so a missing/crashing tool aborts the
 	# recipe (make stops on the non-zero exit) instead of feeding an empty stream
 	# to grep and silently passing. Grep then reads the saved output.
@@ -152,9 +156,11 @@ win32/build/src/network/transportfragment.o: src/protobufs/transportinstruction.
 win32/build/src/statesync/completeterminal.o: src/protobufs/hostinput.pb.h
 win32/build/src/statesync/user.o: src/protobufs/userinput.pb.h
 
-$(BUILD)/win32/wincompat.o: win32/wincompat.cc src/include/config.h
+$(BUILD)/win32/wincompat.o: win32/wincompat.cc win32/wincompat.h win32/wcwidth.h src/include/config.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD)/src/terminal/terminal.o: win32/wcwidth.h
 
 $(BUILD)/win32/test_loopback.o: win32/test_loopback.cc src/include/config.h src/network/libmoshnetwork.a $(BUILD)/win32/wincompat.o
 	@mkdir -p $(dir $@)
@@ -217,6 +223,13 @@ $(BUILD)/win32/test_startup_options.o: win32/test_startup_options.cc win32/start
 test_startup_options: $(BUILD)/win32/test_startup_options.o $(BUILD)/win32/startup_options.o $(BUILD)/src/frontend/startup_config.o src/terminal/libmoshterminal.a src/protobufs/libmoshprotos.a src/util/libmoshutil.a
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ $(BUILD)/win32/test_startup_options.o $(BUILD)/win32/startup_options.o $(BUILD)/src/frontend/startup_config.o -Wl,--start-group src/terminal/libmoshterminal.a src/protobufs/libmoshprotos.a src/util/libmoshutil.a -Wl,--end-group -Wl,-Bstatic $(shell pkg-config --libs --static protobuf) -Wl,-Bdynamic $(LDFLAGS) $(NCURSES_LIBS) -lws2_32 -luser32 -static-libstdc++ -static-libgcc
 
+$(BUILD)/win32/test_terminal_width.o: win32/test_terminal_width.cc win32/wincompat.h src/include/config.h src/terminal/libmoshterminal.a
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
+
+test_terminal_width: $(BUILD)/win32/test_terminal_width.o $(BUILD)/win32/wincompat.o src/terminal/libmoshterminal.a src/util/libmoshutil.a
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ $(BUILD)/win32/test_terminal_width.o $(BUILD)/win32/wincompat.o -Wl,--start-group src/terminal/libmoshterminal.a src/util/libmoshutil.a -Wl,--end-group $(LDFLAGS) -lws2_32 -luser32 -static-libstdc++ -static-libgcc
+
 $(BUILD)/win32/test_console_lifecycle.o: win32/test_console_lifecycle.cc src/include/config.h win32/console_io.h win32/mosh_core.h win32/startup_options.h src/frontend/startup_config.h $(BUILD)/win32/console_io.o src/protobufs/transportinstruction.pb.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
@@ -225,4 +238,4 @@ test_console_lifecycle: $(BUILD)/win32/test_console_lifecycle.o $(BUILD)/win32/c
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ $(BUILD)/win32/test_console_lifecycle.o $(BUILD)/win32/console_io.o $(BUILD)/win32/mosh_core.o $(BUILD)/win32/test_server.o -Wl,--start-group src/crypto/libmoshcrypto.a $(BUILD)/win32/wincompat.o src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a src/frontend/libmoshfrontend.a src/network/libmoshnetwork.a -Wl,--end-group -Wl,-Bstatic $(shell pkg-config --libs --static protobuf) -Wl,-Bdynamic $(LDFLAGS) -lcrypto -lz $(NCURSES_LIBS) -lws2_32 -luser32 -lcrypt32 -lbcrypt -l:libwinpthread.a -static-libstdc++ -static-libgcc
 
 clean:
-	rm -rf $(BUILD) $(LIBS) mosh.exe test_loopback test_loopback.exe test_core test_core.exe test_console_lifecycle test_console_lifecycle.exe test_bootstrap test_bootstrap.exe test_startup_options test_startup_options.exe bootstrap_child bootstrap_child.exe src/protobufs/*.pb.cc src/protobufs/*.pb.h src/include/config.h
+	rm -rf $(BUILD) $(LIBS) mosh.exe test_loopback test_loopback.exe test_core test_core.exe test_console_lifecycle test_console_lifecycle.exe test_bootstrap test_bootstrap.exe test_startup_options test_startup_options.exe test_terminal_width test_terminal_width.exe bootstrap_child bootstrap_child.exe src/protobufs/*.pb.cc src/protobufs/*.pb.h src/include/config.h

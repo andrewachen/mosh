@@ -42,6 +42,7 @@
 typedef SOCKET mosh_socket_t;               /* pointer-sized; POSIX side uses int */
 const char* wsa_strerror( int err );        /* defined in wincompat.cc */
 void mosh_winsock_init( void );             /* idempotent WSAStartup */
+int wcwidth( wchar_t ch );                  /* implemented through mosh_win32_wcwidth() */
 
 
 #endif /* _WIN32 */
