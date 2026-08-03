@@ -23,9 +23,9 @@ Severity is **high** for correctness, security, or resource-exhaustion consequen
 | `PLATFORM` | 8 |
 | `POLICY` | 2 |
 | `DEFERRED` | 0 |
-| `DEFECT` | 16 |
+| `DEFECT` | 37 |
 | `OPEN` | 3 |
-| **Total** | **29** |
+| **Total** | **50** |
 
 Fifteen repaired or confirmed behavior records — connection-timeout shutdown, reader input ending, interrupt control events versus a typed Ctrl-C, bounded close-handler restoration attempts, post-wait timestamp freezing, resize framebuffer ownership, UCRT wide-printf semantics, the retired command-line key channel, the bounded zero-length wait, `MOSH_NO_TERM_INIT`, `MOSH_ESCAPE_KEY`, `MOSH_PREDICTION_OVERWRITE`, the prediction display preference, the `[mosh] ` title prefix, and transport verbosity — are recorded at the end and are not counted as findings. The bounded zero-length wait is implemented rather than fully verified; the coverage it still owes is counted, as A26.
 
@@ -33,7 +33,7 @@ Fifteen repaired or confirmed behavior records — connection-timeout shutdown, 
 
 Startup parsing is resolved for A1, A2, A3, and A25 through the shared `src/frontend/startup_config` module used by both frontends. A4's transport-verbosity tier is parsed independently by each frontend's getopt loop, and A20's presence check is independent in the Windows startup path; their behavior currently matches but can drift separately. The remaining configuration-adjacent defects are teardown behavior, not parsing: A13's escape-shutdown wording and A14's full normal-exit cleanup transition remain open, with A21 retaining the related exit diagnostics.
 
-The event-loop, timing, and diagnostics cluster is **A5, A6, A7, A8, A9, A12, A15, A22, A23, A24, A26, and A27**. `STMClient::main()` was re-derived rather than extracted, so every ordering, exception-boundary, and poll-diagnostics decision was re-made independently; A27 is the unimplemented Select verbosity level-two-and-above tier of A4 and remains coupled to A26's wait seam.
+The event-loop, timing, and diagnostics cluster is **A5, A6, A7, A8, A9, A12, A15, A22, A23, A24, A26, A27, A29, A30, A31, and A32**. `STMClient::main()` was re-derived rather than extracted, so every ordering, exception-boundary, and poll-diagnostics decision was re-made independently; A27 is the unimplemented Select verbosity level-two-and-above tier of A4 and remains coupled to A26's wait seam. A29 and A30 are handle/event-registration lifetime defects; A31 is the Windows-only UDP reset error path; A32 is the status/cleanup reporting split. A42, A43, and A46 are the separate reader-thread and teardown-lifetime cluster. The final whole-branch review also found A33–A41 in bootstrap, locale, and console handling, and A47–A49 in the build and lifecycle bookkeeping; all A29–A49 records are for later scheduling, with fixes deferred.
 
 A28 is an open behavior decision in the escape-suspend path: A16 covers only the genuinely platform-forced absence of SIGSTOP, while A28 covers the unresolved choice between an unsupported notification and literal pass-through, including whether the escape-prefix byte is forwarded.
 
@@ -41,9 +41,9 @@ Whether the correct remedy is a shared platform-neutral loop coordinator (taking
 
 What must be settled first is the **behavioral contract**, not the code organization: the intended phase ordering, exception boundaries, timer semantics, fairness limits, and shutdown invariants, recorded as expected event traces rather than prose — ordinary input, simultaneous input and network readiness, receive error, send error, crypto error, resize during shutdown, a typed Ctrl-C reaching the remote, a first and a repeated interrupt control event, close or session-end termination, and a run of zero-length wait requests with the nonzero request that clears it. That last trace is there to keep an already-repaired invariant from being lost silently: a coordinator that reordered or dropped the throttle would still pass every other trace. It has to record the requested interval and the timeout the wait actually receives as separate values, and it constrains neither the iteration rate nor a wait whose handle is already signalled — what it forbids is an idle source that is repeatedly due issuing unbounded zero-length waits. It has to run again with an expired termination deadline, which must still drive the effective timeout to zero and take the restoration exit ahead of resize, socket, input, and frame dispatch, so that the floor can never delay close handling. Those traces serve either architecture and make the eventual coordinator decision evidence-based. Sharing an implementation stays an evaluated option, not a prerequisite. Recording a trace is not the same as being able to run one: the loop currently exposes no boundary a harness can enter, which is A26, and whichever architecture is chosen has to provide one.
 
-Only the genuinely coupled findings wait on that contract: A5 and A9 (phase ordering) and A6, A7, and A15 (exception boundaries and retry timing). The cluster's one high-severity defect did not wait on it and is now repaired: the zero-wait throttle was an independent safety invariant with a local contract test, and holding a resource-exhaustion fix behind a speculative refactor would have been the wrong trade. S2 is now the inventory's only remaining high, and it is a release blocker. A22 is local error-state bookkeeping and is likewise independently fixable.
+Only the genuinely coupled findings wait on that contract: A5 and A9 (phase ordering) and A6, A7, and A15 (exception boundaries and retry timing). The cluster's former high-severity defect did not wait on it and is now repaired: the zero-wait throttle was an independent safety invariant with a local contract test, and holding a resource-exhaustion fix behind a speculative refactor would have been the wrong trade. The final whole-branch review added high-severity A29, A30, A31, A35, A42, A43, and A46; S2 remains a release blocker. A22 is local error-state bookkeeping and is likewise independently fixable.
 
-The remaining defects are exit-path omissions (A13, A14, A21), the loop's missing test boundary and level-two diagnostics gap (A26, A27), and one security defect (S2). A28 is an open suspend-behavior decision alongside these defects.
+The remaining defects are exit-path omissions (A13, A14, A21), the loop's missing test boundary and level-two diagnostics gap (A26, A27), the new event-loop/network, bootstrap, locale, console-lifecycle, and build defects (A29–A49), and one security defect (S2). A28 is an open suspend-behavior decision alongside these defects. The final whole-branch review found the A29–A49 records; they are inventory entries for later scheduling, not fixes made by this ledger update.
 
 ### The host loop, for reference
 
@@ -308,6 +308,169 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 * **Consequence:** `-vv` and higher cannot expose the poll timing and throttling information available upstream.
 * **Class:** `DEFECT`, low.
 * **Related:** A4 is the confirmed transport-verbosity tier; A27 is its unimplemented Select tier for verbosity level two and above and is coupled to A26's missing wait seam.
+
+### Final whole-branch review additions
+
+#### A29. Enumerating a readable socket can strand a later socket's FD_READ event
+
+* **Upstream:** `Select::select()` returns the complete ready set, and `process_network_input()` performs one receive action for the pass (`src/frontend/stmclient.cc:476`, `src/frontend/stmclient.cc:296`).
+* **Port:** `run_loop()` enumerates each signaled socket with `WSAEnumNetworkEvents`, which clears the recorded network event, then calls `core.on_readable()` for the first `FD_READ` and breaks (`win32/console_io.cc:1228`, `win32/console_io.cc:1231`, `win32/console_io.cc:1237`). `on_readable()` discards the socket argument and sweeps the transport sockets in deque order (`win32/mosh_core.cc:362`, `src/network/network.cc:489`).
+* **Consequence:** If the first socket consumes the 32-datagram budget (`win32/mosh_core.cc:66`, `win32/mosh_core.cc:201`) or receives a non-`No packet received` exception (`win32/mosh_core.cc:205`), `Connection::recv()` returns or throws after the first productive socket (`src/network/network.cc:513`, `src/network/network.cc:517`). A later socket whose `FD_READ` record was already cleared by enumeration is then neither received from nor re-armed, so its traffic can remain frozen until another event re-arms it.
+* **Class:** `DEFECT`, **high** — event-loop/network. A readable event can be consumed as bookkeeping without a corresponding `recvfrom`, and a port hop can leave the user waiting indefinitely.
+* **Fix:** Preserve the ready socket identity through `on_readable()` and receive from that socket, or re-arm every enumerated socket whose record was cleared before continuing.
+
+#### A30. Socket-event registrations are keyed only by recycled `SOCKET` values
+
+* **Upstream:** File descriptors in the selected set identify the live descriptor for that poll; a closed descriptor is not silently reused as the same registration.
+* **Port:** `SocketEvents::reconcile()` stores registrations in `std::map<intptr_t, WSAEVENT>` and compares only the raw socket value (`win32/console_io.cc:555`, `win32/console_io.cc:574`, `win32/console_io.cc:584`). It does not re-issue `WSAEventSelect` when a value remains present (`win32/console_io.cc:584-587`).
+* **Consequence:** Across iterations, `run_loop()` calls `core.tick()` before reconciliation (`win32/console_io.cc:1117`, `win32/console_io.cc:1122`). A receive-side prune can close a socket after the existing registration was captured, and a newly created socket can receive the same handle value before the next reconciliation. The map then treats the new socket as the old one and leaves it without `WSAEventSelect(FD_READ)`, so it is never reported readable.
+* **Class:** `DEFECT`, **high** — event-loop/network. Raw handle identity is not a socket generation identity.
+* **Fix:** Re-issue `WSAEventSelect` for every live socket on reconciliation, or track socket generations rather than only the raw value.
+
+#### A31. Unconnected UDP does not tolerate `WSAECONNRESET`
+
+* **Upstream:** The POSIX receive loop continues over transient nonblocking receive conditions and does not expose Windows' asynchronous ICMP reset as a receive failure (`src/network/network.cc:505-509`).
+* **Port:** The Windows continuation list accepts only `WSAEWOULDBLOCK` and `WSAEMSGSIZE`; every other `recvfrom` error is thrown (`src/network/network.cc:489`, `src/network/network.cc:497-503`). The Windows socket setup does not configure `SIO_UDP_CONNRESET`, and the Windows config leaves the relevant optional socket features undefined (`win32/config.h.clangarm64:88-89`).
+* **Consequence:** After an ICMP port-unreachable response, an unconnected UDP socket can report `WSAECONNRESET` on `recvfrom`. The port treats that platform-specific condition as a fatal receive error, abandons the read cycle, and can degrade roaming instead of continuing as POSIX does.
+* **Class:** `DEFECT`, **high** — Windows-only network error handling.
+* **Fix:** Decide and implement the Windows UDP reset policy, either disabling the reset notification for these sockets or treating the documented reset condition as a nonfatal receive result.
+
+#### A32. Remote logout does not set the user-quit status
+
+* **Upstream:** The exit path distinguishes user-requested shutdown from remote/session termination when selecting its final status and diagnostics (`src/frontend/stmclient.cc:344`, `src/frontend/stmclient.cc:508`).
+* **Port:** `begin_shutdown()` sets `status` to `"Exiting..."` for the local shutdown path (`win32/mosh_core.cc:295`, `win32/mosh_core.cc:306`), while `mosh_main` prints whatever status the session leaves behind (`win32/mosh_main.cc:180-184`). Remote logout can finish through the lifecycle paths without assigning that status.
+* **Consequence:** A user quit reports `Exiting...`, but a remotely initiated logout does not receive the same status transition or a corresponding status message.
+* **Class:** `DEFECT`, low — exit diagnostics.
+
+#### A33. Non-`ConsoleError` setup throws lose the cleanup report
+
+* **Upstream:** The frontend's outer exception handling preserves the terminal cleanup and reports the resulting failure after teardown (`src/frontend/mosh-client.cc:203-215`).
+* **Port:** `run_console_session()` assigns `*cleanup` only after `ConsoleSession` construction succeeds or inside the catch surrounding `session.run()` (`win32/mosh_main.cc:113-127`). Its outer `ConsoleError`, `NetworkException`, and `std::exception` handlers only scrub the key and set the message/status (`win32/mosh_main.cc:129-135`).
+* **Consequence:** A non-`ConsoleError` throw during session construction or setup can execute the console rollback path but return without its `CleanupReport`; `mosh_main` then cannot print the rollback failure or reader error (`win32/mosh_main.cc:182-190`).
+* **Class:** `DEFECT`, medium — cleanup diagnostics.
+
+#### A34. `SearchPathW` receives raw `PATH` components
+
+* **Upstream:** Resolves the SSH executable through the process environment's path semantics (`scripts/mosh.pl:78`, `scripts/mosh.pl:409`).
+* **Port:** Reads `PATH` and passes the unnormalized string directly as `SearchPathW`'s `lpPath` (`win32/mosh_bootstrap.cc:230-236`, `win32/mosh_bootstrap.cc:246-253`). Relative components therefore resolve relative to the process's current directory under the Windows search-path contract, rather than to a fixed path-list base. The source does not establish the exact behavior of empty components, so this record does not claim one.
+* **Consequence:** A caller-controlled relative `PATH` entry can resolve `ssh.exe` relative to a changing working directory, making executable selection depend on CWD and weakening the intended explicit-path lookup boundary.
+* **Class:** `DEFECT`, medium — executable resolution.
+* **Fix:** Normalize or reject relative path components before passing the list to `SearchPathW`, and define the intended empty-component behavior.
+
+#### A35. Bootstrap draining can block before its timeout starts
+
+* **Upstream:** The wrapper's SSH child and startup parsing are coordinated so a child that stops producing output can still be terminated by the surrounding lifecycle (`scripts/mosh.pl:409`).
+* **Port:** `spawn_and_drain()` calls the blocking `drain_and_parse()` before it waits for the child (`win32/mosh_bootstrap.cc:350-354`). `drain_and_parse()` performs an unbounded blocking `ReadFile` loop (`win32/mosh_bootstrap.cc:192-218`), so the ten-second wait and terminate path are reached only after the pipe closes or the parser returns. The test covers a fixture that emits `CONNECT` and then sleeps, exercising only the post-drain reap (`win32/test_bootstrap.cc:436-441`).
+* **Consequence:** An SSH child that keeps its stdout pipe open without producing a complete reply can hang the bootstrap forever; the documented ten-second process wait cannot bound that case.
+* **Class:** `DEFECT`, **high** — bootstrap liveness.
+* **Fix:** Make output draining and child-liveness supervision concurrent, or use a cancellable/overlapped pipe read whose deadline covers the drain itself.
+
+#### A36. Forced SSH termination is reported as the child's status
+
+* **Upstream:** The wrapper's parent reads the SSH pipe as a line stream and reports its own connection/bootstrap failure rather than formatting a separately reaped child status (`scripts/mosh.pl:412-425`).
+* **Port:** After the ten-second wait, `spawn_and_drain()` calls `TerminateProcess(..., 1)` and then treats any exit code other than `STILL_ACTIVE` as a real child exit (`win32/mosh_bootstrap.cc:353-358`). It later formats every nonzero code as `ssh exited with status` (`win32/mosh_bootstrap.cc:363-368`).
+* **Consequence:** A forced termination is surfaced as SSH status 1 instead of identifying the bootstrap timeout. In addition, the valid Windows process exit code 259 is indistinguishable from `STILL_ACTIVE` in the `have_exit` test.
+* **Class:** `DEFECT`, medium — bootstrap diagnostics.
+
+#### A37. CRT bootstrap banners can overtake raw console session output
+
+* **Upstream:** Startup diagnostics and session output share the frontend's ordered output path (`src/frontend/mosh-client.cc:215`, `src/frontend/stmclient.cc:256`).
+* **Port:** `drain_and_parse()` prints non-`MOSH` banners through CRT `stdout` (`win32/mosh_bootstrap.cc:213-217`), while the session writes frames and the open sequence directly with `WriteFile` (`win32/console_io.cc:694-709`, `win32/console_io.cc:900-905`). No flush bridges those two output paths before the session begins.
+* **Consequence:** With redirected or buffered CRT stdout, a banner/MOTD can remain buffered and appear after raw session output rather than in bootstrap order.
+* **Class:** `DEFECT`, low — output ordering.
+* **Fix:** Use one output path or flush CRT stdout before handing the console output to the session.
+
+#### A38. The optional Windows MTU-discovery failure path leaks its socket
+
+* **Upstream:** A socket-construction failure closes the descriptor before propagating the error (`src/network/network.cc:201-206`).
+* **Port:** The Windows constructor closes the socket for a nonblocking-mode failure but not when `setsockopt(IP_MTU_DISCOVER)` fails (`src/network/network.cc:155-175`). The ARM64 configuration currently leaves `HAVE_IP_MTU_DISCOVER` undefined (`win32/config.h.clangarm64:88`), so this is latent in the current build.
+* **Consequence:** A build or configuration enabling the feature leaks every socket whose MTU-discovery setup fails.
+* **Class:** `DEFECT`, low — latent resource leak.
+
+#### A39. The optional Windows ECN receive path contradicts its own policy and uses POSIX diagnostics
+
+* **Upstream:** Requests and consumes the ECN receive metadata when the platform supports it (`src/network/network.cc:215-223`).
+* **Port:** The Windows comment says ECN is deliberately not requested because `IP_RECVTOS`/`recvmsg` is unavailable, but an optional `HAVE_IP_RECVTOS` block still calls `setsockopt` and reports failure with POSIX `perror` (`src/network/network.cc:178-191`). The feature is currently undefined in the ARM64 configuration (`win32/config.h.clangarm64:89`).
+* **Consequence:** Enabling the feature would contradict the stated Not-ECT policy and could emit a misleading errno-based diagnostic for a WinSock error; the current build hides the defect rather than resolving it.
+* **Class:** `DEFECT`, low — latent network diagnostics/policy drift.
+
+#### A40. Windows locale detection tests the ANSI code page, not the active UTF-8 locale
+
+* **Upstream:** `locale_charset()` reports the codeset selected by the active locale (`src/util/locale_utils.cc:73-93`).
+* **Port:** The Windows branch reads `LOCALE_IDEFAULTANSICODEPAGE` from `LOCALE_USER_DEFAULT` and returns `UTF-8` only when that user-locale property is 65001 (`src/util/locale_utils.cc:78-84`). The startup explicitly selects `.UTF-8`, while the Windows core test has to work around the mismatch by asserting the locale and conversion directly (`win32/mosh_main.cc:147`, `win32/test_core.cc:91-98`).
+* **Consequence:** A `.UTF-8` process locale under a non-65001 user ANSI code page is reported as `US-ASCII`, so `is_utf8_locale()` is false even though the active CRT locale is UTF-8.
+* **Class:** `DEFECT`, low — locale detection.
+* **Fix:** Query the active CRT locale's codeset or make the process's explicit UTF-8 locale state the source of truth.
+
+#### A41. Clearing locale variables updates the Win32 environment but not CRT `_environ`
+
+* **Upstream:** `clear_locale_variables()` uses `unsetenv`, updating the process environment visible to the C runtime (`src/util/locale_utils.cc:123-145`).
+* **Port:** The Windows branch calls `SetEnvironmentVariableA(name, NULL)` for each variable (`src/util/locale_utils.cc:123-132`). That Win32 API does not synchronize the CRT's `_environ` table, so later CRT environment reads can retain the removed values. The Windows `mosh-server` path is not currently built, making this latent.
+* **Consequence:** A Windows code path that clears locale variables and then consults the CRT environment can continue to observe stale locale settings.
+* **Class:** `DEFECT`, low — latent locale handling.
+
+#### A42. `WAIT_FAILED` is treated as a worker exit
+
+* **Upstream:** A failed wait is an error, not evidence that the worker terminated (`src/util/select.h:143`).
+* **Port:** `Reader::stop_until_deadline()` breaks on every result other than `WAIT_TIMEOUT`, including `WAIT_FAILED`, then closes the worker handle and nulls the member (`win32/console_io.cc:502-543`).
+* **Consequence:** If the worker wait fails, the owner can report teardown complete and close the handle while the reader thread is still running, creating a use-after-close and leaving the input lifecycle unbounded.
+* **Class:** `DEFECT`, **high** — thread lifecycle.
+* **Fix:** Distinguish `WAIT_OBJECT_0`, `WAIT_TIMEOUT`, and `WAIT_FAILED`; retain the handle and surface the failure unless termination policy explicitly and safely cancels the worker.
+
+#### A43. Reader teardown closes a duplicated input handle during an in-flight read
+
+* **Upstream:** Synchronous input ownership ends after the read operation returns (`src/frontend/stmclient.cc:310-316`).
+* **Port:** Teardown cancels synchronous I/O, exchanges `input` to null, and closes the duplicate (`win32/console_io.cc:490-498`, `win32/console_io.cc:528-532`), while the worker separately loads `input` and calls `ReadFile` (`win32/console_io.cc:354-362`).
+* **Consequence:** The worker can load the handle between `input.load()` and `ReadFile` while teardown closes it, so cancellation does not establish ownership of the handle for the in-flight call. The read can fail against a recycled handle or observe invalid state during shutdown.
+* **Class:** `DEFECT`, **high** — thread/handle lifetime.
+* **Fix:** Give the worker stable handle ownership until it exits, then close it after a successful join; cancellation must not close a handle still usable by the worker.
+
+#### A44. Restoring the original input mode can leave QuickEdit disabled
+
+* **Upstream:** Restores the terminal's input mode through the same terminal-state contract used before raw mode (`src/frontend/stmclient.cc:153`).
+* **Port:** Setup enables `ENABLE_EXTENDED_FLAGS` while clearing `ENABLE_QUICK_EDIT_MODE` (`win32/console_io.cc:861-863`), but restore passes the captured mode without ensuring `ENABLE_EXTENDED_FLAGS` is present (`win32/console_io.cc:1000-1004`).
+* **Consequence:** When the original mode had QuickEdit enabled without the extended-flags bit, Windows ignores the QuickEdit setting during restoration, leaving QuickEdit disabled after exit.
+* **Class:** `DEFECT`, low — console restoration.
+* **Fix:** Include `ENABLE_EXTENDED_FLAGS` when restoring a mode whose QuickEdit bit must be honored.
+
+#### A45. Restore failures can be silently omitted from the cleanup report
+
+* **Upstream:** Cleanup diagnostics preserve a failed restoration operation rather than relying on an unrelated prior error state (`src/frontend/stmclient.cc:153-159`).
+* **Port:** Code-page and mode restoration calls report failure through `record_last_error()` (`win32/console_io.cc:994-1005`), which records `GetLastError()` only when `first_error` is still `ERROR_SUCCESS` (`win32/console_io.cc:170-179`).
+* **Consequence:** If a failed Win32 call leaves `GetLastError()` as `ERROR_SUCCESS`, the report remains apparently clean and `mosh_main` suppresses the rollback warning (`win32/mosh_main.cc:185-190`). These calls have no generic failure backstop unlike the close-sequence write.
+* **Class:** `DEFECT`, low — cleanup diagnostics.
+* **Fix:** Record a generic restore failure whenever the boolean operation fails and `GetLastError()` is `ERROR_SUCCESS`.
+
+#### A46. Exception unwinding can perform an unbounded reader join after a deadline
+
+* **Upstream:** The main loop's exit path does not leave a detached worker whose destructor can block indefinitely (`src/frontend/stmclient.cc:490-572`).
+* **Port:** The `Reader` comment explicitly says that a deadline teardown can leave `worker` non-null and requires callers to release such sessions rather than unwind (`win32/console_io.cc:545-552`). However, `run_console_session()` stores `ConsoleSession` by value and lets exceptions escape its inner catch (`win32/mosh_main.cc:117-125`).
+* **Consequence:** If a deadline path cancels without joining the reader and `session.run()` then throws, stack unwinding destroys `ConsoleSession`; `Reader::~Reader()` calls the unbounded `stop()` path, which waits indefinitely on the still-running worker (`win32/console_io.cc:427-430`, `win32/console_io.cc:502-553`).
+* **Class:** `DEFECT`, **high** — termination/thread lifecycle.
+* **Fix:** Make the unwind path release the deliberately non-joined worker without blocking, or ensure every exception path retains a bounded teardown contract.
+
+#### A47. Protobuf header prerequisites hardcode the default build directory
+
+* **Upstream:** Generated-header prerequisites follow the selected build directory rather than embedding a platform-specific default (`src/protobufs/Makefile.am:1-8`).
+* **Port:** `BUILD` is configurable (`win32/Makefile.win:48`), but the network and state-sync prerequisite rules hardcode `win32/build/...` (`win32/Makefile.win:147-155`).
+* **Consequence:** Overriding `BUILD` leaves those object rules with stale prerequisite paths, so parallel builds can compile against missing or concurrently generated protobuf headers and reopen the race the dependency rules are meant to close.
+* **Class:** `DEFECT`, medium — build correctness.
+* **Fix:** Express each target with `$(BUILD)/...`.
+
+#### A48. The protobuf archive is always rebuilt because `.PHONY` is a prerequisite
+
+* **Upstream:** A library target is rebuilt when its object prerequisites are newer, not because a phony aggregate is named as a library prerequisite (`src/protobufs/Makefile.am:1-8`).
+* **Port:** `protobufs` is phony (`win32/Makefile.win:72`), and `src/protobufs/libmoshprotos.a` lists it as a prerequisite (`win32/Makefile.win:114-115`).
+* **Consequence:** Every make invocation considers the protobuf archive stale and relinks it, causing unnecessary rebuilds of all dependents and obscuring genuine dependency changes.
+* **Class:** `DEFECT`, low — build hygiene.
+* **Fix:** Keep the generated-header aggregate as an order-only or object-generation dependency without making the phony target a normal archive prerequisite.
+
+#### A49. `ConsoleLifecycleState` is bookkeeping that never reaches `DONE`
+
+* **Upstream:** Lifecycle state is consumed by the owning loop or teardown path rather than being written as unused bookkeeping (`src/frontend/stmclient.cc:153-159`).
+* **Port:** `ConsoleLifecycleState` declares `DONE` but `Impl::state` is initialized to `RUNNING`, assigned `SHUTTING_DOWN` and `RESTORED`, and never read or assigned `DONE` (`win32/console_io.h:70-78`, `win32/console_io.cc:769-777`, `win32/console_io.cc:937`, `win32/console_io.cc:1097`).
+* **Consequence:** The lifecycle state cannot express teardown completion and provides no invariant or diagnostic value; the three writes are dead bookkeeping that can drift from the actual release state.
+* **Class:** `DEFECT`, low — lifecycle bookkeeping.
 
 ---
 
