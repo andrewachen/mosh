@@ -88,12 +88,28 @@ static int test_prediction_display()
   return 0;
 }
 
+static int test_prediction_overwrite()
+{
+  StartupEnv env;
+  env.predict_overwrite = "yes";
+  StartupOptions opts;
+  std::string err;
+  if ( !parse_startup_options( env, &opts, &err ) || !opts.predict_overwrite ) {
+    fprintf( stderr, "FAIL: snapshot did not carry predict_overwrite\n" );
+    return 1;
+  }
+  return 0;
+}
+
 int main()
 {
   if ( test_escape_key() != 0 ) {
     return 1;
   }
   if ( test_prediction_display() != 0 ) {
+    return 1;
+  }
+  if ( test_prediction_overwrite() != 0 ) {
     return 1;
   }
   printf( "test_startup_options: all cases passed\n" );

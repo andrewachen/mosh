@@ -121,6 +121,9 @@ public:
 #endif
 
     overlays.get_prediction_engine().set_display_preference( opts.predict_display );
+    if ( opts.predict_overwrite ) {
+      overlays.get_prediction_engine().set_predict_overwrite( true );
+    }
 
     if ( escape_key > 0 ) {
       std::string pass_name, key_name;

@@ -47,6 +47,7 @@ bool parse_startup_options( const StartupEnv &env, StartupOptions *out, std::str
     return false;
   }
 
+  out->predict_overwrite = parse_prediction_overwrite( env.predict_overwrite );
   out->escape = parse_escape_key( env.escape_key );
   return true;
 }
