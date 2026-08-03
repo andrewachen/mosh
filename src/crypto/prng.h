@@ -48,8 +48,8 @@
 #ifndef NOMINMAX
 #define NOMINMAX /* don't leak min/max macros into consumers of this header */
 #endif
-#include <windows.h>
 #include <bcrypt.h>
+#include <windows.h>
 #endif
 
 #include <unistd.h>
@@ -119,8 +119,7 @@ public:
     const size_t max_chunk = 0xFFFFFFFFu; /* ULONG_MAX */
     while ( size ) {
       ULONG this_size = static_cast<ULONG>( std::min( size, max_chunk ) );
-      if ( BCryptGenRandom( NULL, static_cast<PUCHAR>( dest ), this_size,
-                            BCRYPT_USE_SYSTEM_PREFERRED_RNG ) != 0 ) {
+      if ( BCryptGenRandom( NULL, static_cast<PUCHAR>( dest ), this_size, BCRYPT_USE_SYSTEM_PREFERRED_RNG ) != 0 ) {
         throw CryptoException( "BCryptGenRandom failed" );
       }
       size -= this_size;

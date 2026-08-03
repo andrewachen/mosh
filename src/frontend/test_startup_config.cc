@@ -8,22 +8,36 @@
 
 static int test_escape_key()
 {
-  struct EC { const char *env; int key; int pass; int pass2; bool lf; };
-  const EC cases[] = {
-    { nullptr, 0x1e, '^', '^', false },   /* absent → default Ctrl-^ */
-    { "\x01", 0x01, 'A', 'a', false },     /* Ctrl-A: pass 'A' or lowercase 'a', no line start */
-    { "A", 'A', 'A', 'a', true },          /* printable upper: alt lower, needs line start */
-    { "", -1, '^', '^', false },           /* empty → parser disabled */
-    { "abc", 0x1e, '^', '^', false },      /* multi-char → default */
-    { "\x03", 0x1e, '^', '^', false },     /* forbidden Ctrl-C → default */
+  struct EC
+  {
+    const char* env;
+    int key;
+    int pass;
+    int pass2;
+    bool lf;
   };
-  for ( const EC &c : cases ) {
+  const EC cases[] = {
+    { nullptr, 0x1e, '^', '^', false }, /* absent → default Ctrl-^ */
+    { "\x01", 0x01, 'A', 'a', false },  /* Ctrl-A: pass 'A' or lowercase 'a', no line start */
+    { "A", 'A', 'A', 'a', true },       /* printable upper: alt lower, needs line start */
+    { "", -1, '^', '^', false },        /* empty → parser disabled */
+    { "abc", 0x1e, '^', '^', false },   /* multi-char → default */
+    { "\x03", 0x1e, '^', '^', false },  /* forbidden Ctrl-C → default */
+  };
+  for ( const EC& c : cases ) {
     const EscapeConfig got = parse_escape_key( c.env );
-    if ( got.key != c.key || got.pass_key != c.pass || got.pass_key2 != c.pass2
-         || got.requires_lf != c.lf ) {
-      fprintf( stderr, "FAIL: parse_escape_key(\"%s\") = {%d,%d,%d,%d}, expected {%d,%d,%d,%d}\n",
-               c.env ? c.env : "(null)", got.key, got.pass_key, got.pass_key2, (int)got.requires_lf,
-               c.key, c.pass, c.pass2, (int)c.lf );
+    if ( got.key != c.key || got.pass_key != c.pass || got.pass_key2 != c.pass2 || got.requires_lf != c.lf ) {
+      fprintf( stderr,
+               "FAIL: parse_escape_key(\"%s\") = {%d,%d,%d,%d}, expected {%d,%d,%d,%d}\n",
+               c.env ? c.env : "(null)",
+               got.key,
+               got.pass_key,
+               got.pass_key2,
+               (int)got.requires_lf,
+               c.key,
+               c.pass,
+               c.pass2,
+               (int)c.lf );
       return 1;
     }
   }
@@ -46,7 +60,11 @@ static int test_escape_key()
 
 static int test_prediction_display()
 {
-  struct PC { const char *env; Overlay::PredictionEngine::DisplayPreference want; };
+  struct PC
+  {
+    const char* env;
+    Overlay::PredictionEngine::DisplayPreference want;
+  };
   const PC cases[] = {
     { nullptr, Overlay::PredictionEngine::Adaptive },
     { "adaptive", Overlay::PredictionEngine::Adaptive },
@@ -54,7 +72,7 @@ static int test_prediction_display()
     { "never", Overlay::PredictionEngine::Never },
     { "experimental", Overlay::PredictionEngine::Experimental },
   };
-  for ( const PC &c : cases ) {
+  for ( const PC& c : cases ) {
     Overlay::PredictionEngine::DisplayPreference out = Overlay::PredictionEngine::Adaptive;
     std::string err;
     if ( !parse_prediction_display( c.env, &out, &err ) ) {
@@ -66,7 +84,7 @@ static int test_prediction_display()
       return 1;
     }
   }
-  for ( const char *bad : { "bogus", "" } ) {
+  for ( const char* bad : { "bogus", "" } ) {
     Overlay::PredictionEngine::DisplayPreference out = Overlay::PredictionEngine::Adaptive;
     std::string err;
     if ( parse_prediction_display( bad, &out, &err ) || err.empty() ) {

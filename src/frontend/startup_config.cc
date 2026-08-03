@@ -39,7 +39,7 @@
 
 #include "src/frontend/startup_config.h"
 
-EscapeConfig parse_escape_key( const char *env )
+EscapeConfig parse_escape_key( const char* env )
 {
   EscapeConfig cfg;
   if ( env != NULL ) {
@@ -84,7 +84,7 @@ EscapeConfig parse_escape_key( const char *env )
   return cfg;
 }
 
-void escape_key_names( const EscapeConfig &cfg, std::string *pass_name, std::string *key_name )
+void escape_key_names( const EscapeConfig& cfg, std::string* pass_name, std::string* key_name )
 {
   char pass_buf[16];
   char key_buf[16];
@@ -98,8 +98,9 @@ void escape_key_names( const EscapeConfig &cfg, std::string *pass_name, std::str
   *key_name = key_buf;
 }
 
-bool parse_prediction_display( const char *env, Overlay::PredictionEngine::DisplayPreference *out,
-                               std::string *error )
+bool parse_prediction_display( const char* env,
+                               Overlay::PredictionEngine::DisplayPreference* out,
+                               std::string* error )
 {
   if ( env == NULL ) {
     *out = Overlay::PredictionEngine::Adaptive;
@@ -122,12 +123,12 @@ bool parse_prediction_display( const char *env, Overlay::PredictionEngine::Displ
   return true;
 }
 
-bool parse_prediction_overwrite( const char *env )
+bool parse_prediction_overwrite( const char* env )
 {
   return env != NULL && std::string( env ) == "yes";
 }
 
-bool wants_title_prefix( const char *env )
+bool wants_title_prefix( const char* env )
 {
   return env == NULL;
 }
