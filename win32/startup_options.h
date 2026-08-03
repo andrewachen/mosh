@@ -40,6 +40,7 @@
 #include "src/frontend/startup_config.h"
 
 struct StartupOptions {
+  unsigned verbose = 0;
   Overlay::PredictionEngine::DisplayPreference predict_display = Overlay::PredictionEngine::Adaptive;
   bool predict_overwrite = false;
   bool title_prefix = true;

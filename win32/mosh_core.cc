@@ -139,6 +139,7 @@ public:
 
     UserStream blank;
     network.reset( new NetworkType( blank, local_terminal, key, ip, port ) );
+    if ( opts.verbose > 0 ) { network->set_verbose( opts.verbose ); }
     network->set_send_delay( 1 );
     network->get_current_state().push_back( Parser::Resize( cols, rows ) );
 
