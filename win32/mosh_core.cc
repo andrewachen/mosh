@@ -144,6 +144,10 @@ public:
 
     open = "\033[?1049h" + display.open();
     close = display.close() + "\033[?1049l";
+
+    if ( opts.title_prefix ) {
+      overlays.set_title_prefix( std::wstring( L"[mosh] " ) );
+    }
   }
 
   void update_lifecycle()
@@ -295,6 +299,7 @@ public:
 
     status = "Exiting...";
     overlays.get_notification_engine().set_notification_string( L"Exiting...", true );
+    overlays.set_title_prefix( std::wstring( L"" ) );
     network->start_shutdown();
   }
 };

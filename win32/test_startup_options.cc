@@ -101,6 +101,30 @@ static int test_prediction_overwrite()
   return 0;
 }
 
+static int test_title_prefix()
+{
+  {
+    StartupEnv env;
+    StartupOptions opts;
+    std::string err;
+    if ( !parse_startup_options( env, &opts, &err ) || !opts.title_prefix ) {
+      fprintf( stderr, "FAIL: absent MOSH_TITLE_NOPREFIX did not enable the prefix\n" );
+      return 1;
+    }
+  }
+  {
+    StartupEnv env;
+    env.title_noprefix = "";
+    StartupOptions opts;
+    std::string err;
+    if ( !parse_startup_options( env, &opts, &err ) || opts.title_prefix ) {
+      fprintf( stderr, "FAIL: set MOSH_TITLE_NOPREFIX did not suppress the prefix\n" );
+      return 1;
+    }
+  }
+  return 0;
+}
+
 int main()
 {
   if ( test_escape_key() != 0 ) {
@@ -110,6 +134,9 @@ int main()
     return 1;
   }
   if ( test_prediction_overwrite() != 0 ) {
+    return 1;
+  }
+  if ( test_title_prefix() != 0 ) {
     return 1;
   }
   printf( "test_startup_options: all cases passed\n" );

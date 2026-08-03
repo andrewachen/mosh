@@ -42,6 +42,7 @@
 struct StartupOptions {
   Overlay::PredictionEngine::DisplayPreference predict_display = Overlay::PredictionEngine::Adaptive;
   bool predict_overwrite = false;
+  bool title_prefix = true;
   EscapeConfig escape;
 };
 
@@ -49,6 +50,7 @@ struct StartupEnv {
   const char *predict_display = nullptr;  /* MOSH_PREDICTION_DISPLAY */
   const char *predict_overwrite = nullptr;  /* MOSH_PREDICTION_OVERWRITE */
   const char *escape_key = nullptr;  /* MOSH_ESCAPE_KEY */
+  const char *title_noprefix = nullptr;  /* MOSH_TITLE_NOPREFIX */
 };
 
 /* Build the validated snapshot from the environment. Returns false and sets

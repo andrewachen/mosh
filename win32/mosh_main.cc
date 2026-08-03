@@ -161,6 +161,7 @@ int main( int argc, char *argv[] )
     env.predict_display = std::getenv( "MOSH_PREDICTION_DISPLAY" );
     env.predict_overwrite = std::getenv( "MOSH_PREDICTION_OVERWRITE" );
     env.escape_key = std::getenv( "MOSH_ESCAPE_KEY" );
+    env.title_noprefix = std::getenv( "MOSH_TITLE_NOPREFIX" );
     StartupOptions opts;
     std::string opt_error;
     if ( !parse_startup_options( env, &opts, &opt_error ) ) {

@@ -49,5 +49,6 @@ bool parse_startup_options( const StartupEnv &env, StartupOptions *out, std::str
 
   out->predict_overwrite = parse_prediction_overwrite( env.predict_overwrite );
   out->escape = parse_escape_key( env.escape_key );
+  out->title_prefix = wants_title_prefix( env.title_noprefix );
   return true;
 }
