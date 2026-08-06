@@ -109,9 +109,15 @@ public:
   const TimestampedState<RemoteState>& get_latest_remote_state( void ) const { return received_states.back(); }
 
 #ifdef _WIN32
-  const std::vector<mosh_socket_t> fds( void ) const { return connection.fds(); }
+  const std::vector<mosh_socket_t> fds( void ) const
+  {
+    return connection.fds();
+  }
 #else
-  const std::vector<int> fds( void ) const { return connection.fds(); }
+  const std::vector<int> fds( void ) const
+  {
+    return connection.fds();
+  }
 #endif
 
   void set_verbose( unsigned int s_verbose )
@@ -120,18 +126,42 @@ public:
     verbose = s_verbose;
   }
 
-  void set_send_delay( int new_delay ) { sender.set_send_delay( new_delay ); }
+  void set_send_delay( int new_delay )
+  {
+    sender.set_send_delay( new_delay );
+  }
 
-  uint64_t get_sent_state_acked_timestamp( void ) const { return sender.get_sent_state_acked_timestamp(); }
-  uint64_t get_sent_state_acked( void ) const { return sender.get_sent_state_acked(); }
-  uint64_t get_sent_state_last( void ) const { return sender.get_sent_state_last(); }
+  uint64_t get_sent_state_acked_timestamp( void ) const
+  {
+    return sender.get_sent_state_acked_timestamp();
+  }
+  uint64_t get_sent_state_acked( void ) const
+  {
+    return sender.get_sent_state_acked();
+  }
+  uint64_t get_sent_state_last( void ) const
+  {
+    return sender.get_sent_state_last();
+  }
 
-  unsigned int send_interval( void ) const { return sender.send_interval(); }
+  unsigned int send_interval( void ) const
+  {
+    return sender.send_interval();
+  }
 
-  const Addr& get_remote_addr( void ) const { return connection.get_remote_addr(); }
-  socklen_t get_remote_addr_len( void ) const { return connection.get_remote_addr_len(); }
+  const Addr& get_remote_addr( void ) const
+  {
+    return connection.get_remote_addr();
+  }
+  socklen_t get_remote_addr_len( void ) const
+  {
+    return connection.get_remote_addr_len();
+  }
 
-  std::string& get_send_error( void ) { return connection.get_send_error(); }
+  std::string& get_send_error( void )
+  {
+    return connection.get_send_error();
+  }
 };
 }
 

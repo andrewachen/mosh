@@ -62,12 +62,39 @@ jobs:
           make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" protobufs test_core
           ./test_core.exe
 
+      - name: Build and run terminal width regression test
+        shell: msys2 {0}
+        run: |
+          make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" test_terminal_width
+          ./test_terminal_width.exe
+
       - name: Build and run bootstrap test
         shell: msys2 {0}
         timeout-minutes: 2
         run: |
           make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" test_bootstrap bootstrap_child
           ./test_bootstrap.exe
+
+      - name: Build and run startup-options test
+        shell: msys2 {0}
+        timeout-minutes: 2
+        run: |
+          make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" test_startup_options
+          ./test_startup_options.exe
+
+      - name: mosh.exe rejects bad invocations
+        shell: msys2 {0}
+        run: |
+          make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" mosh.exe
+          set +e
+          for probe in "" "-v" "-x host"; do
+            timeout 10 ./mosh.exe $probe
+            rc=$?
+            if [ "$rc" -ne 2 ]; then
+              echo "ERROR: 'mosh.exe $probe' exited $rc, expected usage code 2"; exit 1
+            fi
+          done
+          set -e
 
       - name: Build and run console lifecycle test
         shell: msys2 {0}
@@ -101,6 +128,8 @@ jobs:
         # proving the per-mutation termination checkpoint fires after each one.
         run: |
           make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" test_console_lifecycle
+          ./test_console_lifecycle.exe escape-key
+          ./test_console_lifecycle.exe no-term-init
           ./test_console_lifecycle.exe vt-mode
           ./test_console_lifecycle.exe fairness
           ./test_console_lifecycle.exe clock-refresh

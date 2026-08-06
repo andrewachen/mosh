@@ -526,8 +526,8 @@ std::string Connection::recv_one( mosh_socket_t sock_to_recv )
 
   char msg_payload[Session::RECEIVE_MTU];
 
-  ssize_t received_len = recvfrom( sock_to_recv, msg_payload, Session::RECEIVE_MTU, 0,
-                                   &packet_remote_addr.sa, &addrlen );
+  ssize_t received_len
+    = recvfrom( sock_to_recv, msg_payload, Session::RECEIVE_MTU, 0, &packet_remote_addr.sa, &addrlen );
 
   if ( received_len < 0 ) {
     int wserr = WSAGetLastError();
@@ -589,8 +589,7 @@ std::string Connection::recv_one( mosh_socket_t sock_to_recv )
   last_heard = timestamp();
 
   if ( server && /* only client can roam */
-       ( remote_addr_len != addrlen
-         || memcmp( &remote_addr, &packet_remote_addr, remote_addr_len ) != 0 ) ) {
+       ( remote_addr_len != addrlen || memcmp( &remote_addr, &packet_remote_addr, remote_addr_len ) != 0 ) ) {
     remote_addr = packet_remote_addr;
     remote_addr_len = addrlen;
     char host[NI_MAXHOST], serv[NI_MAXSERV];

@@ -52,6 +52,7 @@
 #include <util.h>
 #endif
 
+#include "src/frontend/startup_config.h"
 #include "src/statesync/completeterminal.h"
 #include "src/statesync/user.h"
 #include "src/util/fatal_assert.h"
@@ -123,78 +124,26 @@ void STMClient::init( void )
   swrite( STDOUT_FILENO, display.open().c_str() );
 
   /* Add our name to window title */
-  if ( !getenv( "MOSH_TITLE_NOPREFIX" ) ) {
+  if ( wants_title_prefix( getenv( "MOSH_TITLE_NOPREFIX" ) ) ) {
     overlays.set_title_prefix( std::wstring( L"[mosh] " ) );
   }
 
   /* Set terminal escape key. */
-  const char* escape_key_env;
-  if ( ( escape_key_env = getenv( "MOSH_ESCAPE_KEY" ) ) != NULL ) {
-    if ( strlen( escape_key_env ) == 1 ) {
-      escape_key = (int)escape_key_env[0];
-      if ( escape_key > 0 && escape_key < 128 ) {
-        if ( escape_key < 32 ) {
-          /* If escape is ctrl-something, pass it with repeating the key without ctrl. */
-          escape_pass_key = escape_key + (int)'@';
-        } else {
-          /* If escape is something else, pass it with repeating the key itself. */
-          escape_pass_key = escape_key;
-        }
-        if ( escape_pass_key >= 'A' && escape_pass_key <= 'Z' ) {
-          /* If escape pass is an upper case character, define optional version
-             as lower case of the same. */
-          escape_pass_key2 = escape_pass_key + (int)'a' - (int)'A';
-        } else {
-          escape_pass_key2 = escape_pass_key;
-        }
-      } else {
-        escape_key = 0x1E;
-        escape_pass_key = '^';
-        escape_pass_key2 = '^';
-      }
-    } else if ( strlen( escape_key_env ) == 0 ) {
-      escape_key = -1;
-    } else {
-      escape_key = 0x1E;
-      escape_pass_key = '^';
-      escape_pass_key2 = '^';
-    }
-  } else {
-    escape_key = 0x1E;
-    escape_pass_key = '^';
-    escape_pass_key2 = '^';
-  }
-
-  /* There are so many better ways to shoot oneself into leg than
-     setting escape key to Ctrl-C, Ctrl-D, NewLine, Ctrl-L or CarriageReturn
-     that we just won't allow that. */
-  if ( escape_key == 0x03 || escape_key == 0x04 || escape_key == 0x0A || escape_key == 0x0C
-       || escape_key == 0x0D ) {
-    escape_key = 0x1E;
-    escape_pass_key = '^';
-    escape_pass_key2 = '^';
-  }
+  const EscapeConfig ec = parse_escape_key( getenv( "MOSH_ESCAPE_KEY" ) );
+  escape_key = ec.key;
+  escape_pass_key = ec.pass_key;
+  escape_pass_key2 = ec.pass_key2;
+  escape_requires_lf = ec.requires_lf;
 
   /* Adjust escape help differently if escape is a control character. */
   if ( escape_key > 0 ) {
-    char escape_pass_name_buf[16];
-    char escape_key_name_buf[16];
-    snprintf( escape_pass_name_buf, sizeof escape_pass_name_buf, "\"%c\"", escape_pass_key );
-    if ( escape_key < 32 ) {
-      snprintf( escape_key_name_buf, sizeof escape_key_name_buf, "Ctrl-%c", escape_pass_key );
-      escape_requires_lf = false;
-    } else {
-      snprintf( escape_key_name_buf, sizeof escape_key_name_buf, "\"%c\"", escape_key );
-      escape_requires_lf = true;
-    }
-    std::string tmp;
-    tmp = std::string( escape_pass_name_buf );
-    std::wstring escape_pass_name = std::wstring( tmp.begin(), tmp.end() );
-    tmp = std::string( escape_key_name_buf );
-    std::wstring escape_key_name = std::wstring( tmp.begin(), tmp.end() );
+    std::string pass_name, key_name;
+    escape_key_names( ec, &pass_name, &key_name );
+    std::wstring escape_pass_name = std::wstring( pass_name.begin(), pass_name.end() );
+    std::wstring escape_key_name = std::wstring( key_name.begin(), key_name.end() );
     escape_key_help
       = L"Commands: Ctrl-Z suspends, \".\" quits, " + escape_pass_name + L" gives literal " + escape_key_name;
-    overlays.get_notification_engine().set_escape_key_string( tmp );
+    overlays.get_notification_engine().set_escape_key_string( key_name );
   }
   wchar_t tmp[128];
   swprintf( tmp, 128, L"Nothing received from server on UDP port %s.", port.c_str() );

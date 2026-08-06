@@ -1,3 +1,5 @@
+/* ABOUTME: Assembles the Windows StartupOptions snapshot from the shared parsers. */
+/* ABOUTME: Refuses locally detectable errors before any remote server is started. */
 /*
     Mosh: the mobile shell
     Copyright 2012 Keith Winstein
@@ -30,19 +32,24 @@
     also delete it here.
 */
 
-/* ABOUTME: WinSock2 includes, mosh_socket_t, and errno-mapping shims for the mosh network port. */
-/* ABOUTME: Included only on _WIN32; POSIX builds are unaffected. */
-#pragma once
+#include <string>
 
-#ifdef _WIN32
+#include "win32/startup_options.h"
+#include "src/frontend/startup_config.h"
 
-#include <winsock2.h>
-#include <ws2tcpip.h>
+bool parse_startup_options( const StartupEnv &env, StartupOptions *out, std::string *error )
+{
+  *out = StartupOptions();
 
-typedef SOCKET mosh_socket_t;               /* pointer-sized; POSIX side uses int */
-const char* wsa_strerror( int err );        /* defined in wincompat.cc */
-void mosh_winsock_init( void );             /* idempotent WSAStartup */
-int wcwidth( wchar_t ch );                  /* implemented through mosh_win32_wcwidth() */
+  std::string predict_error;
+  if ( !parse_prediction_display( env.predict_display, &out->predict_display, &predict_error ) ) {
+    *error = std::string( "mosh: " ) + predict_error + " (MOSH_PREDICTION_DISPLAY)";
+    return false;
+  }
 
-
-#endif /* _WIN32 */
+  out->predict_overwrite = parse_prediction_overwrite( env.predict_overwrite );
+  out->escape = parse_escape_key( env.escape_key );
+  out->title_prefix = wants_title_prefix( env.title_noprefix );
+  out->no_term_init = env.no_term_init != nullptr;
+  return true;
+}

@@ -42,6 +42,7 @@
 #include <vector>
 #include <cstdlib>
 #include <cstdio>
+#include <getopt.h>
 #include "win32/wincompat.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -373,10 +374,26 @@ static bool is_clean_destination( const char *s )
   return true;
 }
 
-Invocation classify_invocation( int argc, char *argv[] )
+bool parse_invocation( int argc, char *argv[], unsigned *verbose, const char **dest )
 {
-  if ( argc == 2 ) return ( argv[1][0] == '-' || argv[1][0] == '\0' ) ? Invocation::Usage : Invocation::Bootstrap;
-  return Invocation::Usage;
+  *verbose = 0;
+  optind = 1;   /* restart getopt's scan (mingw is BSD-derived: optind=1, not the glibc 0) */
+  opterr = 0;   /* suppress getopt's own error output; we print usage ourselves */
+  bool ok = true;
+  int opt;
+  while ( ( opt = getopt( argc, argv, "v" ) ) != -1 ) {
+    if ( opt == 'v' ) {
+      ++*verbose;
+    } else {
+      ok = false;   /* keep scanning to drain getopt's mid-token cursor, so the next call starts clean */
+    }
+  }
+  if ( !ok ) { return false; }
+  if ( argc - optind != 1 ) { return false; }
+  const char *d = argv[optind];
+  if ( d[0] == '\0' || d[0] == '-' ) { return false; }   /* empty or option-looking destination is a usage error */
+  *dest = d;
+  return true;
 }
 
 std::string mosh_bootstrap( const char *target, BootstrapResult *out )

@@ -42,11 +42,19 @@
 #include <string>
 #include <vector>
 
+#include "src/frontend/terminaloverlay.h"
 #include "src/util/locale_utils.h"
 #include "src/util/timestamp.h"
 #include "win32/mosh_core.h"
 #include "win32/test_server.h"
 #include "win32/wincompat.h"
+
+static StartupOptions never_prediction()
+{
+  StartupOptions opts;
+  opts.predict_display = Overlay::PredictionEngine::Never;
+  return opts;
+}
 
 static void pause_for_network()
 {
@@ -103,7 +111,7 @@ int main()
 
     bool threw = false;
     try {
-      MoshCore core( "127.0.0.1", server_port.c_str(), server_key.c_str(), 80, 24, "never" );
+      MoshCore core( "127.0.0.1", server_port.c_str(), server_key.c_str(), 80, 24, never_prediction() );
     } catch ( const std::runtime_error& error ) {
       threw = true;
       assert( std::string( error.what() ).find( "UTF-8 locale" ) != std::string::npos );
@@ -122,7 +130,7 @@ int main()
     assert( wcrtomb( mb, L'\u00E9', &mbs ) == 2 );
   }
 
-  MoshCore core( "127.0.0.1", server_port.c_str(), server_key.c_str(), 80, 24, "never" );
+  MoshCore core( "127.0.0.1", server_port.c_str(), server_key.c_str(), 80, 24, never_prediction() );
 
   /* Display(false) deliberately supplies portable ANSI sequences; the native
      console frontend sets TERM before using environment-specific terminfo. */

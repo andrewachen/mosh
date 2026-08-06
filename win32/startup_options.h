@@ -1,3 +1,5 @@
+/* ABOUTME: Typed, owned, validated Windows startup-config snapshot. */
+/* ABOUTME: Aggregates the shared frontend parsers; validated before mosh_bootstrap. */
 /*
     Mosh: the mobile shell
     Copyright 2012 Keith Winstein
@@ -30,19 +32,33 @@
     also delete it here.
 */
 
-/* ABOUTME: WinSock2 includes, mosh_socket_t, and errno-mapping shims for the mosh network port. */
-/* ABOUTME: Included only on _WIN32; POSIX builds are unaffected. */
-#pragma once
+#ifndef WIN32_STARTUP_OPTIONS_H
+#define WIN32_STARTUP_OPTIONS_H
 
-#ifdef _WIN32
+#include <string>
 
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "src/frontend/startup_config.h"
 
-typedef SOCKET mosh_socket_t;               /* pointer-sized; POSIX side uses int */
-const char* wsa_strerror( int err );        /* defined in wincompat.cc */
-void mosh_winsock_init( void );             /* idempotent WSAStartup */
-int wcwidth( wchar_t ch );                  /* implemented through mosh_win32_wcwidth() */
+struct StartupOptions {
+  unsigned verbose = 0;
+  Overlay::PredictionEngine::DisplayPreference predict_display = Overlay::PredictionEngine::Adaptive;
+  bool predict_overwrite = false;
+  bool title_prefix = true;
+  bool no_term_init = false;
+  EscapeConfig escape;
+};
 
+struct StartupEnv {
+  const char *predict_display = nullptr;  /* MOSH_PREDICTION_DISPLAY */
+  const char *predict_overwrite = nullptr;  /* MOSH_PREDICTION_OVERWRITE */
+  const char *escape_key = nullptr;  /* MOSH_ESCAPE_KEY */
+  const char *title_noprefix = nullptr;  /* MOSH_TITLE_NOPREFIX */
+  const char *no_term_init = nullptr;  /* MOSH_NO_TERM_INIT */
+};
 
-#endif /* _WIN32 */
+/* Build the validated snapshot from the environment. Returns false and sets
+   *error on the first locally detectable configuration error, so the caller
+   can refuse before starting a remote server. */
+bool parse_startup_options( const StartupEnv &env, StartupOptions *out, std::string *error );
+
+#endif

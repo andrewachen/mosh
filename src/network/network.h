@@ -78,7 +78,10 @@ public:
     : function( s_function ), the_errno( s_errno ), my_what( function + ": " + strerror( the_errno ) )
 #endif
   {}
-  const char* what() const throw() { return my_what.c_str(); }
+  const char* what() const throw()
+  {
+    return my_what.c_str();
+  }
   ~NetworkException() throw() {}
 };
 
@@ -172,18 +175,32 @@ private:
     Socket& operator=( const Socket& other ) = delete;
 
   public:
-    mosh_socket_t fd( void ) const { return _fd; }
+    mosh_socket_t fd( void ) const
+    {
+      return _fd;
+    }
     Socket( int family );
     ~Socket();
-    Socket( Socket&& other ) noexcept : _fd( other._fd ) { other._fd = INVALID_SOCKET; }
-    Socket& operator=( Socket&& other ) noexcept {
-      if ( this != &other ) { if ( _fd != INVALID_SOCKET ) closesocket( _fd );
-                              _fd = other._fd; other._fd = INVALID_SOCKET; }
+    Socket( Socket&& other ) noexcept : _fd( other._fd )
+    {
+      other._fd = INVALID_SOCKET;
+    }
+    Socket& operator=( Socket&& other ) noexcept
+    {
+      if ( this != &other ) {
+        if ( _fd != INVALID_SOCKET )
+          closesocket( _fd );
+        _fd = other._fd;
+        other._fd = INVALID_SOCKET;
+      }
       return *this;
     }
 #else
   public:
-    int fd( void ) const { return (int)_fd; }
+    int fd( void ) const
+    {
+      return (int)_fd;
+    }
     Socket( int family );
     ~Socket();
 
@@ -260,21 +277,45 @@ public:
 #else
   const std::vector<int> fds( void ) const;
 #endif
-  int get_MTU( void ) const { return MTU; }
+  int get_MTU( void ) const
+  {
+    return MTU;
+  }
 
   std::string port( void ) const;
-  std::string get_key( void ) const { return key.printable_key(); }
-  bool get_has_remote_addr( void ) const { return has_remote_addr; }
+  std::string get_key( void ) const
+  {
+    return key.printable_key();
+  }
+  bool get_has_remote_addr( void ) const
+  {
+    return has_remote_addr;
+  }
 
   uint64_t timeout( void ) const;
-  double get_SRTT( void ) const { return SRTT; }
+  double get_SRTT( void ) const
+  {
+    return SRTT;
+  }
 
-  const Addr& get_remote_addr( void ) const { return remote_addr; }
-  socklen_t get_remote_addr_len( void ) const { return remote_addr_len; }
+  const Addr& get_remote_addr( void ) const
+  {
+    return remote_addr;
+  }
+  socklen_t get_remote_addr_len( void ) const
+  {
+    return remote_addr_len;
+  }
 
-  std::string& get_send_error( void ) { return send_error; }
+  std::string& get_send_error( void )
+  {
+    return send_error;
+  }
 
-  void set_last_roundtrip_success( uint64_t s_success ) { last_roundtrip_success = s_success; }
+  void set_last_roundtrip_success( uint64_t s_success )
+  {
+    last_roundtrip_success = s_success;
+  }
 
   static bool parse_portrange( const char* desired_port_range, int& desired_port_low, int& desired_port_high );
 };

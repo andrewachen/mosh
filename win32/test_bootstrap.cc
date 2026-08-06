@@ -314,24 +314,52 @@ static void test_build_ssh_command_line()
 
 static char *A( const char *s ) { return const_cast<char *>( s ); }
 
-static void test_classify_invocation()
+static void test_parse_invocation()
 {
-  /* An endpoint is never accepted positionally: a 4- or 5-argument list is
-     usage, whether or not its trailing token names a prediction mode. */
-  char *endpoint[] = { A("mosh"), A("203.0.113.7"), A("60001"), A("KEY") };
-  assert( classify_invocation( 4, endpoint ) == Invocation::Usage );
-  char *endpoint_predict[] = { A("mosh"), A("203.0.113.7"), A("60001"), A("KEY"), A("always") };
-  assert( classify_invocation( 5, endpoint_predict ) == Invocation::Usage );
-  char *endpoint_bogus[] = { A("mosh"), A("203.0.113.7"), A("60001"), A("KEY"), A("bogus") };
-  assert( classify_invocation( 5, endpoint_bogus ) == Invocation::Usage );
-  char *boot[] = { A("mosh"), A("user@host") };
-  assert( classify_invocation( 2, boot ) == Invocation::Bootstrap );
-  char *dash[] = { A("mosh"), A("-X") };
-  assert( classify_invocation( 2, dash ) == Invocation::Usage );
+  unsigned verbose = 99;
+  const char *dest = nullptr;
+
+  char *plain[] = { A("mosh"), A("user@host") };
+  assert( parse_invocation( 2, plain, &verbose, &dest ) );
+  assert( verbose == 0 && std::string( dest ) == "user@host" );
+
+  char *v1[] = { A("mosh"), A("-v"), A("user@host") };
+  assert( parse_invocation( 3, v1, &verbose, &dest ) );
+  assert( verbose == 1 && std::string( dest ) == "user@host" );
+
+  char *vv[] = { A("mosh"), A("-vv"), A("user@host") };
+  assert( parse_invocation( 3, vv, &verbose, &dest ) );
+  assert( verbose == 2 );
+
+  char *v_v[] = { A("mosh"), A("-v"), A("-v"), A("user@host") };
+  assert( parse_invocation( 4, v_v, &verbose, &dest ) );
+  assert( verbose == 2 && std::string( dest ) == "user@host" );
+
   char *none[] = { A("mosh") };
-  assert( classify_invocation( 1, none ) == Invocation::Usage );
-  char *three[] = { A("mosh"), A("a"), A("b") };
-  assert( classify_invocation( 3, three ) == Invocation::Usage );
+  assert( !parse_invocation( 1, none, &verbose, &dest ) );
+
+  char *v_only[] = { A("mosh"), A("-v") };
+  assert( !parse_invocation( 2, v_only, &verbose, &dest ) );
+
+  char *unknown[] = { A("mosh"), A("-x"), A("user@host") };
+  assert( !parse_invocation( 3, unknown, &verbose, &dest ) );
+
+  char *empty_dest[] = { A("mosh"), A("") };
+  assert( !parse_invocation( 2, empty_dest, &verbose, &dest ) );   /* empty destination -> usage error */
+
+  char *dash_dest[] = { A("mosh"), A("-") };
+  assert( !parse_invocation( 2, dash_dest, &verbose, &dest ) );    /* lone '-' destination -> usage error */
+
+  char *two[] = { A("mosh"), A("a"), A("b") };
+  assert( !parse_invocation( 3, two, &verbose, &dest ) );
+
+  char *cluster[] = { A("mosh"), A("-xv"), A("user@host") };
+  assert( !parse_invocation( 3, cluster, &verbose, &dest ) );   /* clustered unknown -> usage error */
+
+  /* Re-callable after a mid-token error: a following valid call must parse cleanly. */
+  char *after[] = { A("mosh"), A("-v"), A("user@host") };
+  assert( parse_invocation( 3, after, &verbose, &dest ) );
+  assert( verbose == 1 && std::string( dest ) == "user@host" );
 }
 
 static void test_mosh_bootstrap_rejects_invalid_target()
@@ -434,7 +462,7 @@ static void test_spawn_timeout_reap()
 int main()
 {
   test_sh_quote();
-  test_classify_invocation();
+  test_parse_invocation();
   test_build_remote_command();
   test_win_quote_arg();
   test_parse_connect();

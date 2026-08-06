@@ -123,10 +123,21 @@ void set_native_locale( void )
 void clear_locale_variables( void )
 {
 #ifdef _WIN32
-  const char* locale_variables[] = { "LANG",       "LANGUAGE",       "LC_CTYPE",       "LC_NUMERIC",
-                                     "LC_TIME",    "LC_COLLATE",     "LC_MONETARY",    "LC_MESSAGES",
-                                     "LC_PAPER",   "LC_NAME",        "LC_ADDRESS",     "LC_TELEPHONE",
-                                     "LC_MEASUREMENT", "LC_IDENTIFICATION", "LC_ALL" };
+  const char* locale_variables[] = { "LANG",
+                                     "LANGUAGE",
+                                     "LC_CTYPE",
+                                     "LC_NUMERIC",
+                                     "LC_TIME",
+                                     "LC_COLLATE",
+                                     "LC_MONETARY",
+                                     "LC_MESSAGES",
+                                     "LC_PAPER",
+                                     "LC_NAME",
+                                     "LC_ADDRESS",
+                                     "LC_TELEPHONE",
+                                     "LC_MEASUREMENT",
+                                     "LC_IDENTIFICATION",
+                                     "LC_ALL" };
   for ( const char* variable : locale_variables ) {
     SetEnvironmentVariableA( variable, NULL );
   }

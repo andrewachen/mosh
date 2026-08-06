@@ -42,33 +42,11 @@
 #include <string>
 
 #include "win32/wincompat.h"
+#include "win32/wcwidth.h"
 
-/* MinGW does not provide POSIX wcwidth(). Mosh passes one wchar_t at a time;
-   on Windows wchar_t is a UTF-16 code unit, so astral Unicode scalar values
-   cannot reach this function as a single character. Treat isolated surrogate
-   code units as non-printing rather than misclassifying either half as wide. */
 int wcwidth( wchar_t ch )
 {
-  const unsigned int c = static_cast<unsigned int>( ch );
-
-  if ( c == 0 ) {
-    return 0;
-  }
-  if ( c < 0x20 || ( c >= 0x7f && c < 0xa0 ) || ( c >= 0xd800 && c <= 0xdfff ) ) {
-    return -1;
-  }
-
-  WORD type = 0;
-  if ( GetStringTypeW( CT_CTYPE3, &ch, 1, &type ) && ( type & C3_NONSPACING ) ) {
-    return 0;
-  }
-
-  return ( c >= 0x1100 && ( c <= 0x115f || c == 0x2329 || c == 0x232a || ( c >= 0x2e80 && c <= 0xa4cf )
-                             || ( c >= 0xac00 && c <= 0xd7a3 ) || ( c >= 0xf900 && c <= 0xfaff )
-                             || ( c >= 0xfe10 && c <= 0xfe19 ) || ( c >= 0xfe30 && c <= 0xfe6f )
-                             || ( c >= 0xff00 && c <= 0xff60 ) || ( c >= 0xffe0 && c <= 0xffe6 ) ) )
-           ? 2
-           : 1;
+  return mosh_win32_wcwidth( ch );
 }
 
 /* WSAStartup is idempotent - calling multiple times is safe */

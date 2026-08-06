@@ -46,6 +46,7 @@
 #include <vector>
 
 #include "src/crypto/crypto.h"
+#include "src/frontend/startup_config.h"
 #include "src/frontend/terminaloverlay.h"
 #include "src/network/networktransport.h"
 #include "src/network/networktransport-impl.h"
@@ -108,39 +109,29 @@ public:
   bool escape_requires_lf;
   std::wstring escape_key_help;
 
-  Impl( const char *ip, const char *port, const char *key, int cols, int rows, const char *predict )
+  Impl( const char *ip, const char *port, const char *key, int cols, int rows, const StartupOptions &opts )
     : local_terminal( cols, rows ), overlays(), network(), display( false ), local_framebuffer( cols, rows ),
       new_state( cols, rows ), open(), close(), frame(), status(), connecting_notification(), repaint_requested( true ),
-      lf_entered( false ), quit_sequence_started( false ), finished( false ), clean_shutdown( false ), escape_key( 0x1e ),
-      escape_pass_key( '^' ), escape_pass_key2( '^' ), escape_requires_lf( false ), escape_key_help()
+      lf_entered( false ), quit_sequence_started( false ), finished( false ), clean_shutdown( false ),
+      escape_key( opts.escape.key ), escape_pass_key( opts.escape.pass_key ), escape_pass_key2( opts.escape.pass_key2 ),
+      escape_requires_lf( opts.escape.requires_lf ), escape_key_help()
   {
 #ifdef _WIN32
     mosh_winsock_init();
 #endif
 
-    if ( predict ) {
-      if ( !strcmp( predict, "always" ) ) {
-        overlays.get_prediction_engine().set_display_preference( PredictionEngine::Always );
-      } else if ( !strcmp( predict, "never" ) ) {
-        overlays.get_prediction_engine().set_display_preference( PredictionEngine::Never );
-      } else if ( !strcmp( predict, "adaptive" ) ) {
-        overlays.get_prediction_engine().set_display_preference( PredictionEngine::Adaptive );
-      } else if ( !strcmp( predict, "experimental" ) ) {
-        overlays.get_prediction_engine().set_display_preference( PredictionEngine::Experimental );
-      } else {
-        throw std::runtime_error( std::string( "Unknown prediction mode " ) + predict + "." );
-      }
+    overlays.get_prediction_engine().set_display_preference( opts.predict_display );
+    if ( opts.predict_overwrite ) {
+      overlays.get_prediction_engine().set_predict_overwrite( true );
     }
 
-    char escape_pass_name_buf[16];
-    char escape_key_name_buf[16];
-    snprintf( escape_pass_name_buf, sizeof escape_pass_name_buf, "\"%c\"", escape_pass_key );
-    snprintf( escape_key_name_buf, sizeof escape_key_name_buf, "Ctrl-%c", escape_pass_key );
-    std::string escape_pass_name( escape_pass_name_buf );
-    std::string escape_key_name( escape_key_name_buf );
-    escape_key_help = L"Commands: \".\" quits, " + std::wstring( escape_pass_name.begin(), escape_pass_name.end() )
-                      + L" gives literal " + std::wstring( escape_key_name.begin(), escape_key_name.end() );
-    overlays.get_notification_engine().set_escape_key_string( escape_key_name );
+    if ( escape_key > 0 ) {
+      std::string pass_name, key_name;
+      escape_key_names( opts.escape, &pass_name, &key_name );
+      escape_key_help = L"Commands: \".\" quits, " + std::wstring( pass_name.begin(), pass_name.end() )
+                        + L" gives literal " + std::wstring( key_name.begin(), key_name.end() );
+      overlays.get_notification_engine().set_escape_key_string( key_name );
+    }
 
     wchar_t connecting[128];
     swprintf( connecting, sizeof connecting / sizeof *connecting, L"Nothing received from server on UDP port %s.", port );
@@ -148,11 +139,21 @@ public:
 
     UserStream blank;
     network.reset( new NetworkType( blank, local_terminal, key, ip, port ) );
+    if ( opts.verbose > 0 ) { network->set_verbose( opts.verbose ); }
     network->set_send_delay( 1 );
     network->get_current_state().push_back( Parser::Resize( cols, rows ) );
 
-    open = "\033[?1049h" + display.open();
-    close = display.close() + "\033[?1049l";
+    if ( opts.no_term_init ) {
+      open = display.open();
+      close = display.close();
+    } else {
+      open = "\033[?1049h" + display.open();
+      close = display.close() + "\033[?1049l";
+    }
+
+    if ( opts.title_prefix ) {
+      overlays.set_title_prefix( std::wstring( L"[mosh] " ) );
+    }
   }
 
   void update_lifecycle()
@@ -304,11 +305,12 @@ public:
 
     status = "Exiting...";
     overlays.get_notification_engine().set_notification_string( L"Exiting...", true );
+    overlays.set_title_prefix( std::wstring( L"" ) );
     network->start_shutdown();
   }
 };
 
-MoshCore::MoshCore( const char *ip, const char *port, const char *key, int cols, int rows, const char *predict )
+MoshCore::MoshCore( const char *ip, const char *port, const char *key, int cols, int rows, const StartupOptions &opts )
   : impl( nullptr )
 {
   /* Functional locale probe: the framebuffer encodes wide characters with
@@ -323,7 +325,7 @@ MoshCore::MoshCore( const char *ip, const char *port, const char *key, int cols,
   }
 
   freeze_timestamp();
-  impl = new Impl( ip, port, key, cols, rows, predict );
+  impl = new Impl( ip, port, key, cols, rows, opts );
 }
 
 MoshCore::~MoshCore()
