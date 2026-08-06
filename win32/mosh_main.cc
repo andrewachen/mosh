@@ -71,27 +71,6 @@ const char *cleanup_op_name( int op )
   }
 }
 
-bool set_environment( const char *name, const char *value, std::string *message )
-{
-  if ( !SetEnvironmentVariableA( name, value ) ) {
-    *message = std::string( "SetEnvironmentVariableA failed for " ) + name;
-    return false;
-  }
-  return true;
-}
-
-std::string bundled_terminfo_path()
-{
-  char executable[MAX_PATH];
-  const DWORD length = GetModuleFileNameA( NULL, executable, sizeof executable );
-  if ( length == 0 || length >= sizeof executable ) {
-    return "terminfo";
-  }
-  std::string path( executable, length );
-  const std::string::size_type slash = path.find_last_of( "\\/" );
-  return slash == std::string::npos ? "terminfo" : path.substr( 0, slash + 1 ) + "terminfo";
-}
-
 void print_usage( const char *program )
 {
   std::fprintf( stderr, "Usage: %s [-v ...] <user@host>  (connect via ssh)\n", program );
@@ -143,16 +122,8 @@ int main( int argc, char *argv[] )
   if ( !parse_invocation( argc, argv, &verbose, &destination ) ) { print_usage( argv[0] ); return USAGE_EXIT_CODE; }
 
   try {
-    /* existing setlocale(".UTF-8") + TERM/TERMINFO setup */
     if ( setlocale( LC_ALL, ".UTF-8" ) == NULL ) {
       std::fprintf( stderr, "Unable to configure the UTF-8 locale\n" );
-      return EXCEPTION_EXIT_CODE;
-    }
-
-    std::string message;
-    if ( !set_environment( "TERM", "xterm-256color", &message )
-         || !set_environment( "TERMINFO", bundled_terminfo_path().c_str(), &message ) ) {
-      std::fprintf( stderr, "%s\n", message.c_str() );
       return EXCEPTION_EXIT_CODE;
     }
 
@@ -177,6 +148,7 @@ int main( int argc, char *argv[] )
     BootstrapResult ep;
     const std::string err = mosh_bootstrap( destination, &ep );
     if ( !err.empty() ) { std::fprintf( stderr, "%s\n", err.c_str() ); return FRONTEND_FAILURE_EXIT_CODE; }
+    std::string message;
     const int session_rc = run_console_session( ep.ip.c_str(), ep.port.c_str(), &ep.key, opts, cols, rows,
                                                 &message, &cleanup );
     if ( !message.empty() ) {
