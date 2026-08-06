@@ -214,6 +214,33 @@ behavior (so a writable working directory cannot substitute a bundled
 `libcrypto`/terminal DLL), code signing, a bundled-OpenSSL update policy, and
 SBOM/licensing/provenance for every shipped DLL.
 
+### M4 resolution (observed on CI)
+
+M4 is complete and CI-green in run `31127885569`. `win32/package.sh` stages the
+bundle and `win32/verify-bundle.ps1` verifies it in a scrubbed environment on
+`windows-11-arm` with MSYS2 CLANGARM64. The exact observed transitive
+non-system DLL closure is `libcrypto-3-arm64.dll` (OpenSSL), `libncursesw6.dll`
+(ncurses), and `zlib1.dll` (zlib); zlib is bundled. The bundle also contains
+`mosh.exe`, license notices, and `MANIFEST.txt` with per-file SHA-256, size, and
+source, classified imports, and tool versions. Protobuf, Abseil, the LLVM C++
+runtime (libc++/libunwind/compiler-rt), OCB, and winpthreads are folded into
+`mosh.exe`, not shipped as DLLs. All classified `mosh.exe` imports are
+Windows-system or UCRT imports, under fail-closed classification.
+
+The clean-environment probe establishes that `mosh.exe` reaches argument parsing
+with MSYS2 off `PATH` and `TERM`/`TERMINFO` absent (exit 2), and that
+`test_core.exe` runs to exit 0 from the bundle alone. A bundle copy with one DLL
+removed fails to launch with `0xC0000135` (`STATUS_DLL_NOT_FOUND`), providing a
+negative control against a vacuous self-sufficiency result. Thus M4 now
+establishes file presence, the complete non-system DLL closure, and bundle
+self-sufficiency. It does not establish the still-open security follow-ups:
+trusted install location and ACLs, safe DLL-search behavior, code signing, a
+bundled-OpenSSL update policy, or a complete SBOM/licensing/provenance contract;
+the manifest and license notices do not close those items. The bundle contains
+no terminfo: the client constructs `Display(false)`, while `mosh-server` sets
+the remote `TERM` from `-c`, so the original bundle-terminfo plan item is
+obsolete.
+
 The import check is done via the portable `objdump -p` import table, not via
 `nm -u` (which cannot see PE import-table entries) and not by CRT-name matching.
 
