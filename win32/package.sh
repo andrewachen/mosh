@@ -132,6 +132,10 @@ path_contains() {
   [[ "$parent" == / ]] || parent=${parent%/}
   [[ "$child" == "$parent" || "$child" == "$parent"/* ]]
 }
+# Reject the filesystem root outright: with stage=/ the containment checks below
+# degenerate ("//*" never matches) and rm -rf would be attempted on /, saved only
+# by rm's preserve-root. Fail closed instead of depending on the rm implementation.
+[[ "$stage_dir" != / ]] || die "refusing to use the filesystem root as the stage path"
 [[ "$stage_dir" != "$repo_root" && "$stage_dir" != "$exe_parent" && "$stage_dir" != "$exe_path" ]] || die "refusing to remove stage path: $stage_dir"
 path_contains "$stage_dir" "$exe_parent" && die "refusing to remove stage containing executable: $stage_dir"
 IFS=: read -r -a safety_dll_dirs <<<"$dll_dirs"
@@ -530,16 +534,15 @@ stage_static_license winpthreads "$static_license_destination/winpthreads"
 
 ocb_notice="$static_license_destination/ocb/ISC-NOTICE"
 mkdir -p "$(dirname -- "$ocb_notice")"
+# Extract the ISC license header (Krovetz copyright line through the ISC
+# footer). The footer text "USE OR PERFORMANCE OF THIS SOFTWARE." is a suffix
+# of its source line, not the whole line, so match it as a substring.
 awk '
   /^\/ Copyright \(c\) 2012 Ted Krovetz\.$/ { in_notice = 1 }
-  in_notice && /^\/ PERFORMANCE OF THIS SOFTWARE\.$/ {
-    sub(/^\/ ?/, "")
-    print
-    exit
-  }
   in_notice {
     sub(/^\/ ?/, "")
     print
+    if (/USE OR PERFORMANCE OF THIS SOFTWARE\./) exit
   }
 ' "$repo_root/src/crypto/ocb_internal.cc" >"$ocb_notice"
 [[ -s "$ocb_notice" ]] || die 'could not extract the OCB ISC notice from src/crypto/ocb_internal.cc'

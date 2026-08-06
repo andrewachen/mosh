@@ -224,8 +224,10 @@ non-system DLL closure is `libcrypto-3-arm64.dll` (OpenSSL), `libncursesw6.dll`
 `mosh.exe`, license notices, and `MANIFEST.txt` with per-file SHA-256, size, and
 source, classified imports, and tool versions. Protobuf, Abseil, the LLVM C++
 runtime (libc++/libunwind/compiler-rt), OCB, and winpthreads are folded into
-`mosh.exe`, not shipped as DLLs. All classified `mosh.exe` imports are
-Windows-system or UCRT imports, under fail-closed classification.
+`mosh.exe`, not shipped as DLLs. Under fail-closed classification every
+`mosh.exe` import is either a Windows-system/UCRT import (classified `SYSTEM`)
+or one of the three bundled DLLs above (classified `SHIPPED`); no import is
+left unclassified.
 
 The clean-environment probe establishes that `mosh.exe` reaches argument parsing
 with MSYS2 off `PATH` and `TERM`/`TERMINFO` absent (exit 2), and that
