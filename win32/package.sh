@@ -176,21 +176,36 @@ llvm_readobj_version='unavailable'
 [[ -n "$llvm_readobj" ]] && llvm_readobj_version=$(version_line "$llvm_readobj")
 objdump_version='not used (GNU architecture assertions are unsupported)'
 
+# The LLVM inspection tools are native Windows binaries on MSYS2; hand them a
+# Windows-native path (C:\...) rather than an MSYS2 /c/... path, which a native
+# tool may fail to open or report against. cygpath is always present on MSYS2.
+native_path() {
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w -- "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 assert_arm64() {
   local file=$1
   local label=$2
   local output
+  local tool_file
+  tool_file=$(native_path "$file")
 
   if [[ -n "$llvm_objdump" ]]; then
-    output=$("$llvm_objdump" -f "$file" 2>&1) || die "llvm-objdump could not inspect $label: $file"
+    output=$("$llvm_objdump" -f "$tool_file" 2>&1) || die "llvm-objdump could not inspect $label: $file"
     if ! grep -Eiq '^[[:space:]]*architecture: aarch64$' <<<"$output" ||
        ! grep -Eiq '^[^:]*:[[:space:]]*file format coff-arm64$' <<<"$output"; then
+      printf 'llvm-objdump -f output for %s follows (arch assertion failed):\n%s\n' "$file" "$output" >&2
       die "$label is not an ARM64 PE/COFF image according to llvm-objdump: $file"
     fi
   else
-    output=$("$llvm_readobj" --file-headers "$file" 2>&1) || die "llvm-readobj could not inspect $label: $file"
+    output=$("$llvm_readobj" --file-headers "$tool_file" 2>&1) || die "llvm-readobj could not inspect $label: $file"
     if ! grep -Eiq '^[[:space:]]*Format:[[:space:]]*COFF-ARM64([[:space:]]|$)' <<<"$output" ||
        ! grep -Eiq '^[[:space:]]*(Arch:[[:space:]]+aarch64|Machine:[[:space:]]+IMAGE_FILE_MACHINE_ARM64([[:space:]]|$))' <<<"$output"; then
+      printf 'llvm-readobj --file-headers output for %s follows (arch assertion failed):\n%s\n' "$file" "$output" >&2
       die "$label is not an ARM64 PE/COFF image according to llvm-readobj: $file"
     fi
   fi
@@ -199,10 +214,12 @@ assert_arm64() {
 dump_imports() {
   local file=$1
   local output line name
+  local tool_file
+  tool_file=$(native_path "$file")
   if [[ "$import_mode" == llvm-readobj ]]; then
-    output=$("$import_tool" --coff-imports "$file" 2>&1) || die "$import_mode could not inspect imports for $file"
+    output=$("$import_tool" --coff-imports "$tool_file" 2>&1) || die "$import_mode could not inspect imports for $file"
   else
-    output=$("$import_tool" -p "$file" 2>&1) || die "$import_mode could not inspect imports for $file"
+    output=$("$import_tool" -p "$tool_file" 2>&1) || die "$import_mode could not inspect imports for $file"
   fi
   IMPORT_NAMES=()
   while IFS= read -r line; do
