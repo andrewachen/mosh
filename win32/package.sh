@@ -196,8 +196,11 @@ assert_arm64() {
 
   if [[ -n "$llvm_objdump" ]]; then
     output=$("$llvm_objdump" -f "$tool_file" 2>&1) || die "llvm-objdump could not inspect $label: $file"
-    if ! grep -Eiq '^[[:space:]]*architecture: aarch64$' <<<"$output" ||
-       ! grep -Eiq '^[^:]*:[[:space:]]*file format coff-arm64$' <<<"$output"; then
+    # The format line is "<path>: file format coff-arm64"; the path may carry a
+    # Windows drive-letter colon (C:\...) once native_path() converts it, so match
+    # the format token at end-of-line rather than anchoring on the path prefix.
+    if ! grep -Eiq '^[[:space:]]*architecture: aarch64[[:space:]]*$' <<<"$output" ||
+       ! grep -Eiq 'file format coff-arm64[[:space:]]*$' <<<"$output"; then
       printf 'llvm-objdump -f output for %s follows (arch assertion failed):\n%s\n' "$file" "$output" >&2
       die "$label is not an ARM64 PE/COFF image according to llvm-objdump: $file"
     fi
