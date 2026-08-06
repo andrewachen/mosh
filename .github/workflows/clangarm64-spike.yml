@@ -298,6 +298,19 @@ jobs:
             cat evidence/usage-text.txt; exit 1; fi
           echo "the retired direct-endpoint invocation is refused"
 
+      - name: Stage runtime bundle
+        shell: msys2 {0}
+        run: win32/package.sh
+
+      - name: Verify bundle in a clean environment
+        shell: msys2 {0}
+        run: |
+          mkdir -p evidence
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File win32/verify-bundle.ps1 \
+            -BundleDir win32/build/stage/mosh-arm64 -TestCoreExe ./test_core.exe -ExpectDlls \
+            >evidence/verify-bundle-output.txt 2>&1
+          cat evidence/verify-bundle-output.txt
+
       - name: Collect durable evidence bundle
         if: always()
         shell: msys2 {0}
@@ -314,6 +327,9 @@ jobs:
           llvm-objdump -p mosh.exe > evidence/imports.txt 2>&1 || true
           llvm-nm -u mosh.exe > evidence/undefined-symbols.txt 2>&1 || true
           sha256sum mosh.exe > evidence/mosh.exe.sha256 2>&1 || true
+          find win32/build/stage -type f -print | sort > evidence/staged-bundle-files.txt 2>&1 || true
+          cp win32/build/stage/mosh-arm64/MANIFEST.txt evidence/staged-bundle-manifest.txt 2>&1 || true
+          test -f evidence/verify-bundle-output.txt || echo 'verify-bundle step did not produce output' > evidence/verify-bundle-output.txt
 
       - uses: actions/upload-artifact@v7
         if: always()
@@ -322,3 +338,4 @@ jobs:
           path: |
             mosh.exe
             evidence/
+            win32/build/stage/
