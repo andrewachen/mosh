@@ -528,18 +528,17 @@ is not reliable in the MSYS2 CLANGARM64 runtime.
 
 ## Reproduction
 
-From the wsltty repository, run:
+From the mosh repository (the harness `Dockerfile.mosh-arm64` +
+`build-mosh-arm64-local.sh` lives here), run:
 
 ```sh
 MOSH_LOCAL=~/git/gh/mosh/.claude/worktrees/mosh-termination \
-  ~/git/gh/wsltty/build-mosh-arm64-local.sh
+  ./build-mosh-arm64-local.sh
 ```
 
-The `MOSH_LOCAL` override is mandatory. Without it, the script defaults to the
-canonical mosh checkout (`~/git/gh/mosh/`) and silently validates the unchanged
-main-branch sources instead of this worktree. This override requires the Task 0a
-wsltty script revision, which adds support for the `MOSH_LOCAL` environment
-variable.
+The `MOSH_LOCAL` override is mandatory when validating a worktree. Without it,
+the script defaults to the canonical mosh checkout (`~/git/gh/mosh/`) and
+silently validates the unchanged main-branch sources instead of the worktree.
 
 The script runs the M0a dependency smoke test first, then invokes:
 
@@ -634,7 +633,7 @@ The CI bare invocation asserts usage exit code `2`; it does not exercise the
 console frontend or `MoshCore`. The local Docker gate is compile/link-only, and
 real console/session validation remains native Windows ARM64 work.
 
-Local verification command (from the wsltty repository):
+Local verification command (from the mosh repository):
 
 ```sh
 ./build-mosh-arm64-local.sh

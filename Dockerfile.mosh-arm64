@@ -1,0 +1,106 @@
+# ABOUTME: Cross-builds mosh engine dependencies for native Windows ARM64.
+# ABOUTME: Use with build-mosh-arm64-local.sh for local link verification.
+FROM dockcross/windows-arm64:latest
+
+ENV TARGET=aarch64-w64-mingw32
+ENV PREFIX=/opt/mosh-arm64
+ENV PATH=/usr/xcc/aarch64-w64-mingw32-cross/bin:${PATH}
+ENV PKG_CONFIG_LIBDIR=/opt/mosh-arm64/lib/pkgconfig
+ENV PKG_CONFIG_SYSROOT_DIR=/
+ENV PATH=/opt/protobuf-host/bin:/usr/xcc/aarch64-w64-mingw32-cross/bin:${PATH}
+
+RUN apt-get update && \
+    apt-get install --yes --no-install-recommends ca-certificates perl && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN curl --fail --location --retry 5 --retry-all-errors --output /tmp/zlib.tar.gz \
+      https://zlib.net/fossils/zlib-1.3.1.tar.gz && \
+    echo '9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23  /tmp/zlib.tar.gz' | sha256sum --check && \
+    tar -C /tmp -xzf /tmp/zlib.tar.gz && \
+    cd /tmp/zlib-1.3.1 && \
+    CHOST=${TARGET} CC=${TARGET}-clang ./configure --static --prefix=${PREFIX} && \
+    make -j"$(nproc)" && \
+    make install && \
+    rm -rf /tmp/zlib-1.3.1 /tmp/zlib.tar.gz
+
+RUN curl --fail --location --retry 5 --retry-all-errors --output /tmp/openssl.tar.gz \
+      https://www.openssl.org/source/openssl-3.0.16.tar.gz && \
+    echo '57e03c50feab5d31b152af2b764f10379aecd8ee92f16c985983ce4a99f7ef86  /tmp/openssl.tar.gz' | sha256sum --check && \
+    tar -C /tmp -xzf /tmp/openssl.tar.gz && \
+    cd /tmp/openssl-3.0.16 && \
+    env -u CC -u CXX -u AR -u AS -u LD -u RANLIB ./Configure mingw64 \
+      --cross-compile-prefix=${TARGET}- no-asm no-shared no-tests --prefix=${PREFIX} \
+      --libdir=lib && \
+    make -j"$(nproc)" build_libs && \
+    make install_dev && \
+    rm -rf /tmp/openssl-3.0.16 /tmp/openssl.tar.gz
+
+RUN curl --fail --location --retry 5 --retry-all-errors --output /tmp/ncurses.tar.gz \
+      https://invisible-mirror.net/archives/ncurses/ncurses-6.5.tar.gz && \
+    echo '136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6  /tmp/ncurses.tar.gz' | sha256sum --check && \
+    tar -C /tmp -xzf /tmp/ncurses.tar.gz && \
+    cd /tmp/ncurses-6.5 && \
+    ./configure --host=${TARGET} --prefix=${PREFIX} --without-termlib \
+      --with-pkg-config-libdir=${PREFIX}/lib/pkgconfig --without-ada --without-cxx \
+      CPPFLAGS='-D__USE_MINGW_ACCESS' --enable-ext-colors \
+      --enable-sp-funcs --enable-term-driver --disable-widec --without-debug \
+      --without-manpages --without-progs --without-shared --without-tests && \
+    make -j"$(nproc)" && \
+    printf '%s\n' '#include <curses.h>' '#include <term.h>' \
+      'int main(void) { int errret; return setupterm(0, 1, &errret); }' \
+      > tinfo-link-test.c && \
+    ${TARGET}-gcc -DNCURSES_STATIC tinfo-link-test.c -Iinclude -Llib -lncurses \
+      -lws2_32 -luser32 -o tinfo-link-test.exe && \
+    make install && \
+    cp ${PREFIX}/lib/libncurses.a ${PREFIX}/lib/libtinfo.a && \
+    install -m 644 include/ncurses_mingw.h include/nc_mingw.h ${PREFIX}/include/ncurses/ && \
+    rm -rf /tmp/ncurses-6.5 /tmp/ncurses.tar.gz
+
+RUN curl --fail --location --retry 5 --retry-all-errors --output /tmp/protobuf.tar.gz \
+      https://github.com/protocolbuffers/protobuf/archive/refs/tags/v3.21.12.tar.gz && \
+    echo '930c2c3b5ecc6c9c12615cf5ad93f1cd6e12d0aba862b572e076259970ac3a53  /tmp/protobuf.tar.gz' | sha256sum --check && \
+    tar -C /tmp -xzf /tmp/protobuf.tar.gz && \
+    env -u CMAKE_TOOLCHAIN_FILE -u CC -u CXX -u AR -u AS -u LD -u RANLIB \
+      cmake -S /tmp/protobuf-3.21.12/cmake -B /tmp/protobuf-host \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/protobuf-host \
+      -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+      -Dprotobuf_BUILD_TESTS=OFF -Dprotobuf_BUILD_SHARED_LIBS=OFF && \
+    cmake --build /tmp/protobuf-host --parallel "$(nproc)" && \
+    cmake --install /tmp/protobuf-host && \
+    cmake -S /tmp/protobuf-3.21.12/cmake -B /tmp/protobuf-target \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=${PREFIX} \
+      -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE} \
+      -Dprotobuf_BUILD_TESTS=OFF -Dprotobuf_BUILD_SHARED_LIBS=OFF \
+      -Dprotobuf_BUILD_PROTOC_BINARIES=OFF -Dprotobuf_BUILD_LIBPROTOC=OFF \
+      -Dprotobuf_WITH_ZLIB=ON -DZLIB_LIBRARY=${PREFIX}/lib/libz.a \
+      -DZLIB_INCLUDE_DIR=${PREFIX}/include && \
+    cmake --build /tmp/protobuf-target --parallel "$(nproc)" && \
+    cmake --install /tmp/protobuf-target && \
+    rm -rf /tmp/protobuf-3.21.12 /tmp/protobuf.tar.gz /tmp/protobuf-host /tmp/protobuf-target
+
+RUN ln -s ncurses/curses.h ${PREFIX}/include/curses.h && \
+    ln -s ncurses/term.h ${PREFIX}/include/term.h && \
+    printf '%s\n' \
+      'prefix=/opt/mosh-arm64' \
+      'exec_prefix=${prefix}' \
+      'libdir=${prefix}/lib' \
+      'includedir=${prefix}/include' \
+      '' \
+      'Name: tinfo' \
+      'Description: ncurses terminal information library' \
+      'Version: 6.5' \
+      'Libs: -L${libdir} -ltinfo -lws2_32 -luser32' \
+      'Cflags: -I${includedir} -DNCURSES_STATIC' \
+      > ${PREFIX}/lib/pkgconfig/tinfo.pc && \
+    printf '%s\n' \
+      'prefix=/opt/mosh-arm64' \
+      'exec_prefix=${prefix}' \
+      'libdir=${prefix}/lib' \
+      'includedir=${prefix}/include' \
+      '' \
+      'Name: protobuf' \
+      'Description: Protocol Buffers library' \
+      'Version: 3.21.12' \
+      'Libs: -L${libdir} -lprotobuf' \
+      'Cflags: -I${includedir}' \
+      > ${PREFIX}/lib/pkgconfig/protobuf.pc
