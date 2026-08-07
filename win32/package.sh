@@ -160,6 +160,10 @@ done
 
 command -v sha256sum >/dev/null 2>&1 || die 'sha256sum is required'
 command -v find >/dev/null 2>&1 || die 'find is required'
+# Check the zip tool up front like every other tool: failing at the end of the
+# run would cost the whole stage, and the rm -f there would have already
+# destroyed a previously good archive.
+[[ -z "$zip_path" ]] || command -v zip >/dev/null 2>&1 || die 'zip is required for --zip (MSYS2: pacman -S zip)'
 
 llvm_objdump=$(command -v llvm-objdump || true)
 llvm_readobj=$(command -v llvm-readobj || true)
@@ -614,10 +618,11 @@ if [[ -n "$zip_path" ]]; then
   mkdir -p "$(dirname -- "$zip_path")"
   zip_path=$(canonicalize_path "$zip_path") || die "could not resolve zip path: $zip_path"
   path_contains "$stage_dir" "$zip_path" && die "refusing to write the zip inside the stage directory: $zip_path"
+  [[ "$zip_path" != "$exe_path" ]] || die "refusing to overwrite the executable with the zip: $zip_path"
+  [[ ! -d "$zip_path" ]] || die "zip path is a directory: $zip_path"
   rm -f -- "$zip_path"
   # Archive the stage contents at the zip root (mosh.exe at top level, not under
   # a mosh-arm64/ directory) so the archive can be unzipped and run in place.
-  command -v zip >/dev/null 2>&1 || die 'zip is required for --zip (MSYS2: pacman -S zip)'
   (cd "$stage_dir" && zip -q -r -X "$zip_path" .) || die "zip failed: $zip_path"
   [[ -s "$zip_path" ]] || die "zip did not produce a non-empty archive: $zip_path"
   printf 'Wrote zip archive %s\n' "$zip_path"
