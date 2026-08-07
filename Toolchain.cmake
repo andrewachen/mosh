@@ -1,6 +1,6 @@
 # ABOUTME: CMake cross toolchain for the aarch64-w64-mingw32 llvm-mingw toolchain.
-# ABOUTME: Copy of dockcross windows-arm64 Toolchain.cmake; the Dockerfile
-#          replaces the toolchain tarball, which would otherwise delete this file.
+# ABOUTME: Derived from the dockcross windows-arm64 Toolchain.cmake; used by the
+#          protobuf target build in Dockerfile.mosh-arm64.
 set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_SYSTEM_VERSION 1)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)
@@ -19,4 +19,6 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 
-set(CMAKE_CROSSCOMPILING_EMULATOR /usr/bin/qemu-aarch64)
+# No CMAKE_CROSSCOMPILING_EMULATOR: the outputs are Windows PE binaries, which
+# qemu-aarch64 cannot run (it emulates a CPU for Linux ELF, not a Windows
+# userspace). Execution testing happens on the windows-11-arm CI runner.
