@@ -90,6 +90,7 @@ while (($#)); do
       ;;
     --zip)
       (($# >= 2)) || die '--zip requires a path'
+      [[ -n "$2" ]] || die '--zip requires a non-empty path'
       zip_path=$2
       shift 2
       ;;
@@ -608,9 +609,11 @@ if [[ -n "$zip_path" ]]; then
   if [[ "$zip_path" != /* ]]; then
     zip_path="$PWD/$zip_path"
   fi
+  # Create the parent tree before canonicalizing: canonicalize_path resolves the
+  # parent with readlink -f, which fails on a multi-level missing destination.
+  mkdir -p "$(dirname -- "$zip_path")"
   zip_path=$(canonicalize_path "$zip_path") || die "could not resolve zip path: $zip_path"
   path_contains "$stage_dir" "$zip_path" && die "refusing to write the zip inside the stage directory: $zip_path"
-  mkdir -p "$(dirname -- "$zip_path")"
   rm -f -- "$zip_path"
   # Archive the stage contents at the zip root (mosh.exe at top level, not under
   # a mosh-arm64/ directory) so the archive can be unzipped and run in place.
