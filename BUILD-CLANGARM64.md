@@ -565,12 +565,14 @@ and the baseline override `ARM_MCPU="-march=armv8-a -mtune=oryon-1"`. Beyond the
 makefile `check`, CI adds the native-ARM64-PE assertion, the UCRT ABI check
 (reject `msvcrt.dll`, require `api-ms-win-crt-*`), a bare frontend invocation
 that asserts usage exit code `2`, and two artifact uploads: the durable
-evidence bundle and the consumer-facing zips. `mosh-windows-arm64.zip` is the
-CI-baseline binary (armv8-a, verified on the runner); `mosh-windows-arm64-oryon.zip`
-is the `-mcpu=oryon-1` product binary, compile-only in CI because the Cobalt N2
-runner cannot execute Oryon-specific codegen (e.g. SM4) — M5 validates it on
-Snapdragon X hardware. Download either with
-`gh run download <run-id> -n mosh-windows-arm64[-oryon]`. The
+evidence bundle and the consumer-facing zip `mosh-windows-arm64.zip`
+(`gh run download <run-id> -n mosh-windows-arm64`). The zip is the
+`-mcpu=oryon-1` product binary, executed and verified on the Cobalt N2 runner:
+oryon-1's extra ISA extensions over N2 (SM4, RandGen, SPE) are never emitted
+for this codebase — verified by disassembling the CI-built mosh.exe with
+llvm-18 (zero such instructions; the only extension present is LSE atomics,
+which N2 also implements). If a future toolchain ever emits one, CI fails with
+a SIGILL — the desired fail-closed signal. The
 bare invocation occurs before console setup and `MoshCore` construction, so it
 is not a console, client-core, or crypto runtime gate. The historical
 crypto-linked spike build is validated by authoritative CI run `29928638939` on
