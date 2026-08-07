@@ -313,19 +313,6 @@ jobs:
         shell: msys2 {0}
         run: win32/package.sh --zip win32/build/mosh-windows-arm64.zip
 
-      - name: Build and stage the Oryon product bundle (compile-only)
-        shell: msys2 {0}
-        # The product binary uses the makefile default -mcpu=oryon-1, which may
-        # emit instructions (e.g. SM4) the Cobalt N2 runner cannot execute — so
-        # this step compiles and packages but never runs the binary. M5 hardware
-        # validation exercises this artifact on Snapdragon X.
-        run: |
-          make -f win32/Makefile.win clean
-          make -f win32/Makefile.win protobufs mosh.exe
-          win32/package.sh --exe ./mosh.exe \
-            --stage win32/build/stage-oryon/mosh-arm64 \
-            --zip win32/build/mosh-windows-arm64-oryon.zip
-
       - name: Verify bundle in a clean environment
         shell: msys2 {0}
         run: |
@@ -352,10 +339,26 @@ jobs:
           llvm-nm -u mosh.exe > evidence/undefined-symbols.txt 2>&1 || true
           sha256sum mosh.exe > evidence/mosh.exe.sha256 2>&1 || true
           sha256sum win32/build/mosh-windows-arm64.zip > evidence/mosh-zip.sha256 2>&1 || true
-          sha256sum win32/build/mosh-windows-arm64-oryon.zip > evidence/mosh-zip-oryon.sha256 2>&1 || true
           find win32/build/stage -type f -print | sort > evidence/staged-bundle-files.txt 2>&1 || true
           cp win32/build/stage/mosh-arm64/MANIFEST.txt evidence/staged-bundle-manifest.txt 2>&1 || true
           test -f evidence/verify-bundle-output.txt || echo 'verify-bundle step did not produce output' > evidence/verify-bundle-output.txt
+
+      # This step runs LAST among the build steps: its `make clean` deletes
+      # win32/build (the baseline stage dir) and ./test_core.exe, so it must
+      # come after bundle verification and evidence collection, both of which
+      # read the baseline binary and stage. The product binary uses the
+      # makefile default -mcpu=oryon-1, which may emit instructions (e.g. SM4)
+      # the Cobalt N2 runner cannot execute — so this step compiles and
+      # packages but never runs the binary. M5 hardware validation exercises
+      # this artifact on Snapdragon X.
+      - name: Build and stage the Oryon product bundle (compile-only)
+        shell: msys2 {0}
+        run: |
+          make -f win32/Makefile.win clean
+          make -f win32/Makefile.win protobufs mosh.exe
+          win32/package.sh --exe ./mosh.exe \
+            --stage win32/build/stage-oryon/mosh-arm64 \
+            --zip win32/build/mosh-windows-arm64-oryon.zip
 
       - uses: actions/upload-artifact@v7
         if: always()
