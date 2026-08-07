@@ -278,7 +278,7 @@ dynamically. The static-fold requirement (no C++-runtime/protobuf DLL) is
 **confirmed to hold on both**: observed for the local image, and confirmed on
 the CLANGARM64 target by the authoritative CI run recorded below.
 
-**Local dockcross image** (`aarch64-w64-mingw32-objdump -p`, observed on the
+**Local cross-build image** (`aarch64-w64-mingw32-objdump -p`, observed on the
 crypto-linked build):
 
 - `msvcrt.dll`, `KERNEL32.dll`, `USER32.dll`, `ADVAPI32.dll`, `WS2_32.dll`
@@ -369,9 +369,11 @@ because the CI runner (baseline N2) and the product build (Oryon) differ:
   generation would not be caught until M5. This risk is the deliberate cost of
   the Oryon-product / baseline-CI split; if it is unacceptable, an Oryon runner
   must be introduced at M1 to run this suite on the exact product binary
-  (carrying that binary's digest unchanged through packaging to M5). The local dockcross
-image cannot run the ARM64 binary, so the runtime gate is CI-only; the local
-build stops at the link and import checks.
+  (carrying that binary's digest unchanged through packaging to M5). The local
+cross-build image cannot run the ARM64 binary (it produces Windows PE
+executables, which qemu-aarch64 cannot execute — CPU emulation is not a
+Windows userspace), so the runtime gate is CI-only; the local build stops at
+the link and import checks.
 
 ### Crypto backend selection
 
@@ -405,16 +407,16 @@ The M0a Docker image provides:
 
 | Component | Observed version / location |
 | --- | --- |
-| C++ compiler | `aarch64-w64-mingw32-clang++`, clang 14.0.0, target `aarch64-w64-windows-gnu` |
+| C++ compiler | `aarch64-w64-mingw32-clang++`, clang 22.1.8 (llvm-mingw 20260616), target `aarch64-w64-windows-gnu` |
 | Protocol compiler | `protoc 3.21.12` (`/opt/protobuf-host/bin`) |
 | Protocol runtime | protobuf 3.21.12 (`/opt/mosh-arm64/lib/libprotobuf.a`) |
 | OpenSSL target headers and library | 3.0.16 |
 | zlib | 1.3.1 |
 | terminal database | `/opt/mosh-arm64/lib/libtinfo.a` |
 
-**ABI caveat:** the local image is a GCC/mingw `aarch64-w64-mingw32` toolchain
-whose runtime is the legacy `msvcrt.dll` CRT and libstdc++/libgcc — *not* the
-target's UCRT + libc++/compiler-rt. Its import set therefore lists `msvcrt.dll`
+**ABI caveat:** the local image is an llvm-mingw `aarch64-w64-mingw32`
+toolchain (clang + libc++/libunwind) whose CRT is the legacy `msvcrt.dll` —
+*not* the target's UCRT. Its import set therefore lists `msvcrt.dll`
 where the CLANGARM64 target lists the UCRT `api-ms-win-crt-*` API-set DLLs. Treat
 the local image as an ABI-divergent **compile/link smoke test** that gives fast
 feedback on source portability and the static-fold; it is not target-runtime
@@ -461,12 +463,14 @@ both report 3.21.12.
 
 On CI with protobuf v22+ (which uses Abseil), `pkg-config --libs --static
 protobuf` expands to include the Abseil and utf8-cpp closure. The local
-dockcross toolchain's protobuf 3.21.12 has no such closure.
+image's protobuf 3.21.12 has no such closure.
 
 `ARM_MCPU` override matrix. `win32/Makefile.win` defaults to
-`ARM_MCPU ?= -mcpu=oryon-1` (the Oryon product target). The local dockcross
-image's clang 14 rejects that flag, so local invocations pass `ARM_MCPU=`
-(empty → clang's generic aarch64 baseline). CI passes
+`ARM_MCPU ?= -mcpu=oryon-1` (the Oryon product target). The local image's
+clang 22 accepts that flag, but local invocations pass `ARM_MCPU=` (empty →
+clang's generic aarch64 baseline) so the local smoke test exercises baseline
+codegen like the CI gate; the flag override predates the clang 14 → 22
+toolchain bump, which is what made oryon-1 available locally. CI passes
 `ARM_MCPU="-march=armv8-a -mtune=oryon-1"` so the gate binary runs on the Cobalt
 N2 runner (see the CI-build note at the top). As stated there, `-mcpu=oryon-1`
 establishes an Oryon-class hardware target; it is *not* a portable

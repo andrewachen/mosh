@@ -12,7 +12,7 @@ PREFIX ?= /opt/mosh-arm64
 
 # ncurses/terminfo discovery. MSYS2 CLANGARM64 ships ncursesw: headers live
 # under an ncursesw/ subdir, terminfo is folded into libncursesw, and both are
-# described by ncursesw.pc. The local dockcross image instead has a flat
+# described by ncursesw.pc. The local cross-build image instead has a flat
 # curses.h plus a hand-built static libtinfo.a and no .pc file, so fall back to
 # -ltinfo there and define NCURSES_STATIC to suppress dllimport against the
 # static archive.
@@ -80,7 +80,7 @@ check: all
 	test -f test_startup_options.exe
 	test -f test_terminal_width.exe
 	# test_terminal_width.exe is executed by the native windows-11-arm CI step, not
-	# here: check also runs under the Linux dockcross cross-compile image, which
+	# here: check also runs under the Linux cross-compile image, which
 	# cannot execute an ARM64 Windows PE.
 	# Run each inspector as its own command so a missing/crashing tool aborts the
 	# recipe (make stops on the non-zero exit) instead of feeding an empty stream
