@@ -24,6 +24,7 @@ jobs:
             mingw-w64-clang-aarch64-ncurses
             mingw-w64-clang-aarch64-pkgconf
             make
+            zip
 
       - name: Record toolchain and dependency versions
         shell: msys2 {0}
@@ -310,7 +311,7 @@ jobs:
 
       - name: Stage runtime bundle
         shell: msys2 {0}
-        run: win32/package.sh
+        run: win32/package.sh --zip win32/build/mosh-windows-arm64.zip
 
       - name: Verify bundle in a clean environment
         shell: msys2 {0}
@@ -349,3 +350,11 @@ jobs:
             mosh.exe
             evidence/
             win32/build/stage/
+
+      # The consumer-facing deliverable: the verified staged bundle as a single
+      # zip, downloadable via `gh run download -n mosh-windows-arm64`.
+      - uses: actions/upload-artifact@v7
+        if: success()
+        with:
+          name: mosh-windows-arm64
+          path: win32/build/mosh-windows-arm64.zip

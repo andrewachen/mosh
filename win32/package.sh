@@ -44,11 +44,12 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: win32/package.sh [--exe PATH] [--stage DIR] [--dll-dirs DIR[:DIR...]]
+Usage: win32/package.sh [--exe PATH] [--stage DIR] [--dll-dirs DIR[:DIR...]] [--zip PATH]
 
 Stage mosh.exe, its transitive non-system DLL dependencies, license notices,
 and MANIFEST.txt. Defaults are ./mosh.exe, win32/build/stage/mosh-arm64, and
-${MINGW_PREFIX:-/clangarm64}/bin respectively.
+${MINGW_PREFIX:-/clangarm64}/bin respectively. --zip also writes a zip archive
+of the staged directory (contents at the archive root) for distribution.
 EOF
 }
 
@@ -64,6 +65,7 @@ warn() {
 exe='./mosh.exe'
 stage='win32/build/stage/mosh-arm64'
 dll_dirs="${MINGW_PREFIX:-/clangarm64}/bin"
+zip_path=''
 
 while (($#)); do
   case "$1" in
@@ -84,6 +86,11 @@ while (($#)); do
     --dll-dirs)
       (($# >= 2)) || die '--dll-dirs requires a colon-separated directory list'
       dll_dirs=$2
+      shift 2
+      ;;
+    --zip)
+      (($# >= 2)) || die '--zip requires a path'
+      zip_path=$2
       shift 2
       ;;
     *)
@@ -596,3 +603,19 @@ trap 'rm -f "$manifest_tmp"' EXIT
 mv "$manifest_tmp" "$manifest"
 
 printf 'Staged ARM64 runtime bundle in %s\n' "$stage_dir"
+
+if [[ -n "$zip_path" ]]; then
+  if [[ "$zip_path" != /* ]]; then
+    zip_path="$PWD/$zip_path"
+  fi
+  zip_path=$(canonicalize_path "$zip_path") || die "could not resolve zip path: $zip_path"
+  path_contains "$stage_dir" "$zip_path" && die "refusing to write the zip inside the stage directory: $zip_path"
+  mkdir -p "$(dirname -- "$zip_path")"
+  rm -f -- "$zip_path"
+  # Archive the stage contents at the zip root (mosh.exe at top level, not under
+  # a mosh-arm64/ directory) so the archive can be unzipped and run in place.
+  command -v zip >/dev/null 2>&1 || die 'zip is required for --zip (MSYS2: pacman -S zip)'
+  (cd "$stage_dir" && zip -q -r -X "$zip_path" .) || die "zip failed: $zip_path"
+  [[ -s "$zip_path" ]] || die "zip did not produce a non-empty archive: $zip_path"
+  printf 'Wrote zip archive %s\n' "$zip_path"
+fi
