@@ -13,6 +13,17 @@ RUN apt-get update && \
     apt-get install --yes --no-install-recommends ca-certificates perl && \
     rm -rf /var/lib/apt/lists/*
 
+# Replace the toolchain: dockcross/windows-arm64 still ships llvm-mingw 20220323
+# (clang 14), while the MSYS2 CLANGARM64 CI job builds with clang 22. Pin the
+# matching llvm-mingw release so the local build exercises the same compiler.
+RUN curl --fail --location --retry 5 --retry-all-errors --output /tmp/llvm-mingw.tar.xz \
+      https://github.com/mstorsjo/llvm-mingw/releases/download/20260616/llvm-mingw-20260616-msvcrt-ubuntu-22.04-x86_64.tar.xz && \
+    rm -rf /usr/xcc/aarch64-w64-mingw32-cross && \
+    mkdir -p /usr/xcc/aarch64-w64-mingw32-cross && \
+    tar -C /usr/xcc/aarch64-w64-mingw32-cross --strip-components=1 -xJf /tmp/llvm-mingw.tar.xz && \
+    rm /tmp/llvm-mingw.tar.xz
+COPY Toolchain.cmake /usr/xcc/aarch64-w64-mingw32-cross/Toolchain.cmake
+
 RUN curl --fail --location --retry 5 --retry-all-errors --output /tmp/zlib.tar.gz \
       https://zlib.net/fossils/zlib-1.3.1.tar.gz && \
     echo '9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23  /tmp/zlib.tar.gz' | sha256sum --check && \
