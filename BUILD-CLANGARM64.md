@@ -278,14 +278,18 @@ dynamically. The static-fold requirement (no C++-runtime/protobuf DLL) is
 **confirmed to hold on both**: observed for the local image, and confirmed on
 the CLANGARM64 target by the authoritative CI run recorded below.
 
-**Local cross-build image** (`aarch64-w64-mingw32-objdump -p`, observed on the
-crypto-linked build):
+**Local cross-build image** (`aarch64-w64-mingw32-objdump -p`, re-verified
+2026-08-06 against the clang 22.1.8 ubuntu-base image):
 
-- `msvcrt.dll`, `KERNEL32.dll`, `USER32.dll`, `ADVAPI32.dll`, `WS2_32.dll`
+- `msvcrt.dll`, `KERNEL32.dll`, `USER32.dll`, `ADVAPI32.dll`, `WS2_32.dll`,
+  `bcrypt.dll`
 - `CRYPT32.dll` — OpenSSL's certificate-store dependency; because this image
   links libcrypto statically, `crypt32` surfaces as a direct import of the exe
+- `bcrypt.dll` — the WinSock port's CSPRNG (`-lbcrypt`); added by the M2
+  socket-layer work, after this import set was first recorded
 - absent: no C++-runtime DLL (`-static-libstdc++ -static-libgcc` folded
-  libstdc++/libgcc), no libcrypto/tinfo/zlib DLL (all static in this image)
+  libc++/libunwind; `nm -u` shows no `__cxa`/`_Z`/`_Unwind` residue), no
+  libcrypto/tinfo/zlib DLL (all static in this image)
 
 **CLANGARM64 CI runner** (`windows-11-arm` = Azure Cobalt 100 / Neoverse N2,
 `llvm-objdump -p`): the authoritative crypto-linked import set, recorded from the
@@ -467,10 +471,10 @@ image's protobuf 3.21.12 has no such closure.
 
 `ARM_MCPU` override matrix. `win32/Makefile.win` defaults to
 `ARM_MCPU ?= -mcpu=oryon-1` (the Oryon product target). The local image's
-clang 22 accepts that flag, but local invocations pass `ARM_MCPU=` (empty →
-clang's generic aarch64 baseline) so the local smoke test exercises baseline
-codegen like the CI gate; the flag override predates the clang 14 → 22
-toolchain bump, which is what made oryon-1 available locally. CI passes
+clang 22 accepts that flag, and local invocations use the default — the smoke
+test exercises the same oryon-1 product codegen that M5 validates on
+Snapdragon X hardware (verified: the built exe contains LSE `ldadd`/`swpal`
+atomics that baseline aarch64 would not emit). CI passes
 `ARM_MCPU="-march=armv8-a -mtune=oryon-1"` so the gate binary runs on the Cobalt
 N2 runner (see the CI-build note at the top). As stated there, `-mcpu=oryon-1`
 establishes an Oryon-class hardware target; it is *not* a portable

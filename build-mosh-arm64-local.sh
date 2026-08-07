@@ -47,7 +47,7 @@ EOF
       -L/opt/mosh-arm64/lib -lcrypto -lprotobuf -lz -ltinfo -lws2_32 -luser32
     cd /mosh
     make -f win32/Makefile.win clean
-    make -f win32/Makefile.win CXX=aarch64-w64-mingw32-clang++ AR=aarch64-w64-mingw32-ar NM=aarch64-w64-mingw32-nm OBJDUMP=aarch64-w64-mingw32-objdump ARM_MCPU= check' >"$log" 2>&1; then
+    make -j"$(nproc)" -f win32/Makefile.win CXX=aarch64-w64-mingw32-clang++ AR=aarch64-w64-mingw32-ar NM=aarch64-w64-mingw32-nm OBJDUMP=aarch64-w64-mingw32-objdump check' >"$log" 2>&1; then
   status=0
 else
   status=$?
