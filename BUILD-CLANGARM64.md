@@ -292,7 +292,7 @@ DLL-graph inventory (machine type + CRT family + resolved path/hash per
 non-system DLL) this used to defer to M4 is moot — the graph has no non-system
 nodes.
 
-### Import sets (observed)
+### Import sets (observed and expected)
 
 Two toolchains produce `mosh.exe`. Both now fold every non-system dependency
 statically — the local image always did (its archives are static-only), and the
