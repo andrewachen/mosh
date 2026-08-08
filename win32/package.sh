@@ -429,6 +429,18 @@ stage_static_license() {
       license_names=('*winpthread*' '*winpthreads*')
       package_patterns=('*winpthread*' '*winpthreads*')
       ;;
+    openssl)
+      license_names=('openssl' '*openssl*')
+      package_patterns=('*openssl*')
+      ;;
+    ncurses)
+      license_names=('ncurses' '*ncurses*')
+      package_patterns=('*ncurses*')
+      ;;
+    zlib)
+      license_names=('zlib' '*zlib*')
+      package_patterns=('*zlib*')
+      ;;
     *)
       die "unknown static license component: $component"
       ;;
@@ -463,6 +475,9 @@ stage_static_license() {
     abseil) package_patterns=('*abseil*' '*absl*' '*protobuf*') ;;
     llvm-c++-runtime) package_patterns=('*llvm*' '*clang*' '*libc++*' '*libunwind*') ;;
     winpthreads) package_patterns=('*winpthread*' '*winpthreads*') ;;
+    openssl) package_patterns=('*openssl*') ;;
+    ncurses) package_patterns=('*ncurses*') ;;
+    zlib) package_patterns=('*zlib*') ;;
   esac
   while IFS= read -r package; do
     for pattern in "${package_patterns[@]}"; do
@@ -531,6 +546,9 @@ stage_static_license protobuf "$static_license_destination/protobuf"
 stage_static_license abseil "$static_license_destination/abseil"
 stage_static_license llvm-c++-runtime "$static_license_destination/llvm-c++-runtime"
 stage_static_license winpthreads "$static_license_destination/winpthreads"
+stage_static_license openssl "$static_license_destination/openssl"
+stage_static_license ncurses "$static_license_destination/ncurses"
+stage_static_license zlib "$static_license_destination/zlib"
 
 ocb_notice="$static_license_destination/ocb/ISC-NOTICE"
 mkdir -p "$(dirname -- "$ocb_notice")"
@@ -572,7 +590,7 @@ trap 'rm -f "$manifest_tmp"' EXIT
   printf 'mosh ARM64 runtime bundle\n'
   printf 'Executable source: %s\n' "$exe_path"
   printf 'DLL search dirs: %s\n' "$dll_dirs"
-  printf 'Static components folded into mosh.exe: protobuf, abseil, LLVM C++ runtime (libc++/libunwind/compiler-rt), OCB, winpthreads\n'
+  printf 'Static components folded into mosh.exe: protobuf, abseil, LLVM C++ runtime (libc++/libunwind/compiler-rt), OCB, winpthreads, OpenSSL (libcrypto), zlib, ncurses\n'
   printf '\nStaged payload files (MANIFEST.txt is self-excluded):\n'
   while IFS= read -r staged_file; do
     hash=$(sha256sum "$staged_file")
