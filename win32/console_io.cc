@@ -351,15 +351,18 @@ private:
       }
     }
 
-    /* Simulated old-conhost Ctrl-Z: the first read reports success with zero
-       bytes, then real reads resume. Armed only by the test injector. */
+    /* Simulated old-conhost Ctrl-Z: the first loop iteration reports a
+       successful zero-byte read without touching the console, then real reads
+       resume. Armed only by the test injector. */
     bool inject_zero_byte = injected == ConsoleReaderTestOutcome::ZERO_BYTE_READ;
 
     char bytes[READ_BUFFER_SIZE];
     std::string pending;
     while ( !stopping.load() ) {
       DWORD read = 0;
-      if ( !ReadFile( input.load(), bytes, sizeof bytes, &read, NULL ) ) {
+      if ( inject_zero_byte ) {
+        inject_zero_byte = false;
+      } else if ( !ReadFile( input.load(), bytes, sizeof bytes, &read, NULL ) ) {
         const DWORD error = GetLastError();
         if ( stopping.load() ) {
           break;
@@ -371,7 +374,7 @@ private:
         SetEvent( ready_event );
         break;
       }
-      if ( read == 0 && !inject_zero_byte ) {
+      if ( read == 0 ) {
         /* Raw console reads are documented to wait for a character, but a
            successful zero-byte result is not defined. Treat it as end of input:
            graceful teardown is safer than a potentially unbounded retry spin. */
@@ -380,13 +383,6 @@ private:
         read_failed = false;
         SetEvent( ready_event );
         break;
-      }
-      if ( read == 0 ) {
-        /* Test-injected zero-byte read: consumed the one-shot simulation, fall
-           through to a real blocking read. Production handling lands with the
-           fix; until then this path is unreachable outside the harness. */
-        inject_zero_byte = false;
-        continue;
       }
       std::string converted = recombine_cesu8( bytes, read, pending );
       while ( !converted.empty() && !stopping.load() ) {
