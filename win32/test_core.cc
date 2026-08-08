@@ -49,9 +49,6 @@
 #include "win32/test_server.h"
 #include "win32/wincompat.h"
 
-/* TestServer lives in namespace Terminal so Terminal::Cell can befriend it. */
-using Terminal::TestServer;
-
 static StartupOptions never_prediction()
 {
   StartupOptions opts;

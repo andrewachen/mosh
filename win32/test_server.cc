@@ -35,6 +35,7 @@
 
 #include "win32/test_server.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -48,8 +49,6 @@
 
 using namespace Network;
 using namespace Terminal;
-
-namespace Terminal {
 
 namespace {
 bool no_packet_available( const NetworkException& error )
@@ -70,6 +69,8 @@ public:
   UserStream empty_user_stream;
   NetworkType network;
   uint64_t last_remote_num;
+  /* Raw user bytes the server has applied, in arrival order. */
+  std::vector<char> received;
 
   Impl( int cols, int rows )
     : terminal( cols, rows ), empty_user_stream(), network( terminal, empty_user_stream, nullptr, nullptr ),
@@ -86,7 +87,12 @@ public:
     UserStream input;
     input.apply_string( network.get_remote_diff() );
     for ( size_t i = 0; i < input.size(); i++ ) {
-      const std::string host_bytes = terminal.act( input.get_action( i ) );
+      const Parser::Action &action = input.get_action( i );
+      const Parser::UserByte *keystroke = dynamic_cast<const Parser::UserByte *>( &action );
+      if ( keystroke != nullptr ) {
+        received.push_back( keystroke->c );
+      }
+      const std::string host_bytes = terminal.act( action );
       /* A real server writes these bytes to its pty. The surrogate loops that
          writeback into Complete so its published terminal state includes echo. */
       terminal.act( host_bytes );
@@ -153,14 +159,8 @@ void TestServer::tick()
   impl->network.tick();
 }
 
-bool TestServer::cell_contents_is( int row, int col, const char *bytes, size_t len ) const
+bool TestServer::received_byte( char byte ) const
 {
-  const Cell *cell = impl->terminal.get_fb().get_cell( row, col );
-  if ( cell == NULL ) {
-    return false;
-  }
-  return cell->contents.size() == len
-    && std::equal( cell->contents.begin(), cell->contents.end(), bytes );
+  return std::find( impl->received.begin(), impl->received.end(), byte )
+    != impl->received.end();
 }
-
-} /* namespace Terminal */

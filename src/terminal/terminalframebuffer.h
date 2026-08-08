@@ -46,11 +46,6 @@
 /* Terminal framebuffer */
 
 namespace Terminal {
-
-/* The native Windows port's loopback test server (win32/test_server.cc) is a
-   friend of Cell below. Declared inside this namespace because a friend
-   declaration's name resolves in the innermost enclosing namespace. */
-class TestServer;
 using color_type = uint32_t;
 
 class Renditions
@@ -132,10 +127,6 @@ private:
 
 class Cell
 {
-  /* The native Windows port's loopback TestServer asserts on the echoed cell
-     contents of a cell its client typed (win32/test_server.cc). */
-  friend class TestServer;
-
 private:
   typedef std::string content_type; /* can be std::string, std::vector<uint8_t>, or __gnu_cxx::__vstring */
   content_type contents;

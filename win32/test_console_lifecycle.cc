@@ -47,9 +47,6 @@
 #include "win32/mosh_core.h"
 #include "win32/test_server.h"
 
-/* TestServer lives in namespace Terminal so Terminal::Cell can befriend it. */
-using Terminal::TestServer;
-
 class ConsoleTestScope;
 static ConsoleTestScope *active_console_scope = NULL;
 static void must( BOOL ok, const char *what );
@@ -1526,16 +1523,16 @@ static int run_ctrlz_passthrough( bool use_injection )
   }
 
   const ULONGLONG echo_deadline = GetTickCount64() + 5000;
-  bool echoed = false;
+  bool received = false;
   while ( GetTickCount64() < echo_deadline ) {
-    if ( server.cell_contents_is( 0, 0, "\x1a", 1 ) ) {
-      echoed = true;
+    if ( server.received_byte( '\x1a' ) ) {
+      received = true;
       break;
     }
     Sleep( 20 );
   }
   /* Sampled before our own shutdown request: if the Ctrl-Z already began a
-     shutdown (the bug), this is true and the echo above never arrived. */
+     shutdown (the bug), this is true and the byte never reached the server. */
   const bool shutdown_before_request = session.shutdown_observed_for_test();
 
   stop_pumping.store( true );
@@ -1550,8 +1547,8 @@ static int run_ctrlz_passthrough( bool use_injection )
     fprintf( stderr, "FAIL: %s: Ctrl-Z began a session shutdown\n", label );
     return 1;
   }
-  if ( !echoed ) {
-    fprintf( stderr, "FAIL: %s: the echoed 0x1A never reached server cell (0,0)\n", label );
+  if ( !received ) {
+    fprintf( stderr, "FAIL: %s: the 0x1A keystroke never reached the server\n", label );
     return 1;
   }
   return 0;
