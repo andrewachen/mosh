@@ -43,11 +43,22 @@
 #endif
 
 #include "src/network/network.h"
+#include "src/util/timestamp.h"
 
 using namespace Network;
 
+static void sleep_ms( int ms )
+{
+#ifdef _WIN32
+  Sleep( ms );
+#else
+  struct timeval tv = { 0, ms * 1000 };
+  select( 0, NULL, NULL, NULL, &tv );
+#endif
+}
+
 /* Poll with bounded retries for recv() to succeed */
-static std::string recv_with_retry( Connection& conn, int max_retries, int sleep_ms )
+static std::string recv_with_retry( Connection& conn, int max_retries, int retry_sleep_ms )
 {
   for ( int i = 0; i < max_retries; i++ ) {
     try {
@@ -64,12 +75,7 @@ static std::string recv_with_retry( Connection& conn, int max_retries, int sleep
       }
 #endif
     }
-#ifdef _WIN32
-    Sleep( sleep_ms );
-#else
-    struct timeval tv = { 0, sleep_ms * 1000 };
-    select( 0, NULL, NULL, NULL, &tv );
-#endif
+    sleep_ms( retry_sleep_ms );
   }
   fprintf( stderr, "recv_with_retry: timeout after %d retries\n", max_retries );
   return "";
@@ -99,6 +105,30 @@ static void test_socket_handle_width( Connection& conn, const char* name )
   }
 }
 
+/* A receive pass over client sockets that have not sent yet must find no
+   packet rather than an error. Winsock returns WSAEINVAL from recvfrom on an
+   unbound UDP socket, which the client surfaces as a transient "invalid
+   argument" network error whenever a receive pass runs against such a socket
+   (notably a fresh port-hop socket); POSIX returns EAGAIN instead. Client
+   sockets are bound to the wildcard address at creation so the pass finds no
+   data. Connection::recv() consumes per-socket would-block results, so the
+   public no-packet outcome is the "No packet received" exception with errno
+   0; anything else is the bug. */
+static void expect_no_packet( Connection& client, const char* what )
+{
+  try {
+    client.recv();
+    fprintf( stderr, "%s: recv unexpectedly returned a packet\n", what );
+    exit( 1 );
+  } catch ( const NetworkException& e ) {
+    if ( e.the_errno != 0 ) {
+      fprintf( stderr, "%s: recv threw: %s\n", what, e.what() );
+      exit( 1 );
+    }
+  }
+  printf( "%s: no packet, no error\n", what );
+}
+
 int main( int argc, char* argv[] )
 {
 #ifdef _WIN32
@@ -117,6 +147,43 @@ int main( int argc, char* argv[] )
   /* Test socket handle width */
   test_socket_handle_width( server, "Server" );
   test_socket_handle_width( client, "Client" );
+
+  /* Fresh client socket must tolerate a receive pass before any send. */
+  expect_no_packet( client, "Fresh client socket recv" );
+
+  /* The hop check at the end of Connection::send() requires the last port
+     choice and the last round trip to both be older than PORT_HOP_INTERVAL
+     (10 s); the constructor's setup() restarts that clock, so wait it out.
+     The triggering datagram goes out on the old socket, then the hop appends
+     a fresh unsent socket. */
+  printf( "Waiting out the port-hop interval...\n" );
+  sleep_ms( 11000 );
+  /* timestamp() is a cached value; the sleep is invisible until re-frozen. */
+  freeze_timestamp();
+  size_t sockets_before_hop = client.fds().size();
+  client.send( "first send triggers the hop" );
+  if ( client.fds().size() <= sockets_before_hop ) {
+    fprintf( stderr, "Client send past the hop interval did not hop ports\n" );
+    exit( 1 );
+  }
+  /* The next receive pass scans the old and new sockets together, with the
+     new one still unsent. */
+  expect_no_packet( client, "Post-hop recv (old and fresh sockets)" );
+
+  /* Drain the hop-triggering datagram so later assertions see fresh data. */
+  std::string hop_trigger = recv_with_retry( server, 200, 10 );
+  assert( hop_trigger == "first send triggers the hop" );
+
+  /* The fresh hop socket must complete a round trip once the server learns
+     the new port from it. */
+  const char* hop_msg = "hello from the hopped socket";
+  client.send( hop_msg );
+  std::string server_hop_recv = recv_with_retry( server, 200, 10 );
+  assert( server_hop_recv == hop_msg );
+  server.send( "reply to the hopped socket" );
+  std::string client_hop_recv = recv_with_retry( client, 200, 10 );
+  assert( client_hop_recv == "reply to the hopped socket" );
+  printf( "Post-hop round trip passed\n" );
 
   /* First round-trip: client -> server */
   const char* client_msg = "hello from client";
