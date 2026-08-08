@@ -100,6 +100,44 @@ Message Packet::toMessage( void )
   return Message( Nonce( direction_seq ), timestamps + payload );
 }
 
+#ifdef _WIN32
+/* Bind a client socket to the wildcard address with an ephemeral port.
+   Winsock fails recvfrom on an unbound UDP socket with WSAEINVAL, where POSIX
+   reports EAGAIN; the client runs receive passes over sockets that have not
+   sent yet (a fresh port-hop socket), and would surface that as a transient
+   "invalid argument" network error. Port 0 leaves the ephemeral port choice
+   to the kernel, but moves its allocation from the first sendto to bind time:
+   the port is reserved earlier and ephemeral-port exhaustion would surface
+   here rather than at transmission. Server sockets are excluded: try_bind
+   binds them to a specific port, and Winsock rejects bind on an already-bound
+   socket. */
+static void bind_wildcard( mosh_socket_t sock, int family )
+{
+  Addr wildcard_addr;
+  memset( &wildcard_addr, 0, sizeof( wildcard_addr ) );
+  socklen_t wildcard_addr_len;
+  switch ( family ) {
+    case AF_INET:
+      wildcard_addr.sin.sin_family = AF_INET;
+      wildcard_addr.sin.sin_addr.s_addr = htonl( INADDR_ANY );
+      wildcard_addr.sin.sin_port = htons( 0 );
+      wildcard_addr_len = sizeof( wildcard_addr.sin );
+      break;
+    case AF_INET6:
+      wildcard_addr.sin6.sin6_family = AF_INET6;
+      wildcard_addr.sin6.sin6_addr = in6addr_any;
+      wildcard_addr.sin6.sin6_port = htons( 0 );
+      wildcard_addr_len = sizeof( wildcard_addr.sin6 );
+      break;
+    default:
+      throw NetworkException( "Unknown address family", 0 );
+  }
+  if ( ::bind( sock, &wildcard_addr.sa, wildcard_addr_len ) != 0 ) {
+    throw NetworkException( "bind", WSAGetLastError() );
+  }
+}
+#endif
+
 Packet Connection::new_packet( const std::string& s_payload )
 {
   uint16_t outgoing_timestamp_reply = -1;
@@ -122,9 +160,20 @@ void Connection::hop_port( void )
 {
   assert( !server );
 
+#ifdef _WIN32
+  assert( remote_addr_len != 0 );
+  /* Bind before committing the socket and advancing the port-choice clock: a
+     failed hop must leave the previous working socket in place rather than
+     publish an unbound one. */
+  Socket new_socket( remote_addr.sa.sa_family );
+  bind_wildcard( new_socket.fd(), remote_addr.sa.sa_family );
+  socks.push_back( std::move( new_socket ) );
+  setup();
+#else
   setup();
   assert( remote_addr_len != 0 );
   socks.push_back( Socket( remote_addr.sa.sa_family ) );
+#endif
 
   prune_sockets();
 }
@@ -432,7 +481,13 @@ Connection::Connection( const char* key_str, const char* ip, const char* port ) 
 
   has_remote_addr = true;
 
+#ifdef _WIN32
+  Socket initial_socket( remote_addr.sa.sa_family );
+  bind_wildcard( initial_socket.fd(), remote_addr.sa.sa_family );
+  socks.push_back( std::move( initial_socket ) );
+#else
   socks.push_back( Socket( remote_addr.sa.sa_family ) );
+#endif
 
   set_MTU( remote_addr.sa.sa_family );
 }
