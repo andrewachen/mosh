@@ -40,6 +40,11 @@
 #include <string>
 #include <vector>
 
+/* Lives in namespace Terminal because Terminal::Cell befriends it
+   (src/terminal/terminalframebuffer.h); a friend declaration's name resolves
+   in the innermost enclosing namespace. */
+namespace Terminal {
+
 class TestServer {
 private:
   class Impl;
@@ -56,6 +61,11 @@ public:
   std::vector<intptr_t> socket_fds() const;
   void on_readable( intptr_t which_fd );
   void tick();
+  /* True when one cell of the server's terminal holds exactly the given UTF-8
+     bytes — the echo writeback of whatever the client sent. */
+  bool cell_contents_is( int row, int col, const char *bytes, size_t len ) const;
 };
+
+} /* namespace Terminal */
 
 #endif

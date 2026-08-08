@@ -49,6 +49,8 @@
 using namespace Network;
 using namespace Terminal;
 
+namespace Terminal {
+
 namespace {
 bool no_packet_available( const NetworkException& error )
 {
@@ -150,3 +152,15 @@ void TestServer::tick()
 {
   impl->network.tick();
 }
+
+bool TestServer::cell_contents_is( int row, int col, const char *bytes, size_t len ) const
+{
+  const Cell *cell = impl->terminal.get_fb().get_cell( row, col );
+  if ( cell == NULL ) {
+    return false;
+  }
+  return cell->contents.size() == len
+    && std::equal( cell->contents.begin(), cell->contents.end(), bytes );
+}
+
+} /* namespace Terminal */

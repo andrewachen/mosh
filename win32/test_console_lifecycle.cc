@@ -47,6 +47,9 @@
 #include "win32/mosh_core.h"
 #include "win32/test_server.h"
 
+/* TestServer lives in namespace Terminal so Terminal::Cell can befriend it. */
+using Terminal::TestServer;
+
 class ConsoleTestScope;
 static ConsoleTestScope *active_console_scope = NULL;
 static void must( BOOL ok, const char *what );
@@ -1386,6 +1389,174 @@ static int run_poll_throttle()
   return 0;
 }
 
+/* ---------------------------------------------------------------------------
+   Ctrl-Z console-read behavior: probe and end-to-end passthrough test.
+
+   On a console host older than microsoft/terminal PR #19940, a raw-mode
+   ReadFile on the console input handle reports Ctrl-Z as a successful
+   ZERO-BYTE read and consumes the 0x1A byte; on a fixed host the same
+   keystroke arrives as a literal 0x1A. probe-ctrlz-read records which
+   behavior the attached host exhibits; ctrl-z-passthrough asserts the client
+   forwards 0x1A to the server either way (using the reader injector to
+   simulate the old host); probe-ctrlz-e2e runs the same assertion against a
+   physically injected Ctrl-Z on the real host. */
+
+/* Types one keystroke (down + up) into the console input buffer. */
+static void inject_key( HANDLE h_in, WORD vk, DWORD control_state, char ascii )
+{
+  INPUT_RECORD records[2] = {};
+  for ( INPUT_RECORD &record : records ) {
+    record.EventType = KEY_EVENT;
+    record.Event.KeyEvent.wVirtualKeyCode = vk;
+    record.Event.KeyEvent.wRepeatCount = 1;
+    record.Event.KeyEvent.dwControlKeyState = control_state;
+    record.Event.KeyEvent.uChar.AsciiChar = ascii;
+  }
+  records[0].Event.KeyEvent.bKeyDown = TRUE;
+  DWORD written = 0;
+  must( WriteConsoleInputA( h_in, records, 2, &written ) && written == 2,
+        "WriteConsoleInputA(inject_key)" );
+}
+
+/* Raw-API ground truth for the attached console host. Applies mosh's exact
+   input mode, injects a physical Ctrl-Z, and reports what ReadFile returns.
+   Read 2 runs with no further input pending: a kicker thread types 'q' after
+   500 ms so a blocking read completes. An immediate zero-byte read 2 would
+   mean the EOF state latches, which the per-keystroke synthesis fix could not
+   safely paper over. Always returns 0: it records, it does not assert. */
+static int run_probe_ctrlz_read()
+{
+  ConsoleTestScope scope;
+  HANDLE h_in = GetStdHandle( STD_INPUT_HANDLE );
+
+  DWORD mode = 0;
+  must( GetConsoleMode( h_in, &mode ), "GetConsoleMode(probe)" );
+  mode = ( mode | ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_EXTENDED_FLAGS )
+    & ~( ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT | ENABLE_QUICK_EDIT_MODE );
+  must( SetConsoleMode( h_in, mode ), "SetConsoleMode(probe raw)" );
+  must( FlushConsoleInputBuffer( h_in ), "FlushConsoleInputBuffer(probe)" );
+
+  inject_key( h_in, 'Z', LEFT_CTRL_PRESSED, 0x1a );
+
+  char buf[64];
+  DWORD read = 0;
+  const ULONGLONG read1_start = GetTickCount64();
+  const BOOL ok1 = ReadFile( h_in, buf, sizeof buf, &read, NULL );
+  const DWORD err1 = ok1 ? ERROR_SUCCESS : GetLastError();
+  fprintf( stderr, "PROBE read1: ok=%d bytes=%lu err=%lu elapsed_ms=%llu",
+           ok1 ? 1 : 0, read, err1,
+           (unsigned long long)( GetTickCount64() - read1_start ) );
+  if ( ok1 && read > 0 ) {
+    fprintf( stderr, " byte0=0x%02x", (unsigned char)buf[0] );
+  }
+  fprintf( stderr, "\n" );
+
+  std::atomic<bool> read2_done( false );
+  std::thread kicker( [&]() {
+    Sleep( 500 );
+    if ( !read2_done.load() ) {
+      inject_key( h_in, 'Q', 0, 'q' );
+    }
+  } );
+  char buf2[64];
+  DWORD read2n = 0;
+  const ULONGLONG read2_start = GetTickCount64();
+  const BOOL ok2 = ReadFile( h_in, buf2, sizeof buf2, &read2n, NULL );
+  const DWORD err2 = ok2 ? ERROR_SUCCESS : GetLastError();
+  const ULONGLONG read2_ms = GetTickCount64() - read2_start;
+  read2_done.store( true );
+  kicker.join();
+  fprintf( stderr, "PROBE read2: ok=%d bytes=%lu err=%lu elapsed_ms=%llu",
+           ok2 ? 1 : 0, read2n, err2, (unsigned long long)read2_ms );
+  if ( ok2 && read2n > 0 ) {
+    fprintf( stderr, " byte0=0x%02x", (unsigned char)buf2[0] );
+  }
+  fprintf( stderr, "\n" );
+  return 0;
+}
+
+/* End-to-end Ctrl-Z passthrough. A console session fed a Ctrl-Z must forward
+   0x1A to the server — the TestServer's echo writeback lands it in cell
+   (0,0) — and must not begin shutdown on its own. With use_injection the
+   zero-byte read comes from the reader test injector (simulated old conhost);
+   without it a physical Ctrl-Z is typed into the real console and the
+   attached host's own behavior applies, so the mode doubles as the probe of
+   whether the host needs the compatibility path at all. */
+static int run_ctrlz_passthrough( bool use_injection )
+{
+  const char *label = use_injection ? "ctrl-z-passthrough" : "probe-ctrlz-e2e";
+  ConsoleTestScope scope;
+  TestServer server( 80, 24 );
+  MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
+                 80, 24, never_prediction() );
+  if ( use_injection ) {
+    console_test_set_reader_outcome( ConsoleReaderTestOutcome::ZERO_BYTE_READ );
+  }
+
+  UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( session_done.get() != NULL, "CreateEvent(session_done)" );
+  UniqueHandle deadline_start( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( deadline_start.get() != NULL, "CreateEvent(deadline_start)" );
+  std::atomic<ULONGLONG> deadline_at( 0 );
+
+  ConsoleSession session( core );
+  WatchdogGuard watchdog( session_done.get(), deadline_start.get(), &deadline_at, &scope,
+                          ACCEPTANCE_WATCHDOG_MS );
+
+  std::atomic<bool> stop_pumping( false );
+  std::thread runner( [&]() {
+    deadline_at.store( GetTickCount64() + ACCEPTANCE_WATCHDOG_MS );
+    must( SetEvent( deadline_start.get() ), "SetEvent(deadline_start)" );
+    session.run();
+  } );
+  std::thread pump( [&]() {
+    while ( !stop_pumping.load() ) {
+      for ( const intptr_t fd : server.socket_fds() ) {
+        server.on_readable( fd );
+      }
+      server.tick();
+      Sleep( 10 );
+    }
+  } );
+
+  if ( !use_injection ) {
+    /* Let run() reach its first wait, then type a physical Ctrl-Z. */
+    Sleep( 250 );
+    inject_key( GetStdHandle( STD_INPUT_HANDLE ), 'Z', LEFT_CTRL_PRESSED, 0x1a );
+  }
+
+  const ULONGLONG echo_deadline = GetTickCount64() + 5000;
+  bool echoed = false;
+  while ( GetTickCount64() < echo_deadline ) {
+    if ( server.cell_contents_is( 0, 0, "\x1a", 1 ) ) {
+      echoed = true;
+      break;
+    }
+    Sleep( 20 );
+  }
+  /* Sampled before our own shutdown request: if the Ctrl-Z already began a
+     shutdown (the bug), this is true and the echo above never arrived. */
+  const bool shutdown_before_request = session.shutdown_observed_for_test();
+
+  stop_pumping.store( true );
+  pump.join();
+  session.request_shutdown( ShutdownCause::CTRL_BREAK );
+  runner.join();
+  must( SetEvent( session_done.get() ), "SetEvent(session_done)" );
+  watchdog.stop();
+  console_test_clear_setup_injections();
+
+  if ( shutdown_before_request ) {
+    fprintf( stderr, "FAIL: %s: Ctrl-Z began a session shutdown\n", label );
+    return 1;
+  }
+  if ( !echoed ) {
+    fprintf( stderr, "FAIL: %s: the echoed 0x1A never reached server cell (0,0)\n", label );
+    return 1;
+  }
+  return 0;
+}
+
 int main( int argc, char *argv[] )
 {
   if ( argc < 2 ) {
@@ -1452,6 +1623,15 @@ int main( int argc, char *argv[] )
     }
     if ( strcmp( argv[1], "poll-throttle" ) == 0 ) {
       return run_poll_throttle();
+    }
+    if ( strcmp( argv[1], "probe-ctrlz-read" ) == 0 ) {
+      return run_probe_ctrlz_read();
+    }
+    if ( strcmp( argv[1], "ctrl-z-passthrough" ) == 0 ) {
+      return run_ctrlz_passthrough( true );
+    }
+    if ( strcmp( argv[1], "probe-ctrlz-e2e" ) == 0 ) {
+      return run_ctrlz_passthrough( false );
     }
   } catch ( const std::exception &e ) {
     fprintf( stderr, "FAIL: uncaught exception: %s\n", e.what() );
