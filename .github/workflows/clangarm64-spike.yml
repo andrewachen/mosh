@@ -323,7 +323,7 @@ jobs:
           llvm-objdump -p mosh.exe > objdump-imports.txt
           grep -i "DLL Name:" objdump-imports.txt
           if grep -i "DLL Name:" objdump-imports.txt | grep -Eiv \
-            "DLL Name: (api-ms-win-|ucrtbase\.dll|msvcrt\.dll|kernel32\.dll|advapi32\.dll|user32\.dll|gdi32\.dll|shell32\.dll|ole32\.dll|oleaut32\.dll|ws2_32\.dll|crypt32\.dll|bcrypt\.dll|dbghelp\.dll|ntdll\.dll|sechost\.dll|rpcrt4\.dll|shlwapi\.dll|version\.dll|imm32\.dll|setupapi\.dll|winmm\.dll|wldap32\.dll|normaliz\.dll|comctl32\.dll|comdlg32\.dll|msimg32\.dll)"; then \
+            "DLL Name: (api-ms-win-[^[:space:]]+\.dll|ucrtbase\.dll|msvcrt\.dll|kernel32\.dll|advapi32\.dll|user32\.dll|gdi32\.dll|shell32\.dll|ole32\.dll|oleaut32\.dll|ws2_32\.dll|crypt32\.dll|bcrypt\.dll|dbghelp\.dll|ntdll\.dll|sechost\.dll|rpcrt4\.dll|shlwapi\.dll|version\.dll|imm32\.dll|setupapi\.dll|winmm\.dll|wldap32\.dll|normaliz\.dll|comctl32\.dll|comdlg32\.dll|msimg32\.dll)[[:space:]]*$"; then \
             echo "ERROR: mosh.exe imports a non-system DLL (see above)"; exit 1; fi
           echo "every mosh.exe import is a Windows system/UCRT DLL"
 

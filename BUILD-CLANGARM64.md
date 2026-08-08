@@ -225,10 +225,11 @@ notices, and `MANIFEST.txt` with per-file SHA-256, size, and source, classified
 imports, and tool versions. Protobuf, Abseil, the LLVM C++ runtime
 (libc++/libunwind/compiler-rt), OCB, winpthreads, OpenSSL (libcrypto), zlib,
 and ncurses are all folded statically into `mosh.exe`, so the non-system DLL
-closure is empty and no DLL ships beside the exe. Under fail-closed
-classification every `mosh.exe` import is a Windows-system/UCRT import
-(classified `SYSTEM`); a CI allowlist step asserts exactly that, and the
-makefile `check` deny-list rejects a build that resolves OpenSSL, zlib, or
+closure is empty and no DLL ships beside the exe. `package.sh` enforces the
+single-executable invariant at the packaging boundary: every `mosh.exe` import
+must classify as a Windows-system/UCRT import (`SYSTEM`), and any other import
+fails staging. A CI allowlist step asserts the same system-only property, and
+the makefile `check` deny-list rejects a build that resolves OpenSSL, zlib, or
 ncurses to an import library.
 
 (Historical note: at the original M4 commit the three C libraries shipped as
