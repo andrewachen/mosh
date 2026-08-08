@@ -218,14 +218,19 @@ SBOM/licensing/provenance for every shipped binary.
 
 ### M4 resolution (observed on CI)
 
-M4 is complete and CI-green in run `31127885569`. `win32/package.sh` stages the
-bundle and `win32/verify-bundle.ps1` verifies it in a scrubbed environment on
-`windows-11-arm` with MSYS2 CLANGARM64. The bundle contains `mosh.exe`, license
-notices, and `MANIFEST.txt` with per-file SHA-256, size, and source, classified
-imports, and tool versions. Protobuf, Abseil, the LLVM C++ runtime
-(libc++/libunwind/compiler-rt), OCB, winpthreads, OpenSSL (libcrypto), zlib,
-and ncurses are all folded statically into `mosh.exe`, so the non-system DLL
-closure is empty and no DLL ships beside the exe. `package.sh` enforces the
+M4 is complete and CI-green in run `31127885569` — that run validated the
+DLL-bundling packaging. The bundle has since changed shape: OpenSSL, zlib, and
+ncurses are now folded statically into `mosh.exe` alongside protobuf, Abseil,
+the LLVM C++ runtime (libc++/libunwind/compiler-rt), OCB, and winpthreads, so
+the non-system DLL closure is empty and no DLL ships beside the exe. The static
+fold is verified locally (build + `check` + a packaging probe in the cross
+image) and by construction on the CI side; **the first CI run of the static
+build is pending at this commit** — treat the static-bundle description here as
+the enforced contract, not yet CI-observed evidence. `win32/package.sh` stages
+the bundle and `win32/verify-bundle.ps1` verifies it in a scrubbed environment
+on `windows-11-arm` with MSYS2 CLANGARM64. The bundle contains `mosh.exe`,
+license notices, and `MANIFEST.txt` with per-file SHA-256, size, and source,
+classified imports, and tool versions. `package.sh` enforces the
 single-executable invariant at the packaging boundary: every `mosh.exe` import
 must classify as a Windows-system/UCRT import (`SYSTEM`), and any other import
 fails staging. A CI allowlist step asserts the same system-only property, and
@@ -243,7 +248,8 @@ requirement" role.)
 The clean-environment probe establishes that `mosh.exe` reaches argument parsing
 with MSYS2 off `PATH` and `TERM`/`TERMINFO` absent (exit 2), and that
 `test_core.exe` runs to exit 0 from the bundle alone. Thus M4 now establishes
-file presence, an empty non-system DLL closure, and bundle self-sufficiency. It
+file presence, an empty non-system DLL closure, and bundle self-sufficiency —
+the empty-closure half pending its first CI observation, per above. It
 does not establish the still-open security follow-ups: trusted install location
 and ACLs, code signing, an OpenSSL update policy (now a rebuild-and-redistribute
 policy, since there is no bundled DLL to swap), or a complete
@@ -269,6 +275,11 @@ CRT-agnostic. It verifies:
    `cygwin1.dll`). This enforces the native-MinGW target boundary and matters
    specifically because `check` runs inside the MSYS2 environment, where such a
    dependency would otherwise resolve silently and pass unnoticed.
+5. No dynamic imports of the C library dependencies (OpenSSL, zlib,
+   ncurses/terminfo), matched against a deny-list of `libcrypto`, `libssl`,
+   `zlib`, `libz`, `ncurses`, and `tinfo` restricted to `DLL Name:` lines — the
+   restriction keeps imported symbol names such as
+   `GetUserObjectInformationW` (which contains `tinfo`) from false-positiving.
 
 The makefile `check` is intentionally CRT-agnostic because it serves both the
 msvcrt local smoke build and the UCRT CI build. The **target UCRT ABI boundary**
@@ -286,9 +297,10 @@ nodes.
 Two toolchains produce `mosh.exe`. Both now fold every non-system dependency
 statically — the local image always did (its archives are static-only), and the
 CLANGARM64 build does since the static-link change (`-Wl,-Bstatic` around
-`-lcrypto -lz $(NCURSES_LIBS)`, `NCURSES_STATIC` defined on both paths). Their
-import sets therefore differ only in the CRT family (msvcrt locally, UCRT
-API-sets on CI). The static-fold requirement (no C++-runtime/protobuf DLL) is
+`-lcrypto -lz $(NCURSES_LIBS)`, `NCURSES_STATIC` defined on both paths). The
+remaining import-set difference is the CRT family (msvcrt locally, UCRT
+API-sets on CI); the system-DLL membership also differs slightly between the
+two environments. The static-fold requirement (no C++-runtime/protobuf DLL) is
 **confirmed to hold on both**: observed for the local image, and confirmed on
 the CLANGARM64 target by the authoritative CI run recorded below.
 
@@ -313,8 +325,9 @@ the CLANGARM64 target by the authoritative CI run recorded below.
 - Windows system: `KERNEL32.dll`, `ADVAPI32.dll`, `dbghelp.dll`, plus the
   direct `crypt32.dll` import that static libcrypto is expected to surface
   (OpenSSL's certificate-store path resolves at the exe link, as it does on the
-  local image — exact CI import set to be confirmed by the first CI run of this
-  change)
+  local image), and presumably the `ws2_32.dll`/`user32.dll`/`bcrypt.dll` the
+  exe's own code links — the exact CI import set is to be confirmed by the
+  first CI run of this change
 
 Absent, as required: no `msvcrt.dll` (UCRT confirmed), no C++-runtime DLL
 (`libc++`/`libunwind`/`libgcc`/`libstdc++`/`libwinpthread`), no

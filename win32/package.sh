@@ -244,7 +244,11 @@ classify_import() {
     msvcrt.dll)
       IMPORT_CLASS=msvcrt
       ;;
-    api-ms-win-*|ucrtbase.dll|kernel32.dll|advapi32.dll|user32.dll|gdi32.dll|shell32.dll|ole32.dll|oleaut32.dll|ws2_32.dll|crypt32.dll|bcrypt.dll|dbghelp.dll|ntdll.dll|sechost.dll|rpcrt4.dll|shlwapi.dll|version.dll|imm32.dll|setupapi.dll|winmm.dll|wldap32.dll|normaliz.dll|comctl32.dll|comdlg32.dll|msimg32.dll)
+    # Exact API-set contracts observed for this build, not an api-ms-win-*
+    # wildcard: an invented API-set-shaped name must fail closed like any
+    # other non-system import. A future Windows SDK that adds a contract
+    # fails here until the name is reviewed and added.
+    api-ms-win-crt-stdio-l1-1-0.dll|api-ms-win-crt-runtime-l1-1-0.dll|api-ms-win-crt-locale-l1-1-0.dll|api-ms-win-crt-heap-l1-1-0.dll|api-ms-win-crt-private-l1-1-0.dll|api-ms-win-crt-string-l1-1-0.dll|api-ms-win-crt-convert-l1-1-0.dll|api-ms-win-crt-environment-l1-1-0.dll|api-ms-win-crt-math-l1-1-0.dll|api-ms-win-crt-time-l1-1-0.dll|api-ms-win-crt-multibyte-l1-1-0.dll|api-ms-win-crt-filesystem-l1-1-0.dll|api-ms-win-crt-utility-l1-1-0.dll|ucrtbase.dll|kernel32.dll|advapi32.dll|user32.dll|gdi32.dll|shell32.dll|ole32.dll|oleaut32.dll|ws2_32.dll|crypt32.dll|bcrypt.dll|dbghelp.dll|ntdll.dll|sechost.dll|rpcrt4.dll|shlwapi.dll|version.dll|imm32.dll|setupapi.dll|winmm.dll|wldap32.dll|normaliz.dll|comctl32.dll|comdlg32.dll|msimg32.dll)
       IMPORT_CLASS=system
       ;;
     msys-2.0*.dll|cygwin*.dll|*libstdc++*.dll|*libc++*.dll|*libgcc*.dll|*libunwind*.dll|*libwinpthread*.dll|*libssp*.dll|*libatomic*.dll|*protobuf*.dll|*abseil*.dll|*absl*.dll|*utf8*.dll|msvcp*.dll|vcruntime*.dll)
