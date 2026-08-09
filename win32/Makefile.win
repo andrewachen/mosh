@@ -22,7 +22,11 @@ ifeq ($(strip $(NCURSES_LIBS)),)
 NCURSES_CFLAGS := -DNCURSES_STATIC
 NCURSES_LIBS := -ltinfo
 endif
-CPPFLAGS = -I. -Isrc/include -I$(PREFIX)/include $(NCURSES_CFLAGS) -include win32/config.h.clangarm64
+# -MMD -MP makes every compile emit a .d file beside the .o, so header changes
+# trigger rebuilds without the hand-listed per-object header deps below (which
+# silently miss engine headers like src/terminal/*.h and leave stale objects).
+# The .d files live under $(BUILD), which clean removes.
+CPPFLAGS = -I. -Isrc/include -I$(PREFIX)/include $(NCURSES_CFLAGS) -include win32/config.h.clangarm64 -MMD -MP
 
 # UCRT's wide printf reads %s as a WIDE string; POSIX reads it as narrow. Upstream
 # mosh writes wide formats against POSIX, so src/frontend/terminaloverlay.{h,cc}
@@ -239,3 +243,7 @@ test_console_lifecycle: $(BUILD)/win32/test_console_lifecycle.o $(BUILD)/win32/c
 
 clean:
 	rm -rf $(BUILD) $(LIBS) mosh.exe test_loopback test_loopback.exe test_core test_core.exe test_console_lifecycle test_console_lifecycle.exe test_bootstrap test_bootstrap.exe test_startup_options test_startup_options.exe test_terminal_width test_terminal_width.exe bootstrap_child bootstrap_child.exe src/protobufs/*.pb.cc src/protobufs/*.pb.h src/include/config.h
+
+# Pull in the compiler-generated header dependencies (-MMD -MP above). The
+# wildcard is empty on a fresh tree; the leading dash makes that non-fatal.
+-include $(wildcard $(BUILD)/*.d $(BUILD)/**/*.d)
