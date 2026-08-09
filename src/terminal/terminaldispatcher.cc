@@ -54,7 +54,7 @@ void Dispatcher::newparamchar( const Parser::Param* act )
   assert( ( act->ch == ';' ) || ( ( act->ch >= '0' ) && ( act->ch <= '9' ) ) );
   if ( params.length() < 100 ) {
     /* enough for 16 five-char params plus 15 semicolons */
-    params.push_back( act->ch );
+    params.push_back( static_cast<char>( act->ch ) );
   }
   parsed = false;
 }
@@ -64,7 +64,7 @@ void Dispatcher::collect( const Parser::Collect* act )
   assert( act->char_present );
   if ( ( dispatch_chars.length() < 8 ) /* never should need more than 2 */
        && ( act->ch <= 255 ) ) {       /* ignore non-8-bit */
-    dispatch_chars.push_back( act->ch );
+    dispatch_chars.push_back( static_cast<char>( act->ch ) );
   }
 }
 

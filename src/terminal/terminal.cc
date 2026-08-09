@@ -39,10 +39,13 @@
 
 #ifdef _WIN32
 #include "win32/wcwidth.h"
+#include "win32/wincompat.h"
 
-static int wcwidth( wchar_t ch )
+/* The engine hands print() a char32_t that carries a full Unicode scalar.
+   Width must be classified on that scalar, not on a 16-bit code unit. */
+static int wcwidth_scalar( char32_t ch )
 {
-  return mosh_win32_wcwidth( ch );
+  return mosh_win32_wcwidth_scalar( static_cast<uint32_t>( ch ) );
 }
 #endif
 
@@ -68,13 +71,19 @@ void Emulator::print( const Parser::Print* act )
 {
   assert( act->char_present );
 
-  const wchar_t ch = act->ch;
+  const char32_t ch = act->ch;
 
   /*
    * Check for printing ISO 8859-1 first, it's a cheap way to detect
    * some common narrow characters.
    */
-  const int chwidth = ch == L'\0' ? -1 : ( Cell::isprint_iso8859_1( ch ) ? 1 : wcwidth( ch ) );
+#ifdef _WIN32
+  const int chwidth = ch == L'\0' ? -1 : ( Cell::isprint_iso8859_1( ch ) ? 1 : wcwidth_scalar( ch ) );
+#else
+  /* wcwidth takes wchar_t; on POSIX that is 32-bit, so the cast is lossless. */
+  const int chwidth
+    = ch == L'\0' ? -1 : ( Cell::isprint_iso8859_1( ch ) ? 1 : wcwidth( static_cast<wchar_t>( ch ) ) );
+#endif
 
   Cell* this_cell = fb.get_mutable_cell();
 

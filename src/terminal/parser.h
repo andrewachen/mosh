@@ -59,7 +59,7 @@ public:
   Parser& operator=( const Parser& );
   ~Parser() {}
 
-  void input( wchar_t ch, Actions& actions );
+  void input( char32_t ch, Actions& actions );
 
   void reset_input( void ) { state = &family.s_Ground; }
 };
