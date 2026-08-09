@@ -361,16 +361,20 @@ private:
       }
     }
 
-    /* Simulated old-conhost Ctrl-Z: the first loop iteration reports a
-       successful zero-byte read without touching the console, then real reads
-       resume. Armed only by the test injector. */
+    /* Simulated old-conhost Ctrl-Z: ZERO_BYTE_READ reports one successful
+       zero-byte read without touching the console, then real reads resume.
+       ZERO_BYTE_STREAM reports a zero-byte read on every iteration, to drive
+       the consecutive-zero cap. Armed only by the test injector. */
     bool inject_zero_byte = injected == ConsoleReaderTestOutcome::ZERO_BYTE_READ;
+    const bool inject_zero_stream = injected == ConsoleReaderTestOutcome::ZERO_BYTE_STREAM;
 
     char bytes[READ_BUFFER_SIZE];
     std::string pending;
     while ( !stopping.load() ) {
       DWORD read = 0;
-      if ( inject_zero_byte ) {
+      if ( inject_zero_stream ) {
+        /* read stays 0 every iteration. */
+      } else if ( inject_zero_byte ) {
         inject_zero_byte = false;
       } else if ( !ReadFile( input.load(), bytes, sizeof bytes, &read, NULL ) ) {
         const DWORD error = GetLastError();

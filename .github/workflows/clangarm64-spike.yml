@@ -154,6 +154,9 @@ jobs:
           ./test_console_lifecycle.exe probe-ctrlz-read || true
           ./test_console_lifecycle.exe ctrl-z-passthrough
           ./test_console_lifecycle.exe probe-ctrlz-e2e
+          # A host returning zero-byte reads back-to-back must trip the
+          # consecutive-zero cap and end input gracefully, not spin.
+          ./test_console_lifecycle.exe reader-zero-cap
 
       - name: Verify the event loop's wait timeout comes from the poll throttle
         shell: msys2 {0}
