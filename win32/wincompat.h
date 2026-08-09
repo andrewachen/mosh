@@ -39,10 +39,35 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <cwchar>
+
 typedef SOCKET mosh_socket_t;               /* pointer-sized; POSIX side uses int */
 const char* wsa_strerror( int err );        /* defined in wincompat.cc */
 void mosh_winsock_init( void );             /* idempotent WSAStartup */
 int wcwidth( wchar_t ch );                  /* implemented through mosh_win32_wcwidth() */
 
+/* Windows wchar_t is a 16-bit UTF-16 code unit, so it cannot carry an
+   astral-plane Unicode scalar value. mosh_char_t is that scalar: a full
+   Unicode code point, 0..0x10FFFF, aliased to the engine's char32_t channel so
+   there is exactly one canonical scalar type. The decode and encode shims
+   below bridge the UTF-16 mbrtowc / wcrtomb RTL to that scalar channel. */
+typedef char32_t mosh_char_t;
+
+/* Decode at most n bytes of UTF-8 from s into one Unicode scalar.
+   Decodes UTF-8 directly rather than bridging the UTF-16 mbrtowc RTL, whose
+   per-call surrogate-pair contract is unusable (a full 4-byte astral sequence
+   decodes to U+FFFD). The port forces a UTF-8 locale at startup, so the input
+   encoding is guaranteed. Mirrors mbrtowc's contract: returns the bytes
+   consumed, (size_t)-2 for an incomplete sequence, (size_t)-1 with
+   errno=EILSEQ for an invalid sequence, and 0 when the decoded scalar is NUL.
+   Overlong encodings and UTF-8-encoded surrogates are rejected as ill-formed. */
+size_t mosh_mbrtoc32( mosh_char_t* pc32, const char* s, size_t n, mbstate_t* ps );
+
+/* Encode one Unicode scalar as UTF-8 into s (which must hold MB_LEN_MAX
+   bytes). Returns the bytes written, or (size_t)-1 with errno=EILSEQ for a
+   value outside 0..0x10FFFF or in the surrogate range. */
+size_t mosh_c32rtomb( char* s, mosh_char_t c32, mbstate_t* ps );
 
 #endif /* _WIN32 */

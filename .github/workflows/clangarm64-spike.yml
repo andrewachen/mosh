@@ -24,6 +24,7 @@ jobs:
             mingw-w64-clang-aarch64-ncurses
             mingw-w64-clang-aarch64-pkgconf
             make
+            zip
 
       - name: Record toolchain and dependency versions
         shell: msys2 {0}
@@ -33,16 +34,17 @@ jobs:
             mingw-w64-clang-aarch64-protobuf mingw-w64-clang-aarch64-zlib \
             mingw-w64-clang-aarch64-ncurses mingw-w64-clang-aarch64-pkgconf
 
-      - name: Build native ARM64 engine spike (baseline ARM64 for the Cobalt runner)
+      - name: Build native ARM64 engine spike
         shell: msys2 {0}
         # The hosted windows-11-arm runner is Azure Cobalt 100 (Arm Neoverse N2),
-        # NOT Qualcomm Oryon. Build the CI gate against a conservative armv8-a
-        # baseline (Oryon tuning only, which does not change the ISA) so the binary
-        # genuinely runs on the runner and the liveness/ABI gate is diagnostic — a
-        # failure means a real port defect, not an incompatible runner. The
-        # -mcpu=oryon-1 product build (the makefile default) is validated on
-        # Snapdragon X hardware at M5.
-        run: make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" check
+        # NOT Qualcomm Oryon, yet it runs the -mcpu=oryon-1 product build (the
+        # makefile default): oryon-1's extra ISA extensions over N2 (SM4,
+        # RandGen, SPE) are never emitted for this codebase — verified by
+        # disassembling the CI-built mosh.exe with llvm-18 (zero SM4/RandGen/
+        # SPE instructions; the only extensions present are LSE atomics, which
+        # N2 also has). If a future toolchain ever does emit one, this job
+        # fails with a SIGILL — the desired fail-closed signal.
+        run: make -f win32/Makefile.win check
 
       - name: Build and run loopback test
         shell: msys2 {0}
@@ -50,7 +52,7 @@ jobs:
         # on native ARM64. It drives two Connection objects over localhost UDP and
         # verifies payload round-trips in both directions.
         run: |
-          make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" protobufs test_loopback
+          make -f win32/Makefile.win protobufs test_loopback
           ./test_loopback.exe
 
       - name: Build and run core lifecycle test
@@ -59,33 +61,33 @@ jobs:
         # A bounded native test catches stalled cached timestamps, locale setup,
         # transport round-trips, frame generation, and shutdown acknowledgements.
         run: |
-          make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" protobufs test_core
+          make -f win32/Makefile.win protobufs test_core
           ./test_core.exe
 
       - name: Build and run terminal width regression test
         shell: msys2 {0}
         run: |
-          make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" test_terminal_width
+          make -f win32/Makefile.win test_terminal_width
           ./test_terminal_width.exe
 
       - name: Build and run bootstrap test
         shell: msys2 {0}
         timeout-minutes: 2
         run: |
-          make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" test_bootstrap bootstrap_child
+          make -f win32/Makefile.win test_bootstrap bootstrap_child
           ./test_bootstrap.exe
 
       - name: Build and run startup-options test
         shell: msys2 {0}
         timeout-minutes: 2
         run: |
-          make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" test_startup_options
+          make -f win32/Makefile.win test_startup_options
           ./test_startup_options.exe
 
       - name: mosh.exe rejects bad invocations
         shell: msys2 {0}
         run: |
-          make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" mosh.exe
+          make -f win32/Makefile.win mosh.exe
           set +e
           for probe in "" "-v" "-x host"; do
             timeout 10 ./mosh.exe $probe
@@ -127,7 +129,7 @@ jobs:
         # back and throw. The init-checkpoint case sweeps all four setup steps,
         # proving the per-mutation termination checkpoint fires after each one.
         run: |
-          make -f win32/Makefile.win ARM_MCPU="-march=armv8-a -mtune=oryon-1" test_console_lifecycle
+          make -f win32/Makefile.win test_console_lifecycle
           ./test_console_lifecycle.exe escape-key
           ./test_console_lifecycle.exe no-term-init
           ./test_console_lifecycle.exe vt-mode
@@ -310,7 +312,7 @@ jobs:
 
       - name: Stage runtime bundle
         shell: msys2 {0}
-        run: win32/package.sh
+        run: win32/package.sh --zip win32/build/mosh-windows-arm64.zip
 
       - name: Verify bundle in a clean environment
         shell: msys2 {0}
@@ -330,13 +332,14 @@ jobs:
         run: |
           mkdir -p evidence
           echo "${GITHUB_SHA:-unknown}" > evidence/commit-sha.txt
-          echo 'CI baseline: ARM_MCPU=-march=armv8-a -mtune=oryon-1 (product default: -mcpu=oryon-1, validated at M5)' > evidence/effective-flags.txt
+          echo 'CI build: -mcpu=oryon-1 (makefile default); runs on the Cobalt N2 runner because no Oryon-only ISA extension is emitted for this codebase' > evidence/effective-flags.txt
           clang++ --version > evidence/compiler.txt 2>&1 || true
           pacman -Q > evidence/packages.txt 2>&1 || true
           llvm-objdump -f mosh.exe > evidence/pe-machine.txt 2>&1 || true
           llvm-objdump -p mosh.exe > evidence/imports.txt 2>&1 || true
           llvm-nm -u mosh.exe > evidence/undefined-symbols.txt 2>&1 || true
           sha256sum mosh.exe > evidence/mosh.exe.sha256 2>&1 || true
+          sha256sum win32/build/mosh-windows-arm64.zip > evidence/mosh-zip.sha256 2>&1 || true
           find win32/build/stage -type f -print | sort > evidence/staged-bundle-files.txt 2>&1 || true
           cp win32/build/stage/mosh-arm64/MANIFEST.txt evidence/staged-bundle-manifest.txt 2>&1 || true
           test -f evidence/verify-bundle-output.txt || echo 'verify-bundle step did not produce output' > evidence/verify-bundle-output.txt
@@ -349,3 +352,12 @@ jobs:
             mosh.exe
             evidence/
             win32/build/stage/
+
+      # The consumer-facing deliverable: the verified staged bundle as a single
+      # zip, downloadable via `gh run download -n mosh-windows-arm64`. This is
+      # the -mcpu=oryon-1 product binary, executed and verified on the runner.
+      - uses: actions/upload-artifact@v7
+        if: success()
+        with:
+          name: mosh-windows-arm64
+          path: win32/build/mosh-windows-arm64.zip

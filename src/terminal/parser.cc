@@ -38,6 +38,10 @@
 
 #include "src/terminal/parser.h"
 
+#ifdef _WIN32
+#include "win32/wincompat.h"
+#endif
+
 const Parser::StateFamily Parser::family;
 
 static void append_or_delete( Parser::ActionPointer act, Parser::Actions& vec )
@@ -49,7 +53,7 @@ static void append_or_delete( Parser::ActionPointer act, Parser::Actions& vec )
   }
 }
 
-void Parser::Parser::input( wchar_t ch, Actions& ret )
+void Parser::Parser::input( char32_t ch, Actions& ret )
 {
   Transition tx = state->input( ch );
 
@@ -77,14 +81,19 @@ void Parser::UTF8Parser::input( char c, Actions& ret )
 
   /* 1-byte UTF-8 character, aka ASCII?  Cheat. */
   if ( buf_len == 0 && static_cast<unsigned char>( c ) <= 0x7f ) {
-    parser.input( static_cast<wchar_t>( c ), ret );
+    parser.input( static_cast<char32_t>( c ), ret );
     return;
   }
 
   buf[buf_len++] = c;
 
-  /* This function will only work in a UTF-8 locale. */
-  wchar_t pwc;
+  /* This function will only work in a UTF-8 locale. The engine's character
+     channel is char32_t, so decode to a full Unicode scalar on both platforms:
+     on Windows wchar_t is a 16-bit UTF-16 code unit and cannot carry an
+     astral-plane scalar, while on POSIX wchar_t is 32-bit but char32_t keeps
+     the channel uniform. */
+  typedef char32_t decoded_char_t;
+  decoded_char_t pwc = 0;
   mbstate_t ps = mbstate_t();
 
   size_t total_bytes_parsed = 0;
@@ -96,7 +105,15 @@ void Parser::UTF8Parser::input( char c, Actions& ret )
   while ( total_bytes_parsed != orig_buf_len ) {
     assert( total_bytes_parsed < orig_buf_len );
     assert( buf_len > 0 );
-    size_t bytes_parsed = mbrtowc( &pwc, buf, buf_len, &ps );
+#ifdef _WIN32
+    size_t bytes_parsed = mosh_mbrtoc32( &pwc, buf, buf_len, &ps );
+#else
+    /* mbrtowc writes a wchar_t; on POSIX that is 32-bit and holds the scalar,
+       so widen losslessly into the char32_t channel. */
+    wchar_t wc = 0;
+    size_t bytes_parsed = mbrtowc( &wc, buf, buf_len, &ps );
+    pwc = static_cast<char32_t>( wc );
+#endif
 
     /* this returns 0 when n = 0! */
 
@@ -104,7 +121,7 @@ void Parser::UTF8Parser::input( char c, Actions& ret )
       /* character was NUL, accept and clear buffer */
       assert( buf_len == 1 );
       buf_len = 0;
-      pwc = L'\0';
+      pwc = 0;
       bytes_parsed = 1;
     } else if ( bytes_parsed == (size_t)-1 ) {
       /* invalid sequence, use replacement character and try again with last char */
@@ -117,7 +134,7 @@ void Parser::UTF8Parser::input( char c, Actions& ret )
         buf_len = 0;
         bytes_parsed = 1;
       }
-      pwc = (wchar_t)0xFFFD;
+      pwc = static_cast<decoded_char_t>( 0xFFFD );
     } else if ( bytes_parsed == (size_t)-2 ) {
       /* can't parse incomplete multibyte character */
       total_bytes_parsed += buf_len;
@@ -135,7 +152,7 @@ void Parser::UTF8Parser::input( char c, Actions& ret )
     const uint32_t pwcheck = pwc;
 
     if ( pwcheck > 0x10FFFF ) { /* outside Unicode range */
-      pwc = (wchar_t)0xFFFD;
+      pwc = static_cast<decoded_char_t>( 0xFFFD );
     }
 
     if ( ( pwcheck >= 0xD800 ) && ( pwcheck <= 0xDFFF ) ) { /* surrogate code point */
@@ -144,7 +161,7 @@ void Parser::UTF8Parser::input( char c, Actions& ret )
         they are ill-formed UTF-8 and we shouldn't repeat them to the
         user's terminal.
       */
-      pwc = (wchar_t)0xFFFD;
+      pwc = static_cast<decoded_char_t>( 0xFFFD );
     }
 
     parser.input( pwc, ret );

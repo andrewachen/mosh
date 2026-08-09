@@ -53,7 +53,7 @@
 
 /* terminaloverlay.cc uses POSIX wcwidth(), which MinGW does not provide.
    Limit this declaration to that translation unit: terminal.cc has its own
-   file-local implementation, so a global declaration there would conflict. */
+   file-local wcwidth_scalar implementation, so a global declaration there would conflict. */
 #ifdef MOSH_NEEDS_WCWIDTH
 int wcwidth( wchar_t ch );
 #endif

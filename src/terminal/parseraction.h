@@ -45,7 +45,7 @@ namespace Parser {
 class Action
 {
 public:
-  wchar_t ch;
+  char32_t ch;
   bool char_present;
 
   virtual std::string name( void ) = 0;

@@ -36,9 +36,29 @@
 #include <list>
 #include <typeinfo>
 
+#ifdef _WIN32
+#include "win32/wcwidth.h"
+#endif
+
 #include "src/frontend/terminaloverlay.h"
 
 using namespace Overlay;
+
+#ifdef _WIN32
+/* The engine hands the overlay a char32_t that carries a full Unicode scalar.
+   Width must be classified on that scalar, not on a 16-bit code unit, or astral
+   characters would be misjudged as narrow (U+1F600 -> 0xF600 is PUA width 1). */
+static int wcwidth_scalar( char32_t ch )
+{
+  return mosh_win32_wcwidth_scalar( static_cast<uint32_t>( ch ) );
+}
+#else
+static int wcwidth_scalar( char32_t ch )
+{
+  /* wcwidth takes wchar_t; on POSIX that is 32-bit, so the cast is lossless. */
+  return wcwidth( static_cast<wchar_t>( ch ) );
+}
+#endif
 
 void ConditionalOverlayCell::apply( Framebuffer& fb, uint64_t confirmed_epoch, int row, bool flag ) const
 {
@@ -656,7 +676,7 @@ void PredictionEngine::new_user_byte( char the_byte, const Framebuffer& fb )
 
       assert( act.char_present );
 
-      wchar_t ch = act.ch;
+      char32_t ch = act.ch;
       /* XXX handle wide characters */
 
       if ( ch == 0x7f ) { /* backspace */
@@ -709,7 +729,7 @@ void PredictionEngine::new_user_byte( char the_byte, const Framebuffer& fb )
             }
           }
         }
-      } else if ( ( ch < 0x20 ) || ( wcwidth( ch ) != 1 ) ) {
+      } else if ( ( ch < 0x20 ) || ( wcwidth_scalar( ch ) != 1 ) ) {
         /* unknown print */
         become_tentative();
         //	fprintf( stderr, "Unknown print 0x%x\n", ch );

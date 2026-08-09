@@ -43,6 +43,10 @@
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
+#include "win32/wincompat.h"
+#endif
+
 /* Terminal framebuffer */
 
 namespace Terminal {
@@ -125,6 +129,37 @@ private:
   std::shared_ptr<Rep> rep;
 };
 
+/* Encode one Unicode scalar as UTF-8 into dest (which must hold MB_LEN_MAX
+   bytes), returning the bytes written. On Windows c is a full Unicode scalar
+   and wcrtomb would truncate it to a 16-bit UTF-16 code unit, so the scalar
+   shim is used; on POSIX wchar_t is 32-bit and the cast is lossless. On
+   encoding failure the substitute character U+FFFD is encoded instead, matching
+   the parser's substitute-U+FFFD policy. */
+inline size_t mosh_encode_char( char* dest, char32_t c, mbstate_t* ps )
+{
+#ifdef _WIN32
+  size_t len = mosh_c32rtomb( dest, c, ps );
+#else
+  size_t ignore = wcrtomb( NULL, 0, ps );
+  (void)ignore;
+  size_t len = wcrtomb( dest, static_cast<wchar_t>( c ), ps );
+#endif
+  if ( len == static_cast<size_t>( -1 ) ) {
+    c = static_cast<char32_t>( 0xFFFD );
+#ifdef _WIN32
+    len = mosh_c32rtomb( dest, c, ps );
+#else
+    ignore = wcrtomb( NULL, 0, ps );
+    (void)ignore;
+    len = wcrtomb( dest, static_cast<wchar_t>( c ), ps );
+#endif
+    if ( len == static_cast<size_t>( -1 ) ) {
+      len = 0;
+    }
+  }
+  return len;
+}
+
 class Cell
 {
 private:
@@ -174,12 +209,12 @@ public:
   bool compare( const Cell& other ) const;
 
   // Is this a printing ISO 8859-1 character?
-  static bool isprint_iso8859_1( const wchar_t c )
+  static bool isprint_iso8859_1( const char32_t c )
   {
     return ( c <= 0xff && c >= 0xa0 ) || ( c <= 0x7e && c >= 0x20 );
   }
 
-  static void append_to_str( std::string& dest, const wchar_t c )
+  static void append_to_str( std::string& dest, const char32_t c )
   {
     /* ASCII?  Cheat. */
     if ( static_cast<uint32_t>( c ) <= 0x7f ) {
@@ -188,13 +223,11 @@ public:
     }
     static mbstate_t ps = mbstate_t();
     char tmp[MB_LEN_MAX];
-    size_t ignore = wcrtomb( NULL, 0, &ps );
-    (void)ignore;
-    size_t len = wcrtomb( tmp, c, &ps );
+    size_t len = mosh_encode_char( tmp, c, &ps );
     dest.append( tmp, len );
   }
 
-  void append( const wchar_t c )
+  void append( const char32_t c )
   {
     /* ASCII?  Cheat. */
     if ( static_cast<uint32_t>( c ) <= 0x7f ) {
@@ -203,9 +236,7 @@ public:
     }
     static mbstate_t ps = mbstate_t();
     char tmp[MB_LEN_MAX];
-    size_t ignore = wcrtomb( NULL, 0, &ps );
-    (void)ignore;
-    size_t len = wcrtomb( tmp, c, &ps );
+    size_t len = mosh_encode_char( tmp, c, &ps );
     contents.insert( contents.end(), tmp, tmp + len );
   }
 

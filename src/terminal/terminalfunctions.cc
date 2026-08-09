@@ -590,10 +590,10 @@ static void CSI_DECSTR( Framebuffer* fb, Dispatcher* dispatch __attribute( ( unu
 
 static Function func_CSI_DECSTR( CSI, "!p", CSI_DECSTR );
 
-static bool Parse_OSC_8( const std::vector<wchar_t>& osc8_vector, std::string& osc8_str )
+static bool Parse_OSC_8( const std::vector<char32_t>& osc8_vector, std::string& osc8_str )
 {
   osc8_str.reserve( osc8_vector.size() );
-  for ( wchar_t wide_char : osc8_vector ) {
+  for ( char32_t wide_char : osc8_vector ) {
     // Valid char range is 32-126, per
     // https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda#encodings
     if ( wide_char < 32 || wide_char > 126 ) {

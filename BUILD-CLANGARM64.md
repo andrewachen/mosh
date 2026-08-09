@@ -446,8 +446,8 @@ signed outside the artifact — deferred to release engineering / M4.
 
 The current MSYS2 CLANGARM64 repository contains the CI package names
 `mingw-w64-clang-aarch64-{openssl,protobuf,ncurses,zlib}`. The CI workflow
-installs exactly those packages plus `mingw-w64-clang-aarch64-clang` and
-`make`.
+installs exactly those packages plus `mingw-w64-clang-aarch64-clang`,
+`mingw-w64-clang-aarch64-pkgconf`, `make`, and `zip`.
 
 The direct build uses:
 
@@ -564,7 +564,15 @@ the same makefile runs with the default `NM=llvm-nm` and `OBJDUMP=llvm-objdump`
 and the baseline override `ARM_MCPU="-march=armv8-a -mtune=oryon-1"`. Beyond the
 makefile `check`, CI adds the native-ARM64-PE assertion, the UCRT ABI check
 (reject `msvcrt.dll`, require `api-ms-win-crt-*`), a bare frontend invocation
-that asserts usage exit code `2`, and a durable evidence-bundle upload. The
+that asserts usage exit code `2`, and two artifact uploads: the durable
+evidence bundle and the consumer-facing zip `mosh-windows-arm64.zip`
+(`gh run download <run-id> -n mosh-windows-arm64`). The zip is the
+`-mcpu=oryon-1` product binary, executed and verified on the Cobalt N2 runner:
+oryon-1's extra ISA extensions over N2 (SM4, RandGen, SPE) are never emitted
+for this codebase — verified by disassembling the CI-built mosh.exe with
+llvm-18 (zero such instructions; the only extension present is LSE atomics,
+which N2 also implements). If a future toolchain ever emits one, CI fails with
+a SIGILL — the desired fail-closed signal. The
 bare invocation occurs before console setup and `MoshCore` construction, so it
 is not a console, client-core, or crypto runtime gate. The historical
 crypto-linked spike build is validated by authoritative CI run `29928638939` on

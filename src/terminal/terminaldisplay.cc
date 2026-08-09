@@ -80,7 +80,7 @@ std::string Display::new_frame( bool initialized, const Framebuffer& last, const
       frame.append( "\033]0;" );
       const title_type& window_title( f.get_window_title() );
       for ( title_type::const_iterator i = window_title.begin(); i != window_title.end(); i++ ) {
-        frame.append( *i );
+        frame.append( static_cast<char32_t>( *i ) );
       }
       frame.append( '\007' );
       /* ST is more correct, but BEL more widely supported */
@@ -89,14 +89,14 @@ std::string Display::new_frame( bool initialized, const Framebuffer& last, const
       frame.append( "\033]1;" );
       const title_type& icon_name( f.get_icon_name() );
       for ( title_type::const_iterator i = icon_name.begin(); i != icon_name.end(); i++ ) {
-        frame.append( *i );
+        frame.append( static_cast<char32_t>( *i ) );
       }
       frame.append( '\007' );
 
       frame.append( "\033]2;" );
       const title_type& window_title( f.get_window_title() );
       for ( title_type::const_iterator i = window_title.begin(); i != window_title.end(); i++ ) {
-        frame.append( *i );
+        frame.append( static_cast<char32_t>( *i ) );
       }
       frame.append( '\007' );
     }
@@ -107,7 +107,7 @@ std::string Display::new_frame( bool initialized, const Framebuffer& last, const
     frame.append( "\033]52;c;" );
     const title_type& clipboard( f.get_clipboard() );
     for ( title_type::const_iterator i = clipboard.begin(); i != clipboard.end(); i++ ) {
-      frame.append( *i );
+      frame.append( static_cast<char32_t>( *i ) );
     }
     frame.append( '\007' );
   }
