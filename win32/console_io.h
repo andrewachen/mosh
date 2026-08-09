@@ -135,9 +135,6 @@ enum class ConsoleReaderTestOutcome {
   /* Simulates an old-conhost Ctrl-Z: the first read completes as a successful
      zero-byte read; subsequent reads block on real console input. */
   ZERO_BYTE_READ,
-  /* Simulates a host that returns successful zero-byte reads back-to-back, to
-     exercise the consecutive-zero cap that stops unbounded 0x1A synthesis. */
-  ZERO_BYTE_STREAM,
 };
 void console_test_set_reader_outcome( ConsoleReaderTestOutcome outcome );
 

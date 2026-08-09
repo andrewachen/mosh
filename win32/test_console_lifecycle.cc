@@ -1603,12 +1603,6 @@ int main( int argc, char *argv[] )
     if ( strcmp( argv[1], "reader-failure" ) == 0 ) {
       return run_reader_end( ConsoleReaderTestOutcome::READ_FAILURE, "reader-failure" );
     }
-    /* A host returning zero-byte reads back-to-back must trip the
-       consecutive-zero cap and end input gracefully, not spin or emit
-       unbounded 0x1A. Same graceful-teardown assertion as reader-eof. */
-    if ( strcmp( argv[1], "reader-zero-cap" ) == 0 ) {
-      return run_reader_end( ConsoleReaderTestOutcome::ZERO_BYTE_STREAM, "reader-zero-cap" );
-    }
     if ( strcmp( argv[1], "connection-timeout" ) == 0 ) {
       return run_connection_timeout();
     }

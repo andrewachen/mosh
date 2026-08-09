@@ -37,6 +37,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -69,7 +70,10 @@ public:
   UserStream empty_user_stream;
   NetworkType network;
   uint64_t last_remote_num;
-  /* Raw user bytes the server has applied, in arrival order. */
+  /* Raw user bytes the server has applied, in arrival order. Guarded by
+     received_mutex: appended on the pump thread in process_remote_state, read
+     on the test thread in received_byte. */
+  std::mutex received_mutex;
   std::vector<char> received;
 
   Impl( int cols, int rows )
@@ -90,6 +94,7 @@ public:
       const Parser::Action &action = input.get_action( i );
       const Parser::UserByte *keystroke = dynamic_cast<const Parser::UserByte *>( &action );
       if ( keystroke != nullptr ) {
+        std::lock_guard<std::mutex> lock( received_mutex );
         received.push_back( keystroke->c );
       }
       const std::string host_bytes = terminal.act( action );
@@ -161,6 +166,7 @@ void TestServer::tick()
 
 bool TestServer::received_byte( char byte ) const
 {
+  std::lock_guard<std::mutex> lock( impl->received_mutex );
   return std::find( impl->received.begin(), impl->received.end(), byte )
     != impl->received.end();
 }

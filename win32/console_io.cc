@@ -239,11 +239,6 @@ private:
      successful zero-byte read, so only on a console handle is a zero-byte read
      reinterpreted as Ctrl-Z rather than end-of-input. */
   bool is_console;
-  /* Consecutive successful zero-byte reads. Old conhost produces exactly one
-     per Ctrl-Z and then blocks; the counter bounds the damage if some host
-     ever returns them back-to-back, capping synthesized 0x1A bytes instead of
-     spinning. */
-  unsigned consecutive_zero_reads;
 
   void append_utf8( std::string &output, unsigned int codepoint )
   {
@@ -363,18 +358,14 @@ private:
 
     /* Simulated old-conhost Ctrl-Z: ZERO_BYTE_READ reports one successful
        zero-byte read without touching the console, then real reads resume.
-       ZERO_BYTE_STREAM reports a zero-byte read on every iteration, to drive
-       the consecutive-zero cap. Armed only by the test injector. */
+       Armed only by the test injector. */
     bool inject_zero_byte = injected == ConsoleReaderTestOutcome::ZERO_BYTE_READ;
-    const bool inject_zero_stream = injected == ConsoleReaderTestOutcome::ZERO_BYTE_STREAM;
 
     char bytes[READ_BUFFER_SIZE];
     std::string pending;
     while ( !stopping.load() ) {
       DWORD read = 0;
-      if ( inject_zero_stream ) {
-        /* read stays 0 every iteration. */
-      } else if ( inject_zero_byte ) {
+      if ( inject_zero_byte ) {
         inject_zero_byte = false;
       } else if ( !ReadFile( input.load(), bytes, sizeof bytes, &read, NULL ) ) {
         const DWORD error = GetLastError();
@@ -388,7 +379,7 @@ private:
         SetEvent( ready_event );
         break;
       }
-      if ( read == 0 ) {
+      if ( read == 0 && is_console ) {
         /* A successful zero-byte read on a console input handle is how a console
            host older than microsoft/terminal PR #19940 reports Ctrl-Z: it
            consumes the 0x1A key event and completes the read with no bytes.
@@ -398,29 +389,34 @@ private:
            as an ordinary byte and never reaches this branch.
 
            The read is per-keystroke, not latched: the next ReadFile blocks
-           normally, so this does not spin. The consecutive counter is a
-           defensive bound, not the mechanism — past the cap, stop synthesizing
-           and treat the stream as ended rather than emit unbounded 0x1A. */
-        if ( is_console && consecutive_zero_reads < MAX_CONSECUTIVE_ZERO_READS ) {
-          consecutive_zero_reads++;
+           normally, so this does not spin. Enqueue with the same cancellable
+           backpressure as the normal read path below — wait for queue space
+           rather than drop the byte. */
+        bool enqueued = false;
+        while ( !enqueued && !stopping.load() ) {
           {
             std::lock_guard<std::mutex> lock( queue_mutex );
             if ( queue.size() < INPUT_QUEUE_CAP_BYTES ) {
               queue.push_back( '\x1a' );
               SetEvent( ready_event );
+              enqueued = true;
             }
           }
-          continue;
+          if ( !enqueued ) {
+            Sleep( 1 );
+          }
         }
-        /* Non-console input (a pipe or file) or an unbounded zero-byte stream:
-           end of input. Graceful teardown is safer than a retry spin. */
+        continue;
+      }
+      if ( read == 0 ) {
+        /* Non-console input (a pipe or file) reaching end of input. Graceful
+           teardown is safer than a potentially unbounded retry spin. */
         std::lock_guard<std::mutex> lock( failure_mutex );
         input_ended = true;
         read_failed = false;
         SetEvent( ready_event );
         break;
       }
-      consecutive_zero_reads = 0;
       std::string converted = recombine_cesu8( bytes, read, pending );
       while ( !converted.empty() && !stopping.load() ) {
         bool enqueued = false;
@@ -443,16 +439,11 @@ private:
   }
 
 public:
-  /* Bounds synthesized Ctrl-Z bytes when a host returns zero-byte reads
-     back-to-back. Old conhost produces exactly one per keystroke; this cap is
-     a defensive backstop, not the expected path. */
-  static const unsigned MAX_CONSECUTIVE_ZERO_READS = 8;
-
   explicit Reader( HANDLE h_in )
     : input( NULL ), ready_event( CreateEvent( NULL, FALSE, FALSE, NULL ) ),
       stopping( false ), drained_to_empty( false ), worker( NULL ),
       failure_code( ERROR_SUCCESS ), input_ended( false ), read_failed( false ),
-      is_console( false ), consecutive_zero_reads( 0 )
+      is_console( false )
   {
     if ( ready_event == NULL ) {
       throw_last_error( "CreateEvent for console input" );
