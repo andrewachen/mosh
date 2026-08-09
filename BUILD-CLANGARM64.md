@@ -259,6 +259,44 @@ CRT-agnostic. It verifies:
    specifically because `check` runs inside the MSYS2 environment, where such a
    dependency would otherwise resolve silently and pass unnoticed.
 
+### M5 resolution (observed on Snapdragon X hardware)
+
+M5 is complete; the deliverable is the `mosh-windows-arm64` zip artifact
+(`win32/package.sh --zip`, uploaded by the CLANGARM64 CI workflow) built from
+the single `-mcpu=oryon-1` product binary. On Snapdragon X Elite hardware the
+checklist passed end to end: a real session over ssh bootstrap, roaming across
+networks, prediction latency, resize, and the shutdown matrix all behaved, and
+the conformance-relevant runtime paths were exercised by the native CI suite
+(loopback, core lifecycle, bootstrap, terminal width) running on the
+`windows-11-arm` runner against the same oryon-1 codegen the hardware runs.
+
+UTF-8 rendering passed for accents, CJK, combining marks, and box drawing.
+Emoji and other astral-plane characters were the one failure, root-caused to
+two stacked defects: UCRT `mbrtowc` cannot reassemble a UTF-16 surrogate pair
+per call, and the engine's `wchar_t` channel then truncated the decoded scalar
+to 16 bits (U+1F600 became U+F600). The repair decodes UTF-8 to Unicode
+scalars directly (`mosh_mbrtoc32`, rejecting overlong forms and encoded
+surrogates), carries `char32_t` end to end through the parser, emulator, and
+cell storage, and classifies astral width against a generated table that
+mirrors glibc 2.39 `C.UTF-8` `wcwidth` exactly — zero mismatches over every
+astral scalar, regenerated and drift-checked by
+`win32/gen_wcwidth_tables.sh --check`. Prediction classifies the scalar through
+the same table rather than truncating to 16 bits first. The regression test
+(`win32/test_terminal_width.cc`) drives a 4-byte emoji through the real parser
+into the emulator and asserts one wide cell and a two-column cursor advance;
+it runs natively in CI, and a RED-probe branch reverting the decode fails it.
+`win32/PARITY.md` records the repair and its upstream-merge note (the
+`char32_t` channel is a deliberate semantic divergence; do not resolve future
+merge conflicts by reverting to `wchar_t`).
+
+The M5 Oryon release gate above is discharged by construction rather than by a
+separate hardware conformance re-run: CI builds and runs the exact
+`-mcpu=oryon-1` product binary (the baseline/product split was dropped after
+disassembly showed the oryon-1 build emits no instructions beyond the CI
+runner's Neoverse N2 — zero SM4/RandGen/SPE — so the runner executes the
+product binary and would SIGILL on any future N2-illegal encoding), and the
+hardware validation then ran that same artifact.
+
 The makefile `check` is intentionally CRT-agnostic because it serves both the
 msvcrt local smoke build and the UCRT CI build. The **target UCRT ABI boundary**
 is therefore enforced by a **CI-only step** (`Verify UCRT ABI`) that rejects a
