@@ -144,6 +144,16 @@ jobs:
           ./test_console_lifecycle.exe deadline-escalation
           ./test_console_lifecycle.exe deadline-wedged-reader
           ./test_console_lifecycle.exe poll-throttle
+          # Ctrl-Z console-read behavior. probe-ctrlz-read records the attached
+          # conhost's raw ReadFile response to a physical Ctrl-Z (zero-byte on a
+          # host older than microsoft/terminal PR #19940, literal 0x1A on a fixed
+          # one) and never fails the step. ctrl-z-passthrough simulates the old
+          # host through the reader injector and asserts 0x1A reaches the server;
+          # probe-ctrlz-e2e runs the same assertion against a physically injected
+          # Ctrl-Z on the real host.
+          ./test_console_lifecycle.exe probe-ctrlz-read || true
+          ./test_console_lifecycle.exe ctrl-z-passthrough
+          ./test_console_lifecycle.exe probe-ctrlz-e2e
 
       - name: Verify the event loop's wait timeout comes from the poll throttle
         shell: msys2 {0}

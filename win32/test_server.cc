@@ -35,7 +35,9 @@
 
 #include "win32/test_server.h"
 
+#include <algorithm>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -68,6 +70,11 @@ public:
   UserStream empty_user_stream;
   NetworkType network;
   uint64_t last_remote_num;
+  /* Raw user bytes the server has applied, in arrival order. Guarded by
+     received_mutex: appended on the pump thread in process_remote_state, read
+     on the test thread in received_byte. */
+  std::mutex received_mutex;
+  std::vector<char> received;
 
   Impl( int cols, int rows )
     : terminal( cols, rows ), empty_user_stream(), network( terminal, empty_user_stream, nullptr, nullptr ),
@@ -84,7 +91,13 @@ public:
     UserStream input;
     input.apply_string( network.get_remote_diff() );
     for ( size_t i = 0; i < input.size(); i++ ) {
-      const std::string host_bytes = terminal.act( input.get_action( i ) );
+      const Parser::Action &action = input.get_action( i );
+      const Parser::UserByte *keystroke = dynamic_cast<const Parser::UserByte *>( &action );
+      if ( keystroke != nullptr ) {
+        std::lock_guard<std::mutex> lock( received_mutex );
+        received.push_back( keystroke->c );
+      }
+      const std::string host_bytes = terminal.act( action );
       /* A real server writes these bytes to its pty. The surrogate loops that
          writeback into Complete so its published terminal state includes echo. */
       terminal.act( host_bytes );
@@ -149,4 +162,11 @@ void TestServer::on_readable( intptr_t )
 void TestServer::tick()
 {
   impl->network.tick();
+}
+
+bool TestServer::received_byte( char byte ) const
+{
+  std::lock_guard<std::mutex> lock( impl->received_mutex );
+  return std::find( impl->received.begin(), impl->received.end(), byte )
+    != impl->received.end();
 }

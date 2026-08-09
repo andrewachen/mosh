@@ -234,6 +234,11 @@ private:
   DWORD failure_code;
   bool input_ended;
   bool read_failed;
+  /* True when `input` is a console input handle (FILE_TYPE_CHAR and
+     GetConsoleMode succeeds). Only a console host turns Ctrl-Z into a
+     successful zero-byte read, so only on a console handle is a zero-byte read
+     reinterpreted as Ctrl-Z rather than end-of-input. */
+  bool is_console;
 
   void append_utf8( std::string &output, unsigned int codepoint )
   {
@@ -351,11 +356,18 @@ private:
       }
     }
 
+    /* Simulated old-conhost Ctrl-Z: ZERO_BYTE_READ reports one successful
+       zero-byte read without touching the console, then real reads resume.
+       Armed only by the test injector. */
+    bool inject_zero_byte = injected == ConsoleReaderTestOutcome::ZERO_BYTE_READ;
+
     char bytes[READ_BUFFER_SIZE];
     std::string pending;
     while ( !stopping.load() ) {
       DWORD read = 0;
-      if ( !ReadFile( input.load(), bytes, sizeof bytes, &read, NULL ) ) {
+      if ( inject_zero_byte ) {
+        inject_zero_byte = false;
+      } else if ( !ReadFile( input.load(), bytes, sizeof bytes, &read, NULL ) ) {
         const DWORD error = GetLastError();
         if ( stopping.load() ) {
           break;
@@ -367,10 +379,38 @@ private:
         SetEvent( ready_event );
         break;
       }
+      if ( read == 0 && is_console ) {
+        /* A successful zero-byte read on a console input handle is how a console
+           host older than microsoft/terminal PR #19940 reports Ctrl-Z: it
+           consumes the 0x1A key event and completes the read with no bytes.
+           Upstream mosh passes a bare Ctrl-Z through to the remote pty (only
+           escape-prefix Ctrl-Z is the local suspend, which Windows cannot do),
+           so synthesize the 0x1A the host swallowed. A fixed host delivers 0x1A
+           as an ordinary byte and never reaches this branch.
+
+           The read is per-keystroke, not latched: the next ReadFile blocks
+           normally, so this does not spin. Enqueue with the same cancellable
+           backpressure as the normal read path below — wait for queue space
+           rather than drop the byte. */
+        bool enqueued = false;
+        while ( !enqueued && !stopping.load() ) {
+          {
+            std::lock_guard<std::mutex> lock( queue_mutex );
+            if ( queue.size() < INPUT_QUEUE_CAP_BYTES ) {
+              queue.push_back( '\x1a' );
+              SetEvent( ready_event );
+              enqueued = true;
+            }
+          }
+          if ( !enqueued ) {
+            Sleep( 1 );
+          }
+        }
+        continue;
+      }
       if ( read == 0 ) {
-        /* Raw console reads are documented to wait for a character, but a
-           successful zero-byte result is not defined. Treat it as end of input:
-           graceful teardown is safer than a potentially unbounded retry spin. */
+        /* Non-console input (a pipe or file) reaching end of input. Graceful
+           teardown is safer than a potentially unbounded retry spin. */
         std::lock_guard<std::mutex> lock( failure_mutex );
         input_ended = true;
         read_failed = false;
@@ -402,7 +442,8 @@ public:
   explicit Reader( HANDLE h_in )
     : input( NULL ), ready_event( CreateEvent( NULL, FALSE, FALSE, NULL ) ),
       stopping( false ), drained_to_empty( false ), worker( NULL ),
-      failure_code( ERROR_SUCCESS ), input_ended( false ), read_failed( false )
+      failure_code( ERROR_SUCCESS ), input_ended( false ), read_failed( false ),
+      is_console( false )
   {
     if ( ready_event == NULL ) {
       throw_last_error( "CreateEvent for console input" );
@@ -414,6 +455,11 @@ public:
       CloseHandle( ready_event );
       throw ConsoleError( error, error_message( "DuplicateHandle console input", error ) );
     }
+    /* FILE_TYPE_CHAR also covers non-console character devices (NUL, serial),
+       so confirm with GetConsoleMode — the same pair win32 OpenSSH uses. */
+    DWORD mode = 0;
+    is_console = GetFileType( duplicate ) == FILE_TYPE_CHAR
+      && GetConsoleMode( duplicate, &mode ) != 0;
     input.store( duplicate );
     worker = CreateThread( NULL, 0, &Reader::start, this, 0, NULL );
     if ( worker == NULL ) {

@@ -14,11 +14,14 @@ RUN apt-get update && \
       pkg-config python3 xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
-# Cross toolchain: llvm-mingw 20260616 (clang 22.1.8), matching the MSYS2
-# CLANGARM64 CI job. The tarball is built on ubuntu-22.04 (glibc 2.35); it
-# runs on 24.04 because noble's glibc 2.39 is backward-compatible with it.
+# Cross toolchain: llvm-mingw 20260616 (clang 22.1.8), UCRT variant — the same
+# CRT the MSYS2 CLANGARM64 CI job links, so local builds are authoritative for
+# the target ABI. (The msvcrt variant lacks the .UTF-8 locale form, which
+# mosh's setlocale(LC_ALL, ".UTF-8") startup requires.) The tarball is built on
+# ubuntu-22.04 (glibc 2.35); it runs on 24.04 because noble's glibc 2.39 is
+# backward-compatible with it.
 RUN curl --fail --location --retry 5 --retry-all-errors --output /tmp/llvm-mingw.tar.xz \
-      https://github.com/mstorsjo/llvm-mingw/releases/download/20260616/llvm-mingw-20260616-msvcrt-ubuntu-22.04-x86_64.tar.xz && \
+      https://github.com/mstorsjo/llvm-mingw/releases/download/20260616/llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64.tar.xz && \
     mkdir -p ${CROSS_ROOT} && \
     tar -C ${CROSS_ROOT} --strip-components=1 -xJf /tmp/llvm-mingw.tar.xz && \
     rm /tmp/llvm-mingw.tar.xz

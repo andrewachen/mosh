@@ -27,7 +27,7 @@ Severity is **high** for correctness, security, or resource-exhaustion consequen
 | `OPEN` | 3 |
 | **Total** | **50** |
 
-Fifteen repaired or confirmed behavior records — connection-timeout shutdown, reader input ending, interrupt control events versus a typed Ctrl-C, bounded close-handler restoration attempts, post-wait timestamp freezing, resize framebuffer ownership, UCRT wide-printf semantics, the retired command-line key channel, the bounded zero-length wait, `MOSH_NO_TERM_INIT`, `MOSH_ESCAPE_KEY`, `MOSH_PREDICTION_OVERWRITE`, the prediction display preference, the `[mosh] ` title prefix, and transport verbosity — are recorded at the end and are not counted as findings. The bounded zero-length wait is implemented rather than fully verified; the coverage it still owes is counted, as A26.
+Sixteen repaired or confirmed behavior records — connection-timeout shutdown, reader input ending, bare Ctrl-Z passthrough, interrupt control events versus a typed Ctrl-C, bounded close-handler restoration attempts, post-wait timestamp freezing, resize framebuffer ownership, UCRT wide-printf semantics, the retired command-line key channel, the bounded zero-length wait, `MOSH_NO_TERM_INIT`, `MOSH_ESCAPE_KEY`, `MOSH_PREDICTION_OVERWRITE`, the prediction display preference, the `[mosh] ` title prefix, and transport verbosity — are recorded at the end and are not counted as findings. The bounded zero-length wait is implemented rather than fully verified; the coverage it still owes is counted, as A26.
 
 ## How the defects cluster
 
@@ -47,7 +47,7 @@ The remaining defects are exit-path omissions (A13, A14, A21), the loop's missin
 
 ### The host loop, for reference
 
-Several findings below depend on the exact phase order, so it is stated once here. `ConsoleSession::Impl::run_loop()` (`win32/console_io.cc:1111`) runs:
+Several findings below depend on the exact phase order, so it is stated once here. `ConsoleSession::Impl::run_loop()` (`win32/console_io.cc:1157`) runs:
 
 ```
 tick  →  wait  →  refresh clock
@@ -71,7 +71,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### I1. Native-console terminal lifecycle replaces termios and terminfo
 
 * **Upstream:** `STMClient::init()` saves and raws `stdin` with termios and opens the terminal through the terminfo-configured `Display` (`src/frontend/stmclient.cc:82`); `Display(true)` consults terminfo including `smcup`/`rmcup` (`src/terminal/terminaldisplayinit.cc:83`).
-* **Port:** Constructs `Display(false)` and delegates raw mode, UTF-8 code pages, and VT output to `ConsoleSession` (`win32/mosh_core.cc:112`, `win32/console_io.cc:859`).
+* **Port:** Constructs `Display(false)` and delegates raw mode, UTF-8 code pages, and VT output to `ConsoleSession` (`win32/mosh_core.cc:112`, `win32/console_io.cc:905`).
 * **Consequence:** The executable uses the Windows Console VT contract rather than the user's terminfo.
 * **Class:** `PLATFORM`, low. Windows has no termios, and the native console requires `SetConsoleMode` plus VT escapes.
 
@@ -125,14 +125,14 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### I2. Win32 waits on handles rather than `pselect` fds and POSIX signals
 
 * **Upstream:** Registers network fds and `STDIN_FILENO` and `pselect`s them, consuming SIGWINCH, SIGCONT, SIGTERM, SIGINT, SIGHUP, and SIGPIPE (`src/frontend/stmclient.cc:447`). `Select::select()` atomically unblocks signals for the wait (`src/util/select.h:143`).
-* **Port:** Waits with `WaitForMultipleObjects` on the reader event, the termination event, and `WSAEventSelect(FD_READ)` events (`win32/console_io.cc:1162`); the console handler translates control events into the termination event (`console_control_handler`, `win32/console_io.cc:609`).
+* **Port:** Waits with `WaitForMultipleObjects` on the reader event, the termination event, and `WSAEventSelect(FD_READ)` events (`win32/console_io.cc:1209`); the console handler translates control events into the termination event (`console_control_handler`, `win32/console_io.cc:655`).
 * **Consequence:** Control events and socket readiness are dispatched through handles rather than signals and fds.
 * **Class:** `PLATFORM`, low.
 
 #### A26. The event loop admits no test at its wait boundary
 
 * **Upstream:** `Select` is a mockable seam in practice — its `select()` takes the timeout as an argument, so a caller can be driven with any sequence of intervals and its behavior observed at the call.
-* **Port:** `run_loop()` computes the timeout from `core.tick()` and passes it to `WaitForMultipleObjects` inside the same function (`win32/console_io.cc:1155`, `win32/console_io.cc:1162`). Nothing external can supply the interval or observe the one the wait receives, and no harness can drive `MoshCore::tick()` to a chosen value: it returns the minimum of the transport's, the overlays', and the lifecycle's wait times (`win32/mosh_core.cc:425`).
+* **Port:** `run_loop()` computes the timeout from `core.tick()` and passes it to `WaitForMultipleObjects` inside the same function (`win32/console_io.cc:1201`, `win32/console_io.cc:1209`). Nothing external can supply the interval or observe the one the wait receives, and no harness can drive `MoshCore::tick()` to a chosen value: it returns the minimum of the transport's, the overlays', and the lifecycle's wait times (`win32/mosh_core.cc:425`).
 * **Consequence:** every per-iteration decision the loop makes about time is unverifiable by test. That is why the throttle repaired above is covered by a unit test on its arithmetic and a CI check on the source's shape rather than by the executable check its finding originally called for, and the same limit will apply to any later timing rule. The acceptance harness can start the loop and observe what it leaves behind; it cannot observe what the loop does per iteration.
 * **Class:** `DEFECT`, medium. Not `OPEN`: that a harness needs some way in is settled, and only where the boundary belongs is undecided.
 * **Fix:** a production step the loop calls through, which takes the requested interval and the active deadline, owns the throttle state, computes the effective timeout, hands it to a wait adapter, and returns what the loop should do next — dispatch, or restore now. An observable wait alone is not enough, and neither is a helper a test can call directly: that only re-proves the arithmetic. The seam has to be able to supply what `MoshCore::tick()` returns, to be the only route to a wait, and to make the post-wait decision observable, or the wiring stays exactly as unverified as it is today. Its adapter must also preserve the existing error contract, so that `WAIT_FAILED` and an out-of-range result keep propagating rather than being read as a timeout. The rule itself stays fixed at upstream's values; it is an invariant to preserve, not a policy to make configurable. Not a test-only injector, which would compile into the release build for one assertion. Where the boundary belongs is what the behavioral contract above has to answer, so settle it there rather than ahead of it.
@@ -141,21 +141,21 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### I3. Reader thread, CESU-8 conversion, bounded queue, and fair dispatch replace `read(stdin)`
 
 * **Upstream:** Reads up to 16 KiB synchronously from `STDIN_FILENO` once select reports it readable, then processes every returned byte in that pass (`STMClient::process_user_input`, `src/frontend/stmclient.cc:310`).
-* **Port:** A worker blocks in `ReadFile`, recombines conhost CESU-8 surrogate pairs, and queues up to `INPUT_QUEUE_CAP_BYTES` (4 MiB); the owner consumes at most `INPUT_BUDGET_BYTES` (64 KiB) per wakeup (`Reader::read_loop`, `win32/console_io.cc:335`; `win32/console_io.cc:1243`).
+* **Port:** A worker blocks in `ReadFile`, recombines conhost CESU-8 surrogate pairs, and queues up to `INPUT_QUEUE_CAP_BYTES` (4 MiB); the owner consumes at most `INPUT_BUDGET_BYTES` (64 KiB) per wakeup (`Reader::read_loop`, `win32/console_io.cc:340`; `win32/console_io.cc:1290`).
 * **Consequence:** A large paste is deliberately spread across loop iterations, so termination, resize, and socket work stay responsive; Windows input encoding is normalized before the shared parser sees it.
 * **Class:** `PLATFORM`, low. Console `ReadFile` does not provide selectable byte-stream semantics, and an unbounded drain would starve the other handle sources.
 
 #### I4. One readable socket is serviced per wakeup
 
 * **Upstream:** Inspects every fd in the ready set but records only a boolean, invoking `process_network_input()` once per loop (`src/frontend/stmclient.cc:476`).
-* **Port:** Re-tests the snapshot's WSA events, calls `core.on_readable()` for the first `FD_READ`, then breaks because the receive path can prune sockets (`win32/console_io.cc:1227`).
+* **Port:** Re-tests the snapshot's WSA events, calls `core.on_readable()` for the first `FD_READ`, then breaks because the receive path can prune sockets (`win32/console_io.cc:1274`).
 * **Consequence:** Both process one transport receive action per ordinary wakeup; the port additionally avoids dereferencing a snapshot invalidated by pruning.
 * **Class:** `PLATFORM`, low.
 
 #### A5. `tick()` runs before the wait, so frame generation sits between dispatch and transmission
 
 * **Upstream:** Processes ready network, input, and resize work and then calls `network->tick()` in the same pass (`src/frontend/stmclient.cc:486`).
-* **Port:** Calls `core.tick()` at the top of the iteration, before the wait (`win32/console_io.cc:1117`); dispatch happens after the wait, and the next `tick()` is reached only after `core.next_frame()` has been generated and written (`win32/console_io.cc:1248`).
+* **Port:** Calls `core.tick()` at the top of the iteration, before the wait (`win32/console_io.cc:1163`); dispatch happens after the wait, and the next `tick()` is reached only after `core.next_frame()` has been generated and written (`win32/console_io.cc:1295`).
 * **Consequence:** Bytes entered or state received in a wakeup are transmitted on the *next* iteration's tick rather than the current pass. Because no second wait intervenes, the added delay is the cost of frame generation and console output, not a poll interval — but that cost is unbounded under console output backpressure, and it is paid before every transmission.
 * **Class:** `DEFECT`, medium.
 * **Note:** The resize-poll cap does not add nearly 100 ms here: the loop returns directly to `tick()` after rendering.
@@ -198,7 +198,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### I5. Resize is polled rather than SIGWINCH-gated
 
 * **Upstream:** Installs SIGWINCH and calls `process_resize()` only when that signal is consumed (`src/frontend/stmclient.cc:236`).
-* **Port:** Queries `GetConsoleScreenBufferInfo` after every wakeup — at most every 100 ms when idle, because of the `RESIZE_POLL_CAP_MS` cap — and calls `core.resize()` on a dimension change (`win32/console_io.cc:1212`).
+* **Port:** Queries `GetConsoleScreenBufferInfo` after every wakeup — at most every 100 ms when idle, because of the `RESIZE_POLL_CAP_MS` cap — and calls `core.resize()` on a dimension change (`win32/console_io.cc:1258`).
 * **Consequence:** Resize detection is delayed by up to the polling interval and costs a console round trip on idle wakeups.
 * **Class:** `PLATFORM`, low. There is no SIGWINCH equivalent for the native console.
 
@@ -212,7 +212,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A9. Initial and per-iteration frame timing differ
 
 * **Upstream:** Writes a full empty frame before entering its first select (`src/frontend/stmclient.cc:256`), and writes a frame before computing readiness on every pass thereafter (`src/frontend/stmclient.cc:450`).
-* **Port:** Writes the open sequence during setup (`win32/console_io.cc:905`) but calls `core.next_frame()` only after the wait and after dispatch (`win32/console_io.cc:1248`).
+* **Port:** Writes the open sequence during setup (`win32/console_io.cc:951`) but calls `core.next_frame()` only after the wait and after dispatch (`win32/console_io.cc:1295`).
 * **Consequence:** Initial screen initialization waits for the first wakeup — normally up to 100 ms — and there is no pre-wait frame emission.
 * **Class:** `DEFECT`, low.
 
@@ -221,7 +221,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### I6b. Only close is an interactive control-handler deadline
 
 * **Upstream:** Has no equivalent; SIGHUP delivery imposes no kernel-enforced deadline on the handler's effects.
-* **Port:** `console_control_handler` maps `CTRL_CLOSE_EVENT` to `ShutdownCause::CTRL_CLOSE`, publishes a deadline, and waits for the restoration attempt to complete (`win32/console_io.cc:609`, `win32/console_io.cc:617`, `win32/console_io.cc:630`, `win32/console_io.cc:635`).
+* **Port:** `console_control_handler` maps `CTRL_CLOSE_EVENT` to `ShutdownCause::CTRL_CLOSE`, publishes a deadline, and waits for the restoration attempt to complete (`win32/console_io.cc:655`, `win32/console_io.cc:663`, `win32/console_io.cc:676`, `win32/console_io.cc:681`).
 * **Windows contract:** Microsoft's [HandlerRoutine documentation](https://learn.microsoft.com/windows/console/handlerroutine) gives `CTRL_CLOSE_EVENT` the `SPI_GETHUNGAPPTIMEOUT` budget (table value 5000 ms). It also states that `CTRL_LOGOFF_EVENT` and `CTRL_SHUTDOWN_EVENT` are received only by services: interactive applications are terminated before those signals are sent. Microsoft's [SetConsoleCtrlHandler documentation](https://learn.microsoft.com/windows/console/setconsolectrlhandler) adds that loading `gdi32.dll` or `user32.dll` suppresses those events and directs such applications to use a hidden window's `WM_QUERYENDSESSION` and `WM_ENDSESSION` messages. Thus an interactive `mosh.exe` can receive this control-handler deadline only for `CTRL_CLOSE_EVENT`.
 * **Consequence:** Close must prioritize *local* console restoration over remote acknowledgement; an arbitrarily long protocol shutdown is not available.
 * **Class:** `PLATFORM`, medium.
@@ -230,7 +230,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A23. Session end has no producer
 
 * **Upstream:** SIGTERM and SIGHUP start network shutdown when a remote address exists (`src/frontend/stmclient.cc:508`).
-* **Port:** Defines `ShutdownCause::SESSION_END` and a cross-thread `request_shutdown()` entry point (`win32/console_io.h:67`, `win32/console_io.cc:1071`), but no hidden window or message pump publishes that cause from `WM_QUERYENDSESSION` or `WM_ENDSESSION`.
+* **Port:** Defines `ShutdownCause::SESSION_END` and a cross-thread `request_shutdown()` entry point (`win32/console_io.h:67`, `win32/console_io.cc:1117`), but no hidden window or message pump publishes that cause from `WM_QUERYENDSESSION` or `WM_ENDSESSION`.
 * **Consequence:** On logoff, the client has no protocol-shutdown path and the remote `mosh-server` can be left running.
 * **The producer cannot be scoped to `ConsoleSession`.** A session end can arrive during the SSH bootstrap — after `mosh-server` has started and returned its `MOSH CONNECT` reply, but before a `ConsoleSession` exists to receive `request_shutdown()`. In that window the notification has nothing to reach: the spawned `ssh` child is not reaped, the acquired key is not scrubbed, and the remote server is orphaned with no client that ever connected. Whatever owns the hidden window therefore has to outlive and precede the console session, and has to know which phase — bootstrapping, running, restoring — it is interrupting.
 * **Correcting this is not simply wiring the two messages to `request_shutdown()`.** `WM_QUERYENDSESSION` is a query that may be refused or cancelled, and a cancelled session end is followed by `WM_ENDSESSION` with `wParam == FALSE`. Transport shutdown is irreversible, so publishing on the query would destroy a session the user just kept. Only a committed `WM_ENDSESSION` may publish, exactly once. The attainable guarantee is a bounded best-effort shutdown attempt before the callback returns, not a stopped remote server: Windows may terminate the process once the callback returns, and the message budget for session end is not the `SPI_GETHUNGAPPTIMEOUT` value that governs `CTRL_CLOSE_EVENT`.
@@ -239,14 +239,14 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### I6c. Console restoration is not reliable during close handling
 
 * **Windows contract:** Microsoft's [HandlerRoutine documentation](https://learn.microsoft.com/windows/console/handlerroutine) states that console functions "may not work reliably" while processing `CTRL_CLOSE_EVENT`, `CTRL_LOGOFF_EVENT`, or `CTRL_SHUTDOWN_EVENT`, because console cleanup may already have run before the handler executes.
-* **Port:** The close path attempts to restore input and output modes before it signals `restored` (`Impl::restore`, `win32/console_io.cc:985`, `win32/console_io.cc:1000`; `Impl::release_and_signal`, `win32/console_io.cc:927`, `win32/console_io.cc:936`, `win32/console_io.cc:938`). The completion event means only that the attempt completed; the cleanup report records whether it succeeded (`win32/mosh_main.cc:173`).
+* **Port:** The close path attempts to restore input and output modes before it signals `restored` (`Impl::restore`, `win32/console_io.cc:1031`, `win32/console_io.cc:1046`; `Impl::release_and_signal`, `win32/console_io.cc:973`, `win32/console_io.cc:982`, `win32/console_io.cc:984`). The completion event means only that the attempt completed; the cleanup report records whether it succeeded (`win32/mosh_main.cc:173`).
 * **Consequence:** Even when the handler waits within the close deadline, restoration can fail. The deadline machinery can bound the attempt; it cannot guarantee a restored console. Any user-visible cleanup report is best-effort because console output is itself among the operations documented as unreliable during close handling. Acceptance criteria for close must distinguish an attempt completing from restoration succeeding.
 * **Class:** `PLATFORM`, medium.
 
 #### A24. A blocked console write can consume the whole close deadline
 
 * **Upstream:** No analogue. POSIX imposes no forced-termination deadline on the client, so a slow terminal write delays shutdown without cutting it short.
-* **Port:** Every console write is a synchronous `WriteFile` on the owner thread — the open sequence during construction (`win32/console_io.cc:905`) and each frame in the loop (`win32/console_io.cc:1248`). Publishing a close deadline signals an event; it does not interrupt a write already in progress, and nothing cancels one.
+* **Port:** Every console write is a synchronous `WriteFile` on the owner thread — the open sequence during construction (`win32/console_io.cc:951`) and each frame in the loop (`win32/console_io.cc:1295`). Publishing a close deadline signals an event; it does not interrupt a write already in progress, and nothing cancels one.
 * **Consequence:** If close arrives while the owner is inside a console write, the owner cannot reach `release_and_signal()`. The handler's wait expires, Windows terminates the process, and the console is left raw with no restoration *attempted* — the outcome the bounded close path exists to prevent. This is distinct from I6c, where the attempt runs and can fail; here it never starts. The `deadline-wedged-reader` mode does not cover it: it wedges the reader after the loop has regained control, not the writer, and not during construction.
 * **Class:** `DEFECT`, medium. A5 records the same unbounded write as a latency cost; this is its termination consequence.
 * **Fix:** Not chosen. Bounding it needs a cancellable output path — a dedicated writer whose handle can be cancelled, with a bounded join and a rule forbidding writes after restoration — or the close contract has to be stated as best-effort rather than bounded. That is a design decision, not a patch.
@@ -285,7 +285,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A14. Normal-exit cleanup is not one complete transition
 
 * **Upstream:** On a normal exit, `STMClient::shutdown()` clears the notification, marks the server heard, clears the title prefix, and renders one final frame through the ordinary render path (`src/frontend/stmclient.cc:153`, `src/frontend/stmclient.cc:156`, `src/frontend/stmclient.cc:157`, `src/frontend/stmclient.cc:158`, `src/frontend/stmclient.cc:159`).
-* **Port:** Restoration emits `close_sequence()` without a single MoshCore cleanup transition that performs the three explicit overlay mutations — notification clear, server-heard mark, and title-prefix clear — and then the final frame before restoration (`win32/console_io.cc:985`, `win32/console_io.cc:991`).
+* **Port:** Restoration emits `close_sequence()` without a single MoshCore cleanup transition that performs the three explicit overlay mutations — notification clear, server-heard mark, and title-prefix clear — and then the final frame before restoration (`win32/console_io.cc:1031`, `win32/console_io.cc:1037`).
 * **Consequence:** Normal exits can retain stale notifications and title state on the last rendered screen, and cleanup responsibilities are split across unrelated paths. The final frame follows the ordinary cull/apply render path and does not imply a separate prediction reset.
 * **Class:** `DEFECT`, low. A14 owns the full normal-exit cleanup transition, including the final frame; it is not merely a missing frame.
 * **Timing rule:** For deadline-driven or failed-output exits, the final frame is skipped in favor of immediate restoration. A synchronous final frame must not consume the close-handler restoration reserve; see A24.
@@ -304,7 +304,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A27. Select poll diagnostics are unimplemented above transport verbosity
 
 * **Upstream:** Repeatable `-vv` (verbosity greater than one) enables `Select` diagnostics, emitting per-poll and rate-limiting/throttle diagnostics (`src/util/select.h:128`, `src/util/select.h:132`, `src/util/select.h:137`). A single `-v` emits no Select diagnostics.
-* **Port:** The Win32 `PollThrottle` enforces the wait floor but emits no poll or throttle diagnostics (`win32/console_io.cc:711`); `-vv` reaches transport only.
+* **Port:** The Win32 `PollThrottle` enforces the wait floor but emits no poll or throttle diagnostics (`win32/console_io.cc:757`); `-vv` reaches transport only.
 * **Consequence:** `-vv` and higher cannot expose the poll timing and throttling information available upstream.
 * **Class:** `DEFECT`, low.
 * **Related:** A4 is the confirmed transport-verbosity tier; A27 is its unimplemented Select tier for verbosity level two and above and is coupled to A26's missing wait seam.
@@ -314,7 +314,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A29. Enumerating a readable socket can strand a later socket's FD_READ event
 
 * **Upstream:** `Select::select()` returns the complete ready set, and `process_network_input()` performs one receive action for the pass (`src/frontend/stmclient.cc:476`, `src/frontend/stmclient.cc:296`).
-* **Port:** `run_loop()` enumerates each signaled socket with `WSAEnumNetworkEvents`, which clears the recorded network event, then calls `core.on_readable()` for the first `FD_READ` and breaks (`win32/console_io.cc:1228`, `win32/console_io.cc:1231`, `win32/console_io.cc:1237`). `on_readable()` discards the socket argument and sweeps the transport sockets in deque order (`win32/mosh_core.cc:362`, `src/network/network.cc:489`).
+* **Port:** `run_loop()` enumerates each signaled socket with `WSAEnumNetworkEvents`, which clears the recorded network event, then calls `core.on_readable()` for the first `FD_READ` and breaks (`win32/console_io.cc:1274`, `win32/console_io.cc:1277`, `win32/console_io.cc:1283`). `on_readable()` discards the socket argument and sweeps the transport sockets in deque order (`win32/mosh_core.cc:362`, `src/network/network.cc:489`).
 * **Consequence:** If the first socket consumes the 32-datagram budget (`win32/mosh_core.cc:66`, `win32/mosh_core.cc:201`) or receives a non-`No packet received` exception (`win32/mosh_core.cc:205`), `Connection::recv()` returns or throws after the first productive socket (`src/network/network.cc:513`, `src/network/network.cc:517`). A later socket whose `FD_READ` record was already cleared by enumeration is then neither received from nor re-armed, so its traffic can remain frozen until another event re-arms it.
 * **Class:** `DEFECT`, **high** — event-loop/network. A readable event can be consumed as bookkeeping without a corresponding `recvfrom`, and a port hop can leave the user waiting indefinitely.
 * **Fix:** Preserve the ready socket identity through `on_readable()` and receive from that socket, or re-arm every enumerated socket whose record was cleared before continuing.
@@ -322,8 +322,8 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A30. Socket-event registrations are keyed only by recycled `SOCKET` values
 
 * **Upstream:** File descriptors in the selected set identify the live descriptor for that poll; a closed descriptor is not silently reused as the same registration.
-* **Port:** `SocketEvents::reconcile()` stores registrations in `std::map<intptr_t, WSAEVENT>` and compares only the raw socket value (`win32/console_io.cc:555`, `win32/console_io.cc:574`, `win32/console_io.cc:584`). It does not re-issue `WSAEventSelect` when a value remains present (`win32/console_io.cc:584-587`).
-* **Consequence:** Across iterations, `run_loop()` calls `core.tick()` before reconciliation (`win32/console_io.cc:1117`, `win32/console_io.cc:1122`). A receive-side prune can close a socket after the existing registration was captured, and a newly created socket can receive the same handle value before the next reconciliation. The map then treats the new socket as the old one and leaves it without `WSAEventSelect(FD_READ)`, so it is never reported readable.
+* **Port:** `SocketEvents::reconcile()` stores registrations in `std::map<intptr_t, WSAEVENT>` and compares only the raw socket value (`win32/console_io.cc:601`, `win32/console_io.cc:620`, `win32/console_io.cc:630`). It does not re-issue `WSAEventSelect` when a value remains present (`win32/console_io.cc:630-633`).
+* **Consequence:** Across iterations, `run_loop()` calls `core.tick()` before reconciliation (`win32/console_io.cc:1163`, `win32/console_io.cc:1168`). A receive-side prune can close a socket after the existing registration was captured, and a newly created socket can receive the same handle value before the next reconciliation. The map then treats the new socket as the old one and leaves it without `WSAEventSelect(FD_READ)`, so it is never reported readable.
 * **Class:** `DEFECT`, **high** — event-loop/network. Raw handle identity is not a socket generation identity.
 * **Fix:** Re-issue `WSAEventSelect` for every live socket on reconciliation, or track socket generations rather than only the raw value.
 
@@ -375,7 +375,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A37. CRT bootstrap banners can overtake raw console session output
 
 * **Upstream:** Startup diagnostics and session output share the frontend's ordered output path (`src/frontend/mosh-client.cc:215`, `src/frontend/stmclient.cc:256`).
-* **Port:** `drain_and_parse()` prints non-`MOSH` banners through CRT `stdout` (`win32/mosh_bootstrap.cc:213-217`), while the session writes frames and the open sequence directly with `WriteFile` (`win32/console_io.cc:694-709`, `win32/console_io.cc:900-905`). No flush bridges those two output paths before the session begins.
+* **Port:** `drain_and_parse()` prints non-`MOSH` banners through CRT `stdout` (`win32/mosh_bootstrap.cc:213-217`), while the session writes frames and the open sequence directly with `WriteFile` (`win32/console_io.cc:740-755`, `win32/console_io.cc:946-951`). No flush bridges those two output paths before the session begins.
 * **Consequence:** With redirected or buffered CRT stdout, a banner/MOTD can remain buffered and appear after raw session output rather than in bootstrap order.
 * **Class:** `DEFECT`, low — output ordering.
 * **Fix:** Use one output path or flush CRT stdout before handing the console output to the session.
@@ -412,7 +412,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A42. `WAIT_FAILED` is treated as a worker exit
 
 * **Upstream:** A failed wait is an error, not evidence that the worker terminated (`src/util/select.h:143`).
-* **Port:** `Reader::stop_until_deadline()` breaks on every result other than `WAIT_TIMEOUT`, including `WAIT_FAILED`, then closes the worker handle and nulls the member (`win32/console_io.cc:502-543`).
+* **Port:** `Reader::stop_until_deadline()` breaks on every result other than `WAIT_TIMEOUT`, including `WAIT_FAILED`, then closes the worker handle and nulls the member (`win32/console_io.cc:548-589`).
 * **Consequence:** If the worker wait fails, the owner can report teardown complete and close the handle while the reader thread is still running, creating a use-after-close and leaving the input lifecycle unbounded.
 * **Class:** `DEFECT`, **high** — thread lifecycle.
 * **Fix:** Distinguish `WAIT_OBJECT_0`, `WAIT_TIMEOUT`, and `WAIT_FAILED`; retain the handle and surface the failure unless termination policy explicitly and safely cancels the worker.
@@ -420,7 +420,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A43. Reader teardown closes a duplicated input handle during an in-flight read
 
 * **Upstream:** Synchronous input ownership ends after the read operation returns (`src/frontend/stmclient.cc:310-316`).
-* **Port:** Teardown cancels synchronous I/O, exchanges `input` to null, and closes the duplicate (`win32/console_io.cc:490-498`, `win32/console_io.cc:528-532`), while the worker separately loads `input` and calls `ReadFile` (`win32/console_io.cc:354-362`).
+* **Port:** Teardown cancels synchronous I/O, exchanges `input` to null, and closes the duplicate (`win32/console_io.cc:536-544`, `win32/console_io.cc:574-578`), while the worker separately loads `input` and calls `ReadFile` (`win32/console_io.cc:370-377`).
 * **Consequence:** The worker can load the handle between `input.load()` and `ReadFile` while teardown closes it, so cancellation does not establish ownership of the handle for the in-flight call. The read can fail against a recycled handle or observe invalid state during shutdown.
 * **Class:** `DEFECT`, **high** — thread/handle lifetime.
 * **Fix:** Give the worker stable handle ownership until it exits, then close it after a successful join; cancellation must not close a handle still usable by the worker.
@@ -428,7 +428,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A44. Restoring the original input mode can leave QuickEdit disabled
 
 * **Upstream:** Restores the terminal's input mode through the same terminal-state contract used before raw mode (`src/frontend/stmclient.cc:153`).
-* **Port:** Setup enables `ENABLE_EXTENDED_FLAGS` while clearing `ENABLE_QUICK_EDIT_MODE` (`win32/console_io.cc:861-863`), but restore passes the captured mode without ensuring `ENABLE_EXTENDED_FLAGS` is present (`win32/console_io.cc:1000-1004`).
+* **Port:** Setup enables `ENABLE_EXTENDED_FLAGS` while clearing `ENABLE_QUICK_EDIT_MODE` (`win32/console_io.cc:907-909`), but restore passes the captured mode without ensuring `ENABLE_EXTENDED_FLAGS` is present (`win32/console_io.cc:1046-1050`).
 * **Consequence:** When the original mode had QuickEdit enabled without the extended-flags bit, Windows ignores the QuickEdit setting during restoration, leaving QuickEdit disabled after exit.
 * **Class:** `DEFECT`, low — console restoration.
 * **Fix:** Include `ENABLE_EXTENDED_FLAGS` when restoring a mode whose QuickEdit bit must be honored.
@@ -436,7 +436,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A45. Restore failures can be silently omitted from the cleanup report
 
 * **Upstream:** Cleanup diagnostics preserve a failed restoration operation rather than relying on an unrelated prior error state (`src/frontend/stmclient.cc:153-159`).
-* **Port:** Code-page and mode restoration calls report failure through `record_last_error()` (`win32/console_io.cc:994-1005`), which records `GetLastError()` only when `first_error` is still `ERROR_SUCCESS` (`win32/console_io.cc:170-179`).
+* **Port:** Code-page and mode restoration calls report failure through `record_last_error()` (`win32/console_io.cc:1040-1051`), which records `GetLastError()` only when `first_error` is still `ERROR_SUCCESS` (`win32/console_io.cc:170-179`).
 * **Consequence:** If a failed Win32 call leaves `GetLastError()` as `ERROR_SUCCESS`, the report remains apparently clean and `mosh_main` suppresses the rollback warning (`win32/mosh_main.cc:185-190`). These calls have no generic failure backstop unlike the close-sequence write.
 * **Class:** `DEFECT`, low — cleanup diagnostics.
 * **Fix:** Record a generic restore failure whenever the boolean operation fails and `GetLastError()` is `ERROR_SUCCESS`.
@@ -444,8 +444,8 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A46. Exception unwinding can perform an unbounded reader join after a deadline
 
 * **Upstream:** The main loop's exit path does not leave a detached worker whose destructor can block indefinitely (`src/frontend/stmclient.cc:490-572`).
-* **Port:** The `Reader` comment explicitly says that a deadline teardown can leave `worker` non-null and requires callers to release such sessions rather than unwind (`win32/console_io.cc:545-552`). However, `run_console_session()` stores `ConsoleSession` by value and lets exceptions escape its inner catch (`win32/mosh_main.cc:117-125`).
-* **Consequence:** If a deadline path cancels without joining the reader and `session.run()` then throws, stack unwinding destroys `ConsoleSession`; `Reader::~Reader()` calls the unbounded `stop()` path, which waits indefinitely on the still-running worker (`win32/console_io.cc:427-430`, `win32/console_io.cc:502-553`).
+* **Port:** The `Reader` comment explicitly says that a deadline teardown can leave `worker` non-null and requires callers to release such sessions rather than unwind (`win32/console_io.cc:591-598`). However, `run_console_session()` stores `ConsoleSession` by value and lets exceptions escape its inner catch (`win32/mosh_main.cc:117-125`).
+* **Consequence:** If a deadline path cancels without joining the reader and `session.run()` then throws, stack unwinding destroys `ConsoleSession`; `Reader::~Reader()` calls the unbounded `stop()` path, which waits indefinitely on the still-running worker (`win32/console_io.cc:473-476`, `win32/console_io.cc:548-599`).
 * **Class:** `DEFECT`, **high** — termination/thread lifecycle.
 * **Fix:** Make the unwind path release the deliberately non-joined worker without blocking, or ensure every exception path retains a bounded teardown contract.
 
@@ -468,7 +468,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A49. `ConsoleLifecycleState` is bookkeeping that never reaches `DONE`
 
 * **Upstream:** Lifecycle state is consumed by the owning loop or teardown path rather than being written as unused bookkeeping (`src/frontend/stmclient.cc:153-159`).
-* **Port:** `ConsoleLifecycleState` declares `DONE` but `Impl::state` is initialized to `RUNNING`, assigned `SHUTTING_DOWN` and `RESTORED`, and never read or assigned `DONE` (`win32/console_io.h:70-78`, `win32/console_io.cc:769-777`, `win32/console_io.cc:937`, `win32/console_io.cc:1097`).
+* **Port:** `ConsoleLifecycleState` declares `DONE` but `Impl::state` is initialized to `RUNNING`, assigned `SHUTTING_DOWN` and `RESTORED`, and never read or assigned `DONE` (`win32/console_io.h:70-78`, `win32/console_io.cc:815-823`, `win32/console_io.cc:983`, `win32/console_io.cc:1143`).
 * **Consequence:** The lifecycle state cannot express teardown completion and provides no invariant or diagnostic value; the three writes are dead bookkeeping that can drift from the actual release state.
 * **Class:** `DEFECT`, low — lifecycle bookkeeping.
 
@@ -527,8 +527,16 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### Reader input ending enters graceful shutdown
 
 * **Upstream:** `process_user_input()` returns false for EOF and a read error (`src/frontend/stmclient.cc:316`); the main loop then breaks if not yet connected, or calls `network->start_shutdown()` if connected (`src/frontend/stmclient.cc:490`).
-* **Port:** `Reader::read_loop` marks a `ReadFile` failure as input ended (`win32/console_io.cc:358`); the owner observes `has_ended()` and begins graceful shutdown with `ShutdownCause::IO_LOSS` (`win32/console_io.cc:1203`). A successful zero-byte result follows the same path (`win32/console_io.cc:370`).
-* **Status:** read-failure parity. Treating a successful zero-byte console read as end-of-input is engineering judgment, not a documented Windows EOF guarantee. Microsoft's [ReadFile documentation](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-readfile) specifies end-of-file behavior for file reads but not console handles. Microsoft's [high-level console input documentation](https://learn.microsoft.com/windows/console/high-level-console-input-and-output-functions) instead says that, with line input disabled, `ReadFile` on console input does not return until at least one character is available. A successful zero-byte console read is therefore undocumented in both directions. The chosen teardown avoids an unbounded immediate retry spin: a spurious zero costs a clean shutdown; a wrong backoff can consume a core indefinitely.
+* **Port:** `Reader::read_loop` marks a `ReadFile` failure as input ended (`win32/console_io.cc:370`); the owner observes `has_ended()` and begins graceful shutdown with `ShutdownCause::IO_LOSS`. A successful zero-byte read is *not* end-of-input when the handle is a console: see the Ctrl-Z record below.
+* **Status:** read-failure parity. A `ReadFile` failure ends input. A successful zero-byte read is handled separately (below), because on a console handle it is how an old console host reports Ctrl-Z, not EOF.
+
+#### Bare Ctrl-Z passes through to the server
+
+* **Upstream:** a bare Ctrl-Z is an ordinary byte; the raw-mode client `read()`s it and forwards it to the remote pty, where it suspends the remote foreground job. Only escape-prefix Ctrl-Z is the local suspend (`src/frontend/stmclient.cc:302`), which Windows cannot do (A16/A28).
+* **Port:** on a console host older than [microsoft/terminal PR #19940](https://github.com/microsoft/terminal/pull/19940), a raw-mode `ReadFile` reports Ctrl-Z as a *successful zero-byte read* and consumes the 0x1A byte. `Reader::read_loop` reinterprets a zero-byte read on a classified console handle (`GetFileType == FILE_TYPE_CHAR` and `GetConsoleMode` succeeds — the win32 OpenSSH pair) as Ctrl-Z and synthesizes the 0x1A into the input queue with the same cancellable backpressure as ordinary input, so the byte reaches the server exactly as upstream's does. A fixed host (PR #19940, which honors Ctrl-Z only in PROCESSED mode) delivers 0x1A as an ordinary byte and never reaches the synthesis branch, so old and new hosts behave identically. The read is per-keystroke, not latched — the next `ReadFile` blocks — so synthesis does not spin. Non-console input still ends the session on a genuine EOF: a closed pipe fails the `ReadFile` (`ERROR_BROKEN_PIPE`), and a regular file at EOF returns a zero-byte success — both take the non-console zero-byte/failure path, since only a console handle is eligible for the Ctrl-Z reinterpretation.
+* **Why not `ReadConsoleInputW`:** the low-level event API identifies Ctrl-Z unambiguously (a `KEY_EVENT` with `uChar == 0x1A`), avoiding the zero-byte inference entirely. It was rejected because it drops the port a layer below upstream's architecture: upstream mosh is a byte-stream client whose terminal/pty does key-to-byte translation, and the high-level `ReadFile` path is the Windows analog (conhost plays the pty's role). `ReadConsoleInputW` would make the fork own dead-key composition, IME, and AltGr handling that upstream deliberately does not — a larger, permanent divergence to fix one documented quirk. The zero-byte inference is bounded: for a synchronous nonzero-buffer console read, the conhost source produces a zero-byte success only for Ctrl-Z — the conversion lives in [`ApiDispatchers.cpp`](https://github.com/microsoft/terminal/blob/main/src/server/ApiDispatchers.cpp#L313-L333) (a leading 0x1A sets `NumBytes` to zero after the record is consumed), and no other path in the read produces a successful zero-byte result — and the handle classification confines the rule to console handles. This rests on a component the port does not control; the probe modes below exist to catch a host that breaks the assumption.
+* **Consequence:** bare Ctrl-Z suspends the remote job on every Windows console host, matching upstream and WSL. The earlier behavior — treating the zero-byte read as end-of-input, which killed the session — was the bug this record replaces.
+* **Verification:** `test_console_lifecycle.exe ctrl-z-passthrough` simulates the old host via the `ZERO_BYTE_READ` injector and asserts the server receives the 0x1A `UserByte` (this is the deterministic acceptance coverage of the synthesis branch); `probe-ctrlz-e2e` runs the same assertion against a physically injected Ctrl-Z on the real host; `probe-ctrlz-read` is non-asserting diagnostic evidence that records the attached host's raw `ReadFile` response. The CI `windows-11-arm` conhost is a fixed host (it delivers literal 0x1A), so the synthesis branch is exercised only through the injector on CI; the physical-KeyEvent path on a genuinely old host is verified manually.
 
 #### Connection timeout enters graceful shutdown
 
@@ -539,21 +547,21 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### An interrupt control event enters protocol shutdown; a typed Ctrl-C does not
 
 * **Upstream:** SIGINT and SIGTERM start network shutdown when a remote address exists (`src/frontend/stmclient.cc:508`). A typed Ctrl-C is not one of them: raw mode leaves terminal signal generation off, so the byte goes to the remote.
-* **Port:** Setup clears `ENABLE_PROCESSED_INPUT` (`win32/console_io.cc:862`), so a typed Ctrl-C reaches `ReadFile` as `0x03` and is forwarded as an ordinary user byte — the escape key is `0x1e` (`win32/mosh_core.cc:114`), so nothing intercepts it. A **delivered** `CTRL_C_EVENT` or `CTRL_BREAK_EVENT` maps to `ShutdownCause::CTRL_BREAK` and signals the termination event (`win32/console_io.cc:609`, `win32/console_io.cc:615`, `win32/console_io.cc:630`); the owner observes it and begins graceful shutdown (`win32/console_io.cc:1197`, `win32/console_io.cc:1088`).
-* **Status:** parity for the interrupt path, on first signal. With a remote address, `MoshCore::begin_shutdown()` starts the protocol shutdown (`win32/mosh_core.cc:294`). A repeated event is idempotent: after the first observation the loop no longer polls the termination event, and `CTRL_BREAK` carries no deadline (`win32/console_io.cc:1128`, `win32/console_io.cc:1197`, `win32/console_io.cc:125`). A close event can still escalate the same shutdown by publishing its deadline.
+* **Port:** Setup clears `ENABLE_PROCESSED_INPUT` (`win32/console_io.cc:908`), so a typed Ctrl-C reaches `ReadFile` as `0x03` and is forwarded as an ordinary user byte — the escape key is `0x1e` (`win32/mosh_core.cc:114`), so nothing intercepts it. A **delivered** `CTRL_C_EVENT` or `CTRL_BREAK_EVENT` maps to `ShutdownCause::CTRL_BREAK` and signals the termination event (`win32/console_io.cc:655`, `win32/console_io.cc:661`, `win32/console_io.cc:676`); the owner observes it and begins graceful shutdown (`win32/console_io.cc:1243`, `win32/console_io.cc:1134`).
+* **Status:** parity for the interrupt path, on first signal. With a remote address, `MoshCore::begin_shutdown()` starts the protocol shutdown (`win32/mosh_core.cc:294`). A repeated event is idempotent: after the first observation the loop no longer polls the termination event, and `CTRL_BREAK` carries no deadline (`win32/console_io.cc:1174`, `win32/console_io.cc:1243`, `win32/console_io.cc:125`). A close event can still escalate the same shutdown by publishing its deadline.
 * **What is verified and what is not:** the acceptance modes drive `request_shutdown()` directly, so they establish the cause-to-shutdown mapping and its idempotence, not the delivery of a real control event. Keyboard forwarding of `0x03` rests on the cleared mode flag, not on a test.
 * **Windows-only exit path:** clearing `ENABLE_PROCESSED_INPUT` suppresses Ctrl-C but not Ctrl-Break, so a *typed* Ctrl-Break does generate `CTRL_BREAK_EVENT` and ends the session locally. Upstream has no equivalent key.
 
 #### The close control handler waits for the restoration attempt
 
-* **Port:** `console_control_handler` publishes the close deadline and waits for `control->restored` for the remaining OS budget (`win32/console_io.cc:609`, `win32/console_io.cc:630`, `win32/console_io.cc:635`); `Impl::release_and_signal` attempts restoration and signals that event (`win32/console_io.cc:927`, `win32/console_io.cc:936`, `win32/console_io.cc:938`).
+* **Port:** `console_control_handler` publishes the close deadline and waits for `control->restored` for the remaining OS budget (`win32/console_io.cc:655`, `win32/console_io.cc:676`, `win32/console_io.cc:681`); `Impl::release_and_signal` attempts restoration and signals that event (`win32/console_io.cc:973`, `win32/console_io.cc:982`, `win32/console_io.cc:984`).
 * **Status:** parity with the required bounded close-handling contract, for the paths that reach teardown. Returning `TRUE` alone cannot preserve the restoration-attempt window: Microsoft's [HandlerRoutine documentation](https://learn.microsoft.com/windows/console/handlerroutine) says the system terminates the process when `HandlerRoutine` returns `TRUE` or when the timeout expires. A signalled `restored` event means the attempt finished, not that it succeeded; the cleanup report holds that result. Waiting is therefore required, not defensive.
 * **Limit:** the handler bounds its own wait, which is not the same as bounding the owner. An owner blocked in a console write never reaches teardown at all — see A24.
 
 #### The cached timestamp is frozen after the wait
 
 * **Upstream:** `Select::select()` freezes the timestamp after `pselect` returns (`src/util/select.h:186`).
-* **Port:** `run_loop()` calls `core.refresh_clock()` after `WaitForMultipleObjects` returns and before any dispatch (`win32/console_io.cc:1177`); `MoshCore::refresh_clock` freezes the shared timestamp (`win32/mosh_core.cc:433`).
+* **Port:** `run_loop()` calls `core.refresh_clock()` after `WaitForMultipleObjects` returns and before any dispatch (`win32/console_io.cc:1223`); `MoshCore::refresh_clock` freezes the shared timestamp (`win32/mosh_core.cc:433`).
 * **Status:** parity. Inbound state timestamps and RTT samples use wakeup time in both.
 
 #### Resize leaves the framebuffers to the remote state
@@ -584,9 +592,9 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A repeatedly requested zero wait is bounded (A18, implemented; loop-integration verification pending A26)
 
 * **Upstream:** `Select::select()` counts consecutive zero-timeout calls and raises the timeout to 1 ms from the tenth onward, clearing the count when a nonzero timeout appears (`src/util/select.h:131`, `MAX_POLLS = 10` at `src/util/select.h:230`).
-* **Port:** `PollThrottle::bound` applies the same rule — the first nine consecutive zero requests pass through, the tenth and every zero after it return 1 ms, and a nonzero request passes through and clears the count (`win32/console_io.cc:711`). `run_loop()` holds one per session and applies it to the interval the sources request (`win32/console_io.cc:1155`).
+* **Port:** `PollThrottle::bound` applies the same rule — the first nine consecutive zero requests pass through, the tenth and every zero after it return 1 ms, and a nonzero request passes through and clears the count (`win32/console_io.cc:757`). `run_loop()` holds one per session and applies it to the interval the sources request (`win32/console_io.cc:1201`).
 * **Status:** implemented, and behaviorally at parity on the rule — the two agree call for call over the range upstream defines. Verification is split deliberately: the rule is covered, its use by the loop is not, and A26 holds that. The record sits here rather than in the findings because the port no longer spins; a reader looking up whether the defect is live must not be told it is. One deliberate difference: the port's count saturates at ten where upstream's keeps incrementing a signed `int` that would eventually overflow. Saturation changes no result and hardens the port.
-* **Scope:** the throttle covers the requested interval only, and it bounds the timeout rather than the iteration rate — a wait whose handle is already signalled returns at once, as upstream's `pselect` does. The termination-deadline clamp below it is excluded on purpose, because it drives to zero as the restoration reserve approaches and a floor there would only delay the loop's exit: that zero costs a single wait, since `restoration_reserve_reached` applies the identical predicate to the same deadline (`win32/console_io.cc:1100`, `win32/console_io.cc:1159`) and is re-evaluated just past the wait, breaking the loop in that same iteration ahead of the resize, socket, input, and frame work (`win32/console_io.cc:1200`). It is not ahead of *everything*: the termination check precedes it (`win32/console_io.cc:1197`), so a shutdown request first observed on this wakeup performs its state transition — status, notification, `start_shutdown()` — inside the reserve before the break. Those are state assignments rather than I/O, and this ordering predates the throttle and is unchanged by it, but the reserve is a restoration budget and what may run inside it should be stated rather than assumed. The deadline it reads only ever tightens — the sole publisher takes the earlier of the two candidates (`win32/console_io.cc:157`) — so a clamp that has fired cannot be undone by a later publication. The reader's teardown wait is not throttled and does not need to be: it returns outright when its remaining budget reaches zero rather than waiting on it (`win32/console_io.cc:513`).
+* **Scope:** the throttle covers the requested interval only, and it bounds the timeout rather than the iteration rate — a wait whose handle is already signalled returns at once, as upstream's `pselect` does. The termination-deadline clamp below it is excluded on purpose, because it drives to zero as the restoration reserve approaches and a floor there would only delay the loop's exit: that zero costs a single wait, since `restoration_reserve_reached` applies the identical predicate to the same deadline (`win32/console_io.cc:1146`, `win32/console_io.cc:1205`) and is re-evaluated just past the wait, breaking the loop in that same iteration ahead of the resize, socket, input, and frame work (`win32/console_io.cc:1247`). It is not ahead of *everything*: the termination check precedes it (`win32/console_io.cc:1243`), so a shutdown request first observed on this wakeup performs its state transition — status, notification, `start_shutdown()` — inside the reserve before the break. Those are state assignments rather than I/O, and this ordering predates the throttle and is unchanged by it, but the reserve is a restoration budget and what may run inside it should be stated rather than assumed. The deadline it reads only ever tightens — the sole publisher takes the earlier of the two candidates (`win32/console_io.cc:157`) — so a clamp that has fired cannot be undone by a later publication. The reader's teardown wait is not throttled and does not need to be: it returns outright when its remaining budget reaches zero rather than waiting on it (`win32/console_io.cc:559`).
 * **Verification:** a unit test drives `PollThrottle` across the boundary, across a reset by a nonzero request both before and after the floor engages, and well past the boundary, which is what would catch a counter that wraps or resets itself into another burst of zero waits (`win32/test_console_lifecycle.cc:1187`). CI runs it on native ARM64, and a separate CI step asserts that the loop's sole wait takes its timeout from the throttle.
 * **Limit, and it is the substantive one:** nothing executable covers the loop's *use* of the throttle. The unit test proves arithmetic. The CI step compares source text against the four lines this wiring occupies, so it is a deletion alarm, not a proof: it does not establish data flow or ordering, and a rewrite that reaches a wait by another route defeats it. The finding's original acceptance criterion — drive the loop with sustained zero requests and observe the wait floor — is therefore **not met**, and no harness can meet it today. A26 holds that gap and the criterion that would close it.
 

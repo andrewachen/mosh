@@ -132,6 +132,9 @@ enum class ConsoleReaderTestOutcome {
   END_OF_INPUT,
   READ_FAILURE,
   NONTERMINATING,
+  /* Simulates an old-conhost Ctrl-Z: the first read completes as a successful
+     zero-byte read; subsequent reads block on real console input. */
+  ZERO_BYTE_READ,
 };
 void console_test_set_reader_outcome( ConsoleReaderTestOutcome outcome );
 

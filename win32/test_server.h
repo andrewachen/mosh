@@ -56,6 +56,11 @@ public:
   std::vector<intptr_t> socket_fds() const;
   void on_readable( intptr_t which_fd );
   void tick();
+  /* True when the server has applied a user keystroke whose raw byte equals
+     `byte`. Observes the received UserByte directly rather than terminal echo,
+     because a control byte (e.g. 0x1A) executes as a terminal action and never
+     lands in a visible cell. */
+  bool received_byte( char byte ) const;
 };
 
 #endif
