@@ -33,7 +33,7 @@
 */
 MOSH_LICENSE
 
-# ABOUTME: Stages the native Windows ARM64 mosh runtime and its DLL closure.
+# ABOUTME: Stages the native Windows ARM64 mosh runtime (a single static mosh.exe).
 # ABOUTME: Verifies imports, architecture, licenses, and a reproducible manifest.
 #
 # Use this script after building win32/mosh.exe to make the fail-closed
@@ -46,20 +46,19 @@ usage() {
   cat <<'EOF'
 Usage: win32/package.sh [--exe PATH] [--stage DIR] [--dll-dirs DIR[:DIR...]] [--zip PATH]
 
-Stage mosh.exe, its transitive non-system DLL dependencies, license notices,
-and MANIFEST.txt. Defaults are ./mosh.exe, win32/build/stage/mosh-arm64, and
-${MINGW_PREFIX:-/clangarm64}/bin respectively. --zip also writes a zip archive
-of the staged directory (contents at the archive root) for distribution.
+Stage mosh.exe, license notices, and MANIFEST.txt. Every mosh.exe import must
+be a Windows system DLL — a non-system import fails the staging, since the
+deliverable is a single statically-linked executable. Defaults are ./mosh.exe,
+win32/build/stage/mosh-arm64, and ${MINGW_PREFIX:-/clangarm64}/bin
+respectively (the DLL dirs are used only to locate license text). --zip also
+writes a zip archive of the staged directory (contents at the archive root)
+for distribution.
 EOF
 }
 
 die() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
-}
-
-warn() {
-  printf 'WARNING: %s\n' "$*" >&2
 }
 
 exe='./mosh.exe'
@@ -258,45 +257,30 @@ classify_import() {
     msvcrt.dll)
       IMPORT_CLASS=msvcrt
       ;;
-    api-ms-win-*|ucrtbase.dll|kernel32.dll|advapi32.dll|user32.dll|gdi32.dll|shell32.dll|ole32.dll|oleaut32.dll|ws2_32.dll|crypt32.dll|bcrypt.dll|dbghelp.dll|ntdll.dll|sechost.dll|rpcrt4.dll|shlwapi.dll|version.dll|imm32.dll|setupapi.dll|winmm.dll|wldap32.dll|normaliz.dll|comctl32.dll|comdlg32.dll|msimg32.dll)
+    # Exact API-set contracts observed for this build, not an api-ms-win-*
+    # wildcard: an invented API-set-shaped name must fail closed like any
+    # other non-system import. A future Windows SDK that adds a contract
+    # fails here until the name is reviewed and added.
+    api-ms-win-crt-stdio-l1-1-0.dll|api-ms-win-crt-runtime-l1-1-0.dll|api-ms-win-crt-locale-l1-1-0.dll|api-ms-win-crt-heap-l1-1-0.dll|api-ms-win-crt-private-l1-1-0.dll|api-ms-win-crt-string-l1-1-0.dll|api-ms-win-crt-convert-l1-1-0.dll|api-ms-win-crt-environment-l1-1-0.dll|api-ms-win-crt-math-l1-1-0.dll|api-ms-win-crt-time-l1-1-0.dll|api-ms-win-crt-multibyte-l1-1-0.dll|api-ms-win-crt-filesystem-l1-1-0.dll|api-ms-win-crt-utility-l1-1-0.dll|ucrtbase.dll|kernel32.dll|advapi32.dll|user32.dll|gdi32.dll|shell32.dll|ole32.dll|oleaut32.dll|ws2_32.dll|crypt32.dll|bcrypt.dll|dbghelp.dll|ntdll.dll|sechost.dll|rpcrt4.dll|shlwapi.dll|version.dll|imm32.dll|setupapi.dll|winmm.dll|wldap32.dll|normaliz.dll|comctl32.dll|comdlg32.dll|msimg32.dll)
       IMPORT_CLASS=system
       ;;
     msys-2.0*.dll|cygwin*.dll|*libstdc++*.dll|*libc++*.dll|*libgcc*.dll|*libunwind*.dll|*libwinpthread*.dll|*libssp*.dll|*libatomic*.dll|*protobuf*.dll|*abseil*.dll|*absl*.dll|*utf8*.dll|msvcp*.dll|vcruntime*.dll)
       IMPORT_CLASS=forbidden
       ;;
+    # The deliverable is a single statically-linked mosh.exe, so every
+    # non-system import is unexpected. Fail closed rather than silently
+    # bundling a surprise DLL.
     *)
-      IMPORT_CLASS=shipped
+      IMPORT_CLASS=unexpected
       ;;
   esac
 }
 
-find_dll() {
-  local name=$1
-  local dir candidate
-  DLL_PATH=''
-  IFS=: read -r -a DLL_DIR_LIST <<<"$dll_dirs"
-  for dir in "${DLL_DIR_LIST[@]}"; do
-    [[ -n "$dir" ]] || continue
-    if [[ -d "$dir" ]]; then
-      candidate=$(find "$dir" -maxdepth 1 -type f -iname "$name" -print -quit)
-      if [[ -n "$candidate" ]]; then
-        DLL_PATH=$candidate
-        return 0
-      fi
-    fi
-  done
-  return 0
-}
-
-# Start from a clean output directory so stale DLLs cannot escape the closure.
+# Start from a clean output directory so stale files cannot escape into the bundle.
 rm -rf "$stage_dir"
 mkdir -p "$stage_dir" "$stage_dir/licenses"
 
 declare -A staged_sources=()
-declare -A dll_sources=()
-declare -A seen_modules=()
-declare -A seen_imports=()
-STAGED_DLL_KEYS=()
 IMPORT_RECORDS=()
 
 copy_staged() {
@@ -310,65 +294,30 @@ copy_staged() {
 copy_staged "$exe_path" "$stage_dir/mosh.exe"
 assert_arm64 "$exe_path" 'mosh.exe'
 
-queue_paths=("$exe_path")
-queue_labels=('mosh.exe')
-queue_index=0
-visit_count=0
-max_visits=256
-
-while ((queue_index < ${#queue_paths[@]})); do
-  visit_count=$((visit_count + 1))
-  ((visit_count <= max_visits)) || die "import closure exceeded visit cap of $max_visits"
-  module_path=${queue_paths[$queue_index]}
-  module_label=${queue_labels[$queue_index]}
-  queue_index=$((queue_index + 1))
-
-  dump_imports "$module_path"
-  if [[ "$module_label" == mosh.exe && ${#IMPORT_NAMES[@]} -eq 0 ]]; then
-    die 'could not parse any imports from root executable mosh.exe'
-  fi
-  for import_name in "${IMPORT_NAMES[@]}"; do
-    import_key=${import_name,,}
-    classify_import "$import_key"
-    if [[ "$IMPORT_CLASS" == msvcrt ]]; then
-      die 'msvcrt.dll import indicates a non-UCRT build; the deliverable target is UCRT'
-    fi
-    if [[ "$IMPORT_CLASS" == system ]]; then
-      IMPORT_RECORDS+=("SYSTEM $import_name")
-      continue
-    fi
-    if [[ "$IMPORT_CLASS" == forbidden ]]; then
-      die "forbidden runtime import $import_name in $module_label"
-    fi
-
-    if [[ -n "${seen_imports[$import_key]+seen}" ]]; then
-      IMPORT_RECORDS+=("SHIPPED $import_name -> ${dll_sources[$import_key]}")
-      continue
-    fi
-    seen_imports["$import_key"]=1
-
-    find_dll "$import_name"
-    [[ -n "$DLL_PATH" ]] || die "DLL not found: $import_name (searched: $dll_dirs)"
-    assert_arm64 "$DLL_PATH" "shipped DLL $import_name"
-    dll_sources["$import_key"]=$DLL_PATH
-    STAGED_DLL_KEYS+=("$import_key")
-    destination="$stage_dir/$(basename -- "$DLL_PATH")"
-    if [[ -z "${staged_sources[$destination]+staged}" ]]; then
-      copy_staged "$DLL_PATH" "$destination"
-    fi
-    IMPORT_RECORDS+=("SHIPPED $import_name -> $DLL_PATH")
-
-    if [[ -z "${seen_modules[$import_key]+seen}" ]]; then
-      seen_modules["$import_key"]=1
-      queue_paths+=("$DLL_PATH")
-      queue_labels+=("$import_name")
-    fi
-  done
-done
-
-if ((${#STAGED_DLL_KEYS[@]} == 0)); then
-  printf 'NOTE: mosh.exe has an empty non-system DLL closure; staging the executable and notices only.\n'
+# Every mosh.exe import must classify as a Windows system DLL; anything else is
+# rejected inside the loop. There is no transitive closure to walk: the exe is
+# the only module in the bundle.
+dump_imports "$exe_path"
+if ((${#IMPORT_NAMES[@]} == 0)); then
+  die 'could not parse any imports from root executable mosh.exe'
 fi
+for import_name in "${IMPORT_NAMES[@]}"; do
+  import_key=${import_name,,}
+  classify_import "$import_key"
+  if [[ "$IMPORT_CLASS" == msvcrt ]]; then
+    die 'msvcrt.dll import indicates a non-UCRT build; the deliverable target is UCRT'
+  fi
+  if [[ "$IMPORT_CLASS" == system ]]; then
+    IMPORT_RECORDS+=("SYSTEM $import_name")
+    continue
+  fi
+  if [[ "$IMPORT_CLASS" == forbidden ]]; then
+    die "forbidden runtime import $import_name in mosh.exe"
+  fi
+  if [[ "$IMPORT_CLASS" == unexpected ]]; then
+    die "unexpected non-system import $import_name in mosh.exe (the deliverable is a single statically-linked mosh.exe; a dynamic dependency means the static fold regressed)"
+  fi
+done
 
 copy_license_tree() {
   local source_root=$1
@@ -441,6 +390,18 @@ stage_static_license() {
       license_names=('*winpthread*' '*winpthreads*')
       package_patterns=('*winpthread*' '*winpthreads*')
       ;;
+    openssl)
+      license_names=('openssl' '*openssl*')
+      package_patterns=('*openssl*')
+      ;;
+    ncurses)
+      license_names=('ncurses' '*ncurses*')
+      package_patterns=('*ncurses*')
+      ;;
+    zlib)
+      license_names=('zlib' '*zlib*')
+      package_patterns=('*zlib*')
+      ;;
     *)
       die "unknown static license component: $component"
       ;;
@@ -475,6 +436,9 @@ stage_static_license() {
     abseil) package_patterns=('*abseil*' '*absl*' '*protobuf*') ;;
     llvm-c++-runtime) package_patterns=('*llvm*' '*clang*' '*libc++*' '*libunwind*') ;;
     winpthreads) package_patterns=('*winpthread*' '*winpthreads*') ;;
+    openssl) package_patterns=('*openssl*') ;;
+    ncurses) package_patterns=('*ncurses*') ;;
+    zlib) package_patterns=('*zlib*') ;;
   esac
   while IFS= read -r package; do
     for pattern in "${package_patterns[@]}"; do
@@ -499,50 +463,14 @@ for dll_dir in "${DLL_DIR_LIST[@]}"; do
   license_roots+=("$(dirname -- "$dll_dir")/share/licenses")
 done
 
-declare -A installed_license_keys=()
-for dll_key in "${STAGED_DLL_KEYS[@]}"; do
-  [[ -n "${installed_license_keys[$dll_key]+installed}" ]] && continue
-  installed_license_keys[$dll_key]=1
-  dll_path=${dll_sources[$dll_key]}
-  case "$dll_key" in
-    libcrypto*.dll|libssl*.dll) license_key=openssl ;;
-    libncurses*.dll|libtinfo*.dll) license_key=ncurses ;;
-    zlib1.dll|libz*.dll) license_key=zlib ;;
-    *) license_key='' ;;
-  esac
-
-  license_destination="$stage_dir/licenses/${license_key:-$dll_key}"
-  license_count=0
-  if [[ -n "$license_key" ]]; then
-    dll_path_resolved=$(readlink -f -- "$dll_path") || die "could not resolve shipped DLL path: $dll_path"
-    dll_license_root="$(dirname -- "$(dirname -- "$dll_path_resolved")")/share/licenses"
-    dll_license_roots=("$dll_license_root")
-    for license_root in "${license_roots[@]}"; do
-      [[ "$license_root" == "$dll_license_root" ]] || dll_license_roots+=("$license_root")
-    done
-    for license_root in "${dll_license_roots[@]}"; do
-      license_directory="$license_root/$license_key"
-      [[ -d "$license_directory" ]] || continue
-      copy_license_tree "$license_directory" "$license_destination"
-      license_count=$LICENSE_COPY_COUNT
-      ((license_count > 0)) && break
-    done
-  fi
-
-  if ((license_count == 0)); then
-    command -v pacman >/dev/null 2>&1 || die "license text not found for shipped DLL $dll_path and pacman is unavailable"
-    owner=$(pacman -Qo "$dll_path" 2>/dev/null || true)
-    package=$(awk '{for (i = 1; i <= NF; ++i) if ($i == "by") {print $(i + 1); exit}}' <<<"$owner")
-    [[ -n "$package" ]] || die "could not determine owning package for shipped DLL $dll_path"
-    copy_pacman_licenses "$package" "$license_destination"
-  fi
-done
-
 static_license_destination="$stage_dir/licenses/static"
 stage_static_license protobuf "$static_license_destination/protobuf"
 stage_static_license abseil "$static_license_destination/abseil"
 stage_static_license llvm-c++-runtime "$static_license_destination/llvm-c++-runtime"
 stage_static_license winpthreads "$static_license_destination/winpthreads"
+stage_static_license openssl "$static_license_destination/openssl"
+stage_static_license ncurses "$static_license_destination/ncurses"
+stage_static_license zlib "$static_license_destination/zlib"
 
 ocb_notice="$static_license_destination/ocb/ISC-NOTICE"
 mkdir -p "$(dirname -- "$ocb_notice")"
@@ -584,7 +512,7 @@ trap 'rm -f "$manifest_tmp"' EXIT
   printf 'mosh ARM64 runtime bundle\n'
   printf 'Executable source: %s\n' "$exe_path"
   printf 'DLL search dirs: %s\n' "$dll_dirs"
-  printf 'Static components folded into mosh.exe: protobuf, abseil, LLVM C++ runtime (libc++/libunwind/compiler-rt), OCB, winpthreads\n'
+  printf 'Static components folded into mosh.exe: protobuf, abseil, LLVM C++ runtime (libc++/libunwind/compiler-rt), OCB, winpthreads, OpenSSL (libcrypto), zlib, ncurses\n'
   printf '\nStaged payload files (MANIFEST.txt is self-excluded):\n'
   while IFS= read -r staged_file; do
     hash=$(sha256sum "$staged_file")

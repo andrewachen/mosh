@@ -316,12 +316,28 @@ jobs:
 
       - name: Verify bundle in a clean environment
         shell: msys2 {0}
+        # No -ExpectDlls: the bundle is a single statically-linked mosh.exe, so
+        # verify-bundle's missing-DLL negative control skips by construction.
         run: |
           mkdir -p evidence
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File win32/verify-bundle.ps1 \
-            -BundleDir win32/build/stage/mosh-arm64 -TestCoreExe ./test_core.exe -ExpectDlls \
+            -BundleDir win32/build/stage/mosh-arm64 -TestCoreExe ./test_core.exe \
             >evidence/verify-bundle-output.txt 2>&1
           cat evidence/verify-bundle-output.txt
+
+      - name: Verify mosh.exe imports only Windows system DLLs
+        shell: msys2 {0}
+        # Positive allowlist replacing the DLL-closure coverage the static link
+        # removed: every import must be a Windows system/UCRT DLL. Anything else
+        # means a dependency resolved to an import library instead of the static
+        # archive and would ship as a surprise DLL requirement.
+        run: |
+          llvm-objdump -p mosh.exe > evidence/imports-allowlist-input.txt
+          grep -i "DLL Name:" evidence/imports-allowlist-input.txt
+          if grep -i "DLL Name:" evidence/imports-allowlist-input.txt | grep -Eiv \
+            "DLL Name: (api-ms-win-crt-(stdio|runtime|locale|heap|private|string|convert|environment|math|time|multibyte|filesystem|utility)-l1-1-0\.dll|ucrtbase\.dll|msvcrt\.dll|kernel32\.dll|advapi32\.dll|user32\.dll|gdi32\.dll|shell32\.dll|ole32\.dll|oleaut32\.dll|ws2_32\.dll|crypt32\.dll|bcrypt\.dll|dbghelp\.dll|ntdll\.dll|sechost\.dll|rpcrt4\.dll|shlwapi\.dll|version\.dll|imm32\.dll|setupapi\.dll|winmm\.dll|wldap32\.dll|normaliz\.dll|comctl32\.dll|comdlg32\.dll|msimg32\.dll)[[:space:]]*$"; then \
+            echo "ERROR: mosh.exe imports a non-system DLL (see above)"; exit 1; fi
+          echo "every mosh.exe import is a Windows system/UCRT DLL"
 
       - name: Collect durable evidence bundle
         if: always()

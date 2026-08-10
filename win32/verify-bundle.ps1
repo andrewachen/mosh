@@ -30,7 +30,13 @@
 #     also delete it here.
 #
 # ABOUTME: Verifies that a staged Windows ARM64 mosh bundle runs without MSYS2.
-# ABOUTME: Uses a missing-DLL negative control so the load-time probe discriminates.
+# ABOUTME: Retains a missing-DLL negative control from the DLL-bundling era.
+#
+# The bundle is now a single statically-linked mosh.exe, so the probe-3
+# negative control skips by construction (no staged DLL exists to remove) and
+# -ExpectDlls has no remaining caller. Both are retained deliberately against a
+# future re-introduction of a bundled payload; deleting them would make that
+# regression invisible instead of merely unguarded.
 #
 # Use this after win32/package.sh on Windows CI. It copies rather than mutates the
 # deliverable bundle, then launches each probe under a scrubbed child environment.
