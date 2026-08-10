@@ -50,7 +50,7 @@ using namespace Overlay;
    characters would be misjudged as narrow (U+1F600 -> 0xF600 is PUA width 1). */
 static int wcwidth_scalar( char32_t ch )
 {
-  return mosh_win32_wcwidth_scalar( static_cast<uint32_t>( ch ) );
+  return mosh_win32_wcwidth_scalar( ch );
 }
 #else
 static int wcwidth_scalar( char32_t ch )

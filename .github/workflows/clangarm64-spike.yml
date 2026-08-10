@@ -70,6 +70,12 @@ jobs:
           make -f win32/Makefile.win test_terminal_width
           ./test_terminal_width.exe
 
+      - name: Build and run prediction width regression test
+        shell: msys2 {0}
+        run: |
+          make -f win32/Makefile.win test_prediction_width
+          ./test_prediction_width.exe
+
       - name: Build and run bootstrap test
         shell: msys2 {0}
         timeout-minutes: 2
