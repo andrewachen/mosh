@@ -34,8 +34,10 @@
 /* ABOUTME: Verifies combining, wide, and unprintable characters preserve framebuffer semantics. */
 
 #include <cassert>
+#include <cerrno>
 #include <clocale>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -51,9 +53,26 @@ static void assert_overlay_width( wchar_t ch, int expected_width )
 
 /* Astral scalar values do not fit in a 16-bit Windows wchar_t, so width for
    them is checked through the scalar channel, not the wchar_t wcwidth(). */
-static void assert_scalar_width( mosh_char_t scalar, int expected_width )
+static void assert_scalar_width( char32_t scalar, int expected_width )
 {
   assert( mosh_win32_wcwidth_scalar( scalar ) == expected_width );
+}
+
+/* The decoder reports malformed input as (size_t)-1 with errno EILSEQ, a
+   valid-but-truncated prefix as (size_t)-2, and a NUL byte as 0 consumed. */
+static void assert_decode( const std::string& bytes, long expected_ret, char32_t expected_scalar )
+{
+  char32_t scalar = 0xffffffff;
+  mbstate_t state;
+  memset( &state, 0, sizeof( state ) );
+  errno = 0;
+  const size_t ret = mosh_mbrtoc32( &scalar, bytes.data(), bytes.size(), &state );
+  assert( ret == static_cast<size_t>( expected_ret ) );
+  if ( ret == static_cast<size_t>( -1 ) ) {
+    assert( errno == EILSEQ );
+  } else if ( ret != static_cast<size_t>( -2 ) ) {
+    assert( scalar == expected_scalar );
+  }
 }
 
 static void print( Terminal::Emulator& emulator, wchar_t ch )
@@ -140,6 +159,20 @@ int main()
   assert_scalar_width( 0x10ffff, -1 );
   assert_scalar_width( 0x1f266, -1 );
   assert_scalar_width( 0x2a6e0, -1 );
+
+  /* The UTF-8 decoder rejects malformed input with EILSEQ, reports a valid
+     truncated prefix as incomplete, and decodes boundary values exactly. */
+  assert_decode( "\xc0\x80", -1, 0 );            /* overlong 2-byte NUL */
+  assert_decode( "\xc1\xbf", -1, 0 );            /* overlong 2-byte */
+  assert_decode( "\x80", -1, 0 );                /* lone continuation byte */
+  assert_decode( "\xe0\x80\x80", -1, 0 );        /* overlong 3-byte */
+  assert_decode( "\xed\xa0\x80", -1, 0 );        /* UTF-8-encoded surrogate U+D800 */
+  assert_decode( "\xf0\x80\x80\x80", -1, 0 );    /* overlong 4-byte */
+  assert_decode( "\xf4\x90\x80\x80", -1, 0 );    /* above U+10FFFF */
+  assert_decode( "\xf5\x80\x80\x80", -1, 0 );    /* invalid lead byte */
+  assert_decode( "\xf0\x9f", -2, 0 );            /* valid prefix, truncated */
+  assert_decode( "\xf0\x9f\x98\x80", 4, 0x1f600 ); /* U+1F600 GRINNING FACE */
+  assert_decode( std::string( 1, '\0' ), 0, 0 ); /* NUL byte consumes 0, scalar 0 */
 
   /* End to end: a 4-byte UTF-8 emoji decodes to one wide cell holding the
      original UTF-8 bytes, and the cursor advances two columns. */

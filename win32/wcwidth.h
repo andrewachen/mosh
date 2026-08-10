@@ -50,7 +50,7 @@
    astral Unicode scalar values cannot reach this function as a single character.
    Treat isolated surrogate code units as non-printing rather than misclassifying
    either half as wide. Astral scalars are handled by mosh_win32_wcwidth_scalar(),
-   which the engine's decode layer reaches via the mosh_char_t channel. */
+   which the engine's decode layer reaches via the char32_t channel. */
 static inline int mosh_win32_wcwidth( wchar_t ch )
 {
   const unsigned int c = static_cast<unsigned int>( ch );
@@ -84,7 +84,7 @@ static inline int mosh_win32_wcwidth( wchar_t ch )
    C.UTF-8 wcwidth exactly for every astral scalar, in all four width classes.
    Where Unicode data and glibc disagree, glibc wins because the framebuffer
    must agree with the server. */
-static inline int mosh_win32_wcwidth_scalar( uint32_t scalar )
+static inline int mosh_win32_wcwidth_scalar( char32_t scalar )
 {
   if ( scalar <= 0xffff ) {
     return mosh_win32_wcwidth( static_cast<wchar_t>( scalar ) );

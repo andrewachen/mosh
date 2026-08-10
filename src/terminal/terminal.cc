@@ -45,7 +45,7 @@
    Width must be classified on that scalar, not on a 16-bit code unit. */
 static int wcwidth_scalar( char32_t ch )
 {
-  return mosh_win32_wcwidth_scalar( static_cast<uint32_t>( ch ) );
+  return mosh_win32_wcwidth_scalar( ch );
 }
 #endif
 

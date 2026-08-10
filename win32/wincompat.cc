@@ -51,7 +51,7 @@ int wcwidth( wchar_t ch )
   return mosh_win32_wcwidth( ch );
 }
 
-size_t mosh_mbrtoc32( mosh_char_t* pc32, const char* s, size_t n, mbstate_t* ps )
+size_t mosh_mbrtoc32( char32_t* pc32, const char* s, size_t n, mbstate_t* ps )
 {
   /* UCRT mbrtowc under a .UTF-8 locale has no usable per-call surrogate-pair
      contract: fed a full 4-byte astral sequence it returned U+FFFD, and fed
@@ -153,7 +153,7 @@ size_t mosh_mbrtoc32( mosh_char_t* pc32, const char* s, size_t n, mbstate_t* ps 
   return (size_t)-1;
 }
 
-size_t mosh_c32rtomb( char* s, mosh_char_t c32, mbstate_t* ps )
+size_t mosh_c32rtomb( char* s, char32_t c32, mbstate_t* ps )
 {
   (void)ps; /* UTF-8 encoding is stateless */
   if ( c32 > 0x10ffffu || ( c32 >= 0xd800u && c32 <= 0xdfffu ) ) {
