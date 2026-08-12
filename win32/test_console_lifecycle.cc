@@ -952,6 +952,10 @@ public:
                teardown_resume, close_publication ) {}
   ~MidTeardownCloseGuard()
   {
+    join();
+  }
+  void join()
+  {
     if ( thread_.joinable() ) {
       thread_.join();
     }
@@ -1096,8 +1100,102 @@ static int run_mid_teardown_close()
     fprintf( stderr, "FAIL: close during teardown did not restore input mode\n" );
     failed = 1;
   }
+  if ( !session->reader_detached_for_test() ) {
+    fprintf( stderr, "FAIL: close during teardown did not detach the running reader\n" );
+    failed = 1;
+  }
+  request.join();
   session.release();
   return failed;
+}
+
+/* Forces the precise A46 sequence: deadline teardown detaches the live reader,
+   then run() throws. The owner thread lets its by-value ConsoleSession unwind;
+   the bounded wait catches the old destructor's unbounded Reader::stop(). */
+static int run_deadline_throw_unwind()
+{
+  ConsoleTestInjectionGuard injections;
+  ConsoleTestScope scope;
+  TestServer server( 80, 24 );
+  MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
+                 80, 24, never_prediction() );
+  console_test_set_reader_outcome( ConsoleReaderTestOutcome::NONTERMINATING );
+  console_test_set_shutdown_budget( INJECTED_SHUTDOWN_BUDGET_MS );
+
+  UniqueHandle finished( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( finished.get() != NULL, "CreateEvent(deadline throw finished)" );
+  std::atomic<int> result( 0 );
+  std::thread owner( [&]() {
+    ConsoleSession session( core );
+    session.request_shutdown( ShutdownCause::CTRL_CLOSE );
+    console_test_throw_after_restore();
+    int outcome = 0;
+    try {
+      session.run();
+      outcome = 1;
+    } catch ( const ConsoleError &error ) {
+      outcome = error.win32_code == ERROR_CANCELLED ? 0 : 2;
+    } catch ( ... ) {
+      outcome = 3;
+    }
+    result.store( outcome );
+    SetEvent( finished.get() );
+  } );
+
+  const DWORD wait = WaitForSingleObject( finished.get(), MID_TEARDOWN_CLOSE_BOUND_MS );
+  if ( wait != WAIT_OBJECT_0 ) {
+    fprintf( stderr, "FAIL: deadline-throw-unwind: owner did not unwind within %lums\n",
+             MID_TEARDOWN_CLOSE_BOUND_MS );
+    std::_Exit( 1 );
+  }
+  owner.join();
+  if ( result.load() != 0 ) {
+    fprintf( stderr, "FAIL: deadline-throw-unwind: run() did not throw ERROR_CANCELLED\n" );
+    return 1;
+  }
+  return 0;
+}
+
+/* A thread wait can fail while the reader still runs. Close the real duplicated
+   thread handle, then leave the injected reader alive; teardown must surface the
+   failed wait and must not destroy the Reader underneath its worker. */
+static int run_wait_failed_reader()
+{
+  ConsoleTestInjectionGuard injections;
+  ConsoleTestScope scope;
+  TestServer server( 80, 24 );
+  MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
+                 80, 24, never_prediction() );
+  console_test_set_reader_outcome( ConsoleReaderTestOutcome::NONTERMINATING );
+
+  UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( session_done.get() != NULL, "CreateEvent(session_done)" );
+  UniqueHandle deadline_start( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( deadline_start.get() != NULL, "CreateEvent(deadline_start)" );
+  std::atomic<ULONGLONG> watchdog_at( 0 );
+  WatchdogGuard watchdog( session_done.get(), deadline_start.get(), &watchdog_at, &scope,
+                          ACCEPTANCE_WATCHDOG_MS );
+
+  auto session = std::make_unique<ConsoleSession>( core );
+  const HANDLE worker = session->reader_worker_for_test();
+  must( worker != NULL, "reader worker handle" );
+  must( CloseHandle( worker ), "CloseHandle(reader worker)" );
+  const char quit[] = { 0x1e, '.' };
+  core.feed_input( quit, sizeof quit );
+  watchdog_at.store( GetTickCount64() + ACCEPTANCE_WATCHDOG_MS );
+  must( SetEvent( deadline_start.get() ), "SetEvent(deadline_start)" );
+  session->run();
+  const CleanupReport cleanup = session->cleanup_report();
+  session.reset();
+  must( SetEvent( session_done.get() ), "SetEvent(session_done)" );
+  watchdog.stop();
+
+  if ( cleanup.reader_error != ERROR_INVALID_HANDLE ) {
+    fprintf( stderr, "FAIL: wait-failed-reader reported %lu, expected %lu\n",
+             cleanup.reader_error, ERROR_INVALID_HANDLE );
+    return 1;
+  }
+  return 0;
 }
 
 static int run_connection_timeout()
@@ -1605,6 +1703,12 @@ int main( int argc, char *argv[] )
     }
     if ( strcmp( argv[1], "connection-timeout" ) == 0 ) {
       return run_connection_timeout();
+    }
+    if ( strcmp( argv[1], "wait-failed-reader" ) == 0 ) {
+      return run_wait_failed_reader();
+    }
+    if ( strcmp( argv[1], "deadline-throw-unwind" ) == 0 ) {
+      return run_deadline_throw_unwind();
     }
     if ( strcmp( argv[1], "upstream-length" ) == 0 ) {
       return run_upstream_length();

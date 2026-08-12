@@ -95,6 +95,7 @@ std::atomic<DWORD> g_shutdown_budget_override_ms( 0 );
 /* Optional test barrier reached inside the reader-stop wait. */
 std::atomic<HANDLE> g_teardown_entered( NULL );
 std::atomic<HANDLE> g_teardown_resume( NULL );
+std::atomic<bool> g_throw_after_restore( false );
 
 /* The restored event of the most recently created control block. Readable after
    a constructor throws, when no session object survives to be asked. Safe to
@@ -539,17 +540,35 @@ public:
     if ( worker != NULL ) {
       stopping.store( true );
       CancelSynchronousIo( worker );
-      HANDLE handle = input.exchange( NULL );
-      if ( handle != NULL ) {
-        CloseHandle( handle );
-      }
     }
   }
 
-  void stop_until_deadline( const std::atomic<ULONGLONG> *deadline )
+  HANDLE worker_handle() const
+  {
+    return worker;
+  }
+
+  void close_input()
+  {
+    HANDLE handle = input.exchange( NULL );
+    if ( handle != NULL ) {
+      CloseHandle( handle );
+    }
+  }
+
+  void record_stop_failure( DWORD error )
+  {
+    std::lock_guard<std::mutex> lock( failure_mutex );
+    if ( !read_failed ) {
+      failure_code = error;
+      read_failed = true;
+    }
+  }
+
+  bool stop_until_deadline( const std::atomic<ULONGLONG> *deadline )
   {
     if ( worker == NULL ) {
-      return;
+      return true;
     }
     stopping.store( true );
     while ( true ) {
@@ -558,11 +577,23 @@ public:
       const DWORD remaining = active_deadline == NO_TERMINATION_DEADLINE
         ? RESIZE_POLL_CAP_MS : deadline_remaining( active_deadline );
       if ( active_deadline != NO_TERMINATION_DEADLINE && remaining == 0 ) {
-        return;
+        return false;
       }
       const DWORD wait_timeout = std::min<DWORD>( RESIZE_POLL_CAP_MS, remaining );
-      if ( WaitForSingleObject( worker, wait_timeout ) != WAIT_TIMEOUT ) {
-        break;
+      const DWORD wait_result = WaitForSingleObject( worker, wait_timeout );
+      if ( wait_result == WAIT_OBJECT_0 ) {
+        close_input();
+        CloseHandle( worker );
+        worker = NULL;
+        return true;
+      }
+      if ( wait_result == WAIT_FAILED ) {
+        record_stop_failure( GetLastError() );
+        return false;
+      }
+      if ( wait_result != WAIT_TIMEOUT ) {
+        record_stop_failure( ERROR_INVALID_HANDLE );
+        return false;
       }
       const HANDLE teardown_entered = g_teardown_entered.load();
       if ( teardown_entered != NULL ) {
@@ -573,26 +604,14 @@ public:
         }
       }
       CancelSynchronousIo( worker );
-      HANDLE handle = input.exchange( NULL );
-      if ( handle != NULL ) {
-        CloseHandle( handle );
-      }
       if ( deadline != NULL && deadline->load() != NO_TERMINATION_DEADLINE ) {
-        return;
+        return false;
       }
     }
-    HANDLE handle = input.exchange( NULL );
-    if ( handle != NULL ) {
-      CloseHandle( handle );
-    }
-    CloseHandle( worker );
-    worker = NULL;
   }
 
-  /* The destructor's unbounded join is intentional: release_and_signal() signals
-     restored before deadline teardown leaves a wedged worker non-NULL, so the
-     console is already available to mosh.exe and the harness must release such
-     sessions instead of unwinding them. */
+  /* A deadline can intentionally leave a worker running. Its input handle stays
+     live until that worker exits, so a later owner must release rather than join. */
   void stop()
   {
     stop_until_deadline( NULL );
@@ -660,6 +679,11 @@ void console_test_pause_teardown( HANDLE entered, HANDLE resume )
   g_teardown_resume.store( resume );
 }
 
+void console_test_throw_after_restore()
+{
+  g_throw_after_restore.store( true );
+}
+
 void console_test_clear_setup_injections()
 {
   g_fail_after_step.store( -1 );
@@ -668,6 +692,7 @@ void console_test_clear_setup_injections()
   g_shutdown_budget_override_ms.store( 0 );
   g_teardown_entered.store( NULL );
   g_teardown_resume.store( NULL );
+  g_throw_after_restore.store( false );
 }
 
 HANDLE console_test_last_restored_event()
@@ -925,15 +950,21 @@ public:
       return;
     }
     restored_flag = true;
+    bool reader_stopped = !reader;
     if ( reader && control->deadline.load() == NO_TERMINATION_DEADLINE ) {
-      reader->stop_until_deadline( &control->deadline );
+      reader_stopped = reader->stop_until_deadline( &control->deadline );
     }
     cleanup = restore();
     state = ConsoleLifecycleState::RESTORED;
     SetEvent( control->restored );
-    cleanup.reader_error = reader ? reader->error() : ERROR_SUCCESS;
-    if ( reader && control->deadline.load() != NO_TERMINATION_DEADLINE ) {
+    if ( reader && !reader_stopped ) {
       reader->cancel_without_join();
+      cleanup.reader_error = reader->error();
+      /* The reader may still be inside ReadFile. Retain its state and duplicated
+         input handle until that worker exits rather than destroy either under it. */
+      reader.release();
+    } else {
+      cleanup.reader_error = reader ? reader->error() : ERROR_SUCCESS;
     }
     SetConsoleCtrlHandler( console_control_handler, FALSE );
     g_shutdown_control.store( NULL );
@@ -1026,6 +1057,16 @@ public:
     return reader->ever_drained_to_empty();
   }
 
+  bool reader_detached() const
+  {
+    return !reader;
+  }
+
+  HANDLE reader_worker() const
+  {
+    return reader ? reader->worker_handle() : NULL;
+  }
+
   bool signal_termination_against_backlog( size_t minimum )
   {
     return reader->signal_termination_against_backlog( control->termination, minimum );
@@ -1077,6 +1118,9 @@ public:
       throw;
     }
     release_and_signal();
+    if ( g_throw_after_restore.exchange( false ) ) {
+      throw ConsoleError( ERROR_CANCELLED, "console run test-injected failure" );
+    }
   }
 
 private:
@@ -1294,6 +1338,16 @@ size_t ConsoleSession::input_backlog_for_test() const
 bool ConsoleSession::input_ever_drained_for_test() const
 {
   return impl->input_ever_drained();
+}
+
+bool ConsoleSession::reader_detached_for_test() const
+{
+  return impl->reader_detached();
+}
+
+HANDLE ConsoleSession::reader_worker_for_test() const
+{
+  return impl->reader_worker();
 }
 
 bool ConsoleSession::shutdown_observed_for_test() const

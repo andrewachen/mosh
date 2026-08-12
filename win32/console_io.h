@@ -146,6 +146,9 @@ void console_test_set_shutdown_budget( DWORD budget_ms );
    can publish a close request during that potentially unbounded operation. */
 void console_test_pause_teardown( HANDLE entered, HANDLE resume );
 
+/* Test-only: makes run() throw after it has restored the session. */
+void console_test_throw_after_restore();
+
 /* Test-only: disarms all process-global, sticky injectors. */
 void console_test_clear_setup_injections();
 
@@ -229,6 +232,10 @@ public:
      itself rather than an end state, so it cannot be confused by whatever the
      queue happens to hold when run() returns. */
   bool input_ever_drained_for_test() const;
+  /* Test-only lifecycle observations. `reader_worker_for_test()` is closed only
+     by the wait-failure test to make the next thread wait fail. */
+  bool reader_detached_for_test() const;
+  HANDLE reader_worker_for_test() const;
   /* True once the event loop has observed a shutdown request and begun the
      graceful shutdown. Read only after run() returns; this value is written by
      run() without synchronization. */
