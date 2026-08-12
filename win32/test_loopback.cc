@@ -188,6 +188,19 @@ int main( int argc, char* argv[] )
   /* Create client connection with the server's actual key. */
   Connection client( key.c_str(), "127.0.0.1", port.c_str() );
 
+  /* A receive requested for a stale, pruned socket must behave as no packet
+     rather than dereference a socket no longer in Connection's live deque. */
+  try {
+    client.recv_from( static_cast<mosh_socket_t>( -1 ) );
+    fprintf( stderr, "Stale targeted recv unexpectedly returned a packet\n" );
+    return 1;
+  } catch ( const NetworkException& error ) {
+    if ( error.the_errno != 0 ) {
+      fprintf( stderr, "Stale targeted recv threw: %s\n", error.what() );
+      return 1;
+    }
+  }
+
   /* Test socket handle width */
   test_socket_handle_width( server, "Server" );
   test_socket_handle_width( client, "Client" );

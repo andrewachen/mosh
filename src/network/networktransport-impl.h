@@ -67,7 +67,18 @@ Transport<MyState, RemoteState>::Transport( MyState& initial_state,
 template<class MyState, class RemoteState>
 void Transport<MyState, RemoteState>::recv( void )
 {
-  std::string s( connection.recv() );
+  process_received_packet( connection.recv() );
+}
+
+template<class MyState, class RemoteState>
+void Transport<MyState, RemoteState>::recv( intptr_t sock_to_recv )
+{
+  process_received_packet( connection.recv_from( static_cast<mosh_socket_t>( sock_to_recv ) ) );
+}
+
+template<class MyState, class RemoteState>
+void Transport<MyState, RemoteState>::process_received_packet( std::string s )
+{
   Fragment frag( s );
 
   if ( fragments.add_fragment( frag ) ) { /* complete packet */

@@ -85,6 +85,67 @@ static void service( MoshCore& core, TestServer& server )
   }
 }
 
+#ifdef _WIN32
+/* A ready notification belongs to the socket whose WSA event was enumerated.
+   Fill the original client socket past MoshCore's read budget, then hop and
+   put one reply on the new socket. After consuming that new socket's FD_READ
+   record, on_readable(new_fd) must drain new_fd rather than the older socket. */
+static void test_readable_socket_identity( MoshCore& core, TestServer& server )
+{
+  for ( int i = 0; i < 32; ++i ) {
+    const char byte = static_cast<char>( 'a' + ( i % 26 ) );
+    core.feed_input( &byte, 1 );
+    freeze_timestamp();
+    core.tick();
+    for ( const intptr_t fd : server.socket_fds() ) {
+      server.on_readable( fd );
+    }
+    server.tick();
+    Sleep( 260 );
+  }
+
+  Sleep( 11000 );
+  freeze_timestamp();
+  core.feed_input( "h", 1 );
+  core.tick();
+  for ( const intptr_t fd : server.socket_fds() ) {
+    server.on_readable( fd );
+  }
+  server.tick();
+
+  core.feed_input( "i", 1 );
+  Sleep( 260 );
+  freeze_timestamp();
+  core.tick();
+  for ( const intptr_t fd : server.socket_fds() ) {
+    server.on_readable( fd );
+  }
+  Sleep( 260 );
+  freeze_timestamp();
+  server.tick();
+
+  const std::vector<intptr_t> fds = core.socket_fds();
+  assert( fds.size() >= 2 );
+  const SOCKET new_fd = static_cast<SOCKET>( fds.back() );
+  WSAEVENT event = WSACreateEvent();
+  assert( event != WSA_INVALID_EVENT );
+  assert( WSAEventSelect( new_fd, event, FD_READ ) == 0 );
+  assert( WSAWaitForMultipleEvents( 1, &event, FALSE, 1000, FALSE ) == WSA_WAIT_EVENT_0 );
+
+  WSANETWORKEVENTS network_events = {};
+  assert( WSAEnumNetworkEvents( new_fd, event, &network_events ) == 0 );
+  assert( ( network_events.lNetworkEvents & FD_READ ) != 0 );
+  core.on_readable( static_cast<intptr_t>( new_fd ) );
+
+  char byte = '\0';
+  const int received = recv( new_fd, &byte, 1, 0 );
+  assert( received == SOCKET_ERROR );
+  assert( WSAGetLastError() == WSAEWOULDBLOCK );
+  assert( WSAEventSelect( new_fd, NULL, 0 ) == 0 );
+  assert( WSACloseEvent( event ) == TRUE );
+}
+#endif
+
 int main()
 {
   set_native_locale();
@@ -137,6 +198,10 @@ int main()
   assert( !core.open_sequence().empty() );
   assert( !core.close_sequence().empty() );
   assert( !core.socket_fds().empty() );
+
+#ifdef _WIN32
+  test_readable_socket_identity( core, server );
+#endif
 
   core.feed_input( "x", 1 );
   bool got_frame = false;

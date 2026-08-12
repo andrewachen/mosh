@@ -56,6 +56,7 @@ private:
 
   /* helper methods for recv() */
   void process_throwaway_until( uint64_t throwaway_num );
+  void process_received_packet( std::string s );
 
   /* simple receiver */
   std::list<TimestampedState<RemoteState>> received_states;
@@ -83,6 +84,7 @@ public:
 
   /* Blocks waiting for a packet. */
   void recv( void );
+  void recv( intptr_t sock_to_recv );
 
   /* Find diff between last receiver state and current remote state, then rationalize states. */
   std::string get_remote_diff( void );

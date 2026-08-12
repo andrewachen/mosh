@@ -195,13 +195,13 @@ public:
     }
   }
 
-  void process_network_input()
+  void process_network_input( intptr_t which_fd )
   {
     unsigned int datagrams = 0;
     while ( datagrams < MAX_DATAGRAMS_PER_READABLE ) {
       datagrams++;
       try {
-        network->recv();
+        network->recv( which_fd );
       } catch ( const NetworkException& error ) {
         if ( no_packet_available( error ) ) {
           break;
@@ -359,9 +359,9 @@ void MoshCore::feed_input( const char *buf, size_t len )
   impl->feed_input( buf, len );
 }
 
-void MoshCore::on_readable( intptr_t )
+void MoshCore::on_readable( intptr_t which_fd )
 {
-  impl->process_network_input();
+  impl->process_network_input( which_fd );
   impl->update_lifecycle();
 }
 

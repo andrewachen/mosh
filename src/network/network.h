@@ -272,6 +272,7 @@ public:
 
   void send( const std::string& s );
   std::string recv( void );
+  std::string recv_from( mosh_socket_t sock_to_recv );
 #ifdef _WIN32
   const std::vector<mosh_socket_t> fds( void ) const;
 #else

@@ -587,6 +587,18 @@ std::string Connection::recv( void )
   throw NetworkException( "No packet received" );
 }
 
+std::string Connection::recv_from( mosh_socket_t sock_to_recv )
+{
+  for ( std::deque<Socket>::const_iterator it = socks.begin(); it != socks.end(); it++ ) {
+    if ( it->fd() == sock_to_recv ) {
+      std::string payload = recv_one( sock_to_recv );
+      prune_sockets();
+      return payload;
+    }
+  }
+  throw NetworkException( "No packet received" );
+}
+
 #ifdef _WIN32
 std::string Connection::recv_one( mosh_socket_t sock_to_recv )
 {
