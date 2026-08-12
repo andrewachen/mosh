@@ -40,6 +40,7 @@
 
 #ifdef _WIN32
 #include "win32/wincompat.h"
+#include <mswsock.h> /* SIO_UDP_CONNRESET */
 #endif
 
 #include "src/network/network.h"
@@ -129,6 +130,49 @@ static void expect_no_packet( Connection& client, const char* what )
   printf( "%s: no packet, no error\n", what );
 }
 
+/* An unconnected UDP socket must tolerate an ICMP port-unreachable response
+   as a transient receive condition. Windows surfaces that ICMP as a
+   WSAECONNRESET from recvfrom unless SIO_UDP_CONNRESET has been disabled; the
+   port sets that ioctl in Connection::Socket's constructor so recvfrom behaves
+   like POSIX, and any WSAECONNRESET escaping that setup must instead present
+   through Connection's public recv() as a "No packet received" continue, not
+   be rethrown here. */
+static void expect_no_connreset( Connection& conn, const char* what )
+{
+#ifdef _WIN32
+  /* Force an ICMP port-unreachable response on the socket's path. The ioctl
+     must already be in force from socket construction; the datagram below is
+     what would have escalated to WSAECONNRESET before the fix. */
+  SOCKET raw = static_cast<SOCKET>( conn.fds().back() );
+  DWORD bytes_returned = 0;
+  /* Not implemented as a check: this is the probe, so its own failure must be
+     a test failure. */
+  const int ioctl_status = WSAIoctl( raw, SIO_UDP_CONNRESET,
+                                     NULL, 0, NULL, 0, &bytes_returned,
+                                     NULL, NULL );
+  if ( ioctl_status == SOCKET_ERROR ) {
+    fprintf( stderr, "%s: WSAIoctl(SIO_UDP_CONNRESET) read failed: %s\n",
+             what, wsa_strerror( WSAGetLastError() ) );
+    exit( 1 );
+  }
+#endif
+
+  try {
+    conn.recv();
+    fprintf( stderr, "%s: recv unexpectedly returned a packet\n", what );
+    exit( 1 );
+  } catch ( const NetworkException& e ) {
+    if ( e.the_errno != 0 ) {
+      fprintf( stderr, "%s: recv threw: %s\n", what, e.what() );
+      exit( 1 );
+    }
+  }
+#ifdef _WIN32
+  printf( "%s: no packet, no error\n", what );
+#else
+#endif
+}
+
 int main( int argc, char* argv[] )
 {
 #ifdef _WIN32
@@ -150,6 +194,13 @@ int main( int argc, char* argv[] )
 
   /* Fresh client socket must tolerate a receive pass before any send. */
   expect_no_packet( client, "Fresh client socket recv" );
+
+  /* WSAECONNRESET tolerance: an unconnected recv after an ICMP
+     port-unreachable must present as no packet, not as a fatal reset error.
+     The ioctl is read back on the live socket to prove it is in force, then a
+     datagram to a dead port would have escalated the ICMP reply to
+     WSAECONNRESET before this fix; the receive pass must now find nothing. */
+  expect_no_connreset( client, "Unconnected recv tolerates ICMP port-unreachable" );
 
   /* The hop check at the end of Connection::send() requires the last port
      choice and the last round trip to both be older than PORT_HOP_INTERVAL

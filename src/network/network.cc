@@ -35,6 +35,7 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <mswsock.h> /* SIO_UDP_CONNRESET */
 #else
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -214,6 +215,20 @@ Connection::Socket::Socket( int family ) : _fd( socket( family, SOCK_DGRAM, 0 ) 
     int err = WSAGetLastError();
     closesocket( _fd ); /* ctor is throwing, so ~Socket won't run -- don't leak the handle */
     throw NetworkException( "ioctlsocket", err );
+  }
+
+  /* Disable the UDP reset notification: without it an ICMP port-unreachable
+     response to this unconnected socket is surfaced by recvfrom as
+     WSAECONNRESET, which the receive path treats as fatal. With the ioctl in
+     force, recvfrom behaves like POSIX and returns WSAEWOULDBLOCK instead.
+     The input data pointer and length must both be NULL per SIO_UDP_CONNRESET
+     documentation. */
+  DWORD bytes_returned = 0;
+  if ( WSAIoctl( _fd, SIO_UDP_CONNRESET, NULL, 0, NULL, 0, &bytes_returned,
+                 NULL, NULL ) == SOCKET_ERROR ) {
+    int err = WSAGetLastError();
+    closesocket( _fd ); /* ctor is throwing, so ~Socket won't run -- don't leak the handle */
+    throw NetworkException( "WSAIoctl(SIO_UDP_CONNRESET)", err );
   }
 
   /* Disable path MTU discovery */
