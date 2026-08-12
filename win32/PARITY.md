@@ -336,6 +336,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 * **Consequence:** After an ICMP port-unreachable response, an unconnected UDP socket can report `WSAECONNRESET` on `recvfrom`. The port treats that platform-specific condition as a fatal receive error, abandons the read cycle, and can degrade roaming instead of continuing as POSIX does.
 * **Class:** `DEFECT`, **high** — Windows-only network error handling.
 * **Fix:** Decide and implement the Windows UDP reset policy, either disabling the reset notification for these sockets or treating the documented reset condition as a nonfatal receive result.
+* **Status:** **FIXED** (commit `4fe02e3`). `Connection::Socket`'s Win32 ctor now calls `WSAIoctl(SIO_UDP_CONNRESET)` with a NULL datagram to disable the reset notification (`src/network/network.cc:220-232`, include `<mswsock.h>` at `src/network/network.cc:38`); with it in force an ICMP port-unreachable surfaces as `WSAEWOULDBLOCK`, so `recvfrom` behaves like POSIX and the continuation list never needs `WSAECONNRESET`. The rejected alternative (adding `WSAECONNRESET` to the recv() continuation list) was not taken. `win32/test_loopback.cc:expect_no_connreset()` reads the ioctl back on a live socket and asserts a receive pass finds no packet/error; runs on native windows-11-arm CI (the Linux cross-compile image only compiles it).
 
 #### A32. Remote logout does not set the user-quit status
 
