@@ -362,10 +362,10 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A35. Bootstrap draining can block before its timeout starts
 
 * **Upstream:** The wrapper's SSH child and startup parsing are coordinated so a child that stops producing output can still be terminated by the surrounding lifecycle (`scripts/mosh.pl:409`).
-* **Port:** `spawn_and_drain()` calls the blocking `drain_and_parse()` before it waits for the child (`win32/mosh_bootstrap.cc:350-354`). `drain_and_parse()` performs an unbounded blocking `ReadFile` loop (`win32/mosh_bootstrap.cc:192-218`), so the ten-second wait and terminate path are reached only after the pipe closes or the parser returns. The test covers a fixture that emits `CONNECT` and then sleeps, exercising only the post-drain reap (`win32/test_bootstrap.cc:436-441`).
-* **Consequence:** An SSH child that keeps its stdout pipe open without producing a complete reply can hang the bootstrap forever; the documented ten-second process wait cannot bound that case.
-* **Class:** `DEFECT`, **high** — bootstrap liveness.
-* **Fix:** Make output draining and child-liveness supervision concurrent, or use a cancellable/overlapped pipe read whose deadline covers the drain itself.
+* **Port:** `spawn_and_drain()` called the blocking `drain_and_parse()` before waiting for the child (`win32/mosh_bootstrap.cc:350-354`). `drain_and_parse()` performed an unbounded blocking `ReadFile` loop (`win32/mosh_bootstrap.cc:192-218`), so the ten-second wait and terminate path were reached only after the pipe closed or the parser returned. The original test covered a fixture that emitted `CONNECT` and then slept, exercising only the post-drain reap (`win32/test_bootstrap.cc:436-441`).
+* **Consequence:** An SSH child that kept its stdout pipe open without producing a complete reply could hang the bootstrap forever; the documented ten-second process wait could not bound that case.
+* **Class:** `FIXED`, high — bootstrap liveness.
+* **Fix:** `spawn_and_drain()` now drains in a worker while the caller supervises the child, then closes the containment job before joining the worker so the ten-second deadline also releases a blocked pipe read (`win32/mosh_bootstrap.cc:352-364`). A real silent child fixture and watchdog cover the drain-timeout path (`win32/bootstrap_child.cc:52-59`, `win32/test_bootstrap.cc:464-489`).
 
 #### A36. Forced SSH termination is reported as the child's status
 

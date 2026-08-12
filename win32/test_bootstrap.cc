@@ -459,6 +459,33 @@ static void test_spawn_timeout_reap()
   assert( out.ip == "203.0.113.7" && out.port == "60001" );
 }
 
+/* silent mode: the fixture keeps stdout open without a complete reply. The
+   watchdog proves the bootstrap's timeout covers the drain, not just reap. */
+static void test_spawn_timeout_during_drain()
+{
+  std::wstring child;
+  if ( !locate_fixture( &child ) ) return;         /* fixture build failure, asserted inside */
+
+  const std::string marker = "round trip \"marker\"";
+  std::string cmd = "bootstrap_child.exe";
+  cmd += " " + win_quote_arg( std::to_string( (uintptr_t) 0 ) );
+  cmd += " " + win_quote_arg( marker );
+  cmd += " " + win_quote_arg( "silent" );
+
+  HANDLE done = CreateEventW( NULL, TRUE, FALSE, NULL );
+  assert( done && done != INVALID_HANDLE_VALUE );
+  std::string err;
+  ServerReply r;
+  std::thread worker( [&] {
+    err = spawn_and_drain( child, widen( cmd ), &r );
+    SetEvent( done );
+  } );
+  assert( WaitForSingleObject( done, 15000 ) == WAIT_OBJECT_0 );
+  worker.join();
+  CloseHandle( done );
+  assert( !err.empty() );
+}
+
 int main()
 {
   test_sh_quote();
@@ -482,6 +509,7 @@ int main()
   test_mosh_bootstrap_rejects_invalid_target();
   test_spawn_fixture();
   test_spawn_timeout_reap();
+  test_spawn_timeout_during_drain();
   puts( "test_bootstrap: passed" );
   return 0;
 }

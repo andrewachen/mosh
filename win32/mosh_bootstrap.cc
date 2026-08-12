@@ -40,6 +40,7 @@
 #include <regex>
 #include <sstream>
 #include <vector>
+#include <thread>
 #include <cstdlib>
 #include <cstdio>
 #include <getopt.h>
@@ -347,8 +348,8 @@ std::string spawn_and_drain( const std::wstring &app_path, const std::wstring &c
   }
   CloseHandle( pi.hThread );   // child is in the job atomically at creation; no suspend/assign window
 
-  const std::string derr = drain_and_parse( rd, r );
-  CloseHandle( rd );
+  std::string derr;
+  std::thread drainer( [&] { derr = drain_and_parse( rd, r ); } );
 
   DWORD exit_code = 0; bool have_exit = false;
   if ( WaitForSingleObject( pi.hProcess, 10000 ) == WAIT_TIMEOUT ) {
@@ -356,9 +357,11 @@ std::string spawn_and_drain( const std::wstring &app_path, const std::wstring &c
     WaitForSingleObject( pi.hProcess, 5000 );        // wait for confirmed exit after terminate
   }
   have_exit = GetExitCodeProcess( pi.hProcess, &exit_code ) && exit_code != STILL_ACTIVE;
-  CloseHandle( job );                                 // kill-on-close reaps ssh if still alive
+  CloseHandle( job );                                 // kill-on-close reaps ssh and pipe writers
   WaitForSingleObject( pi.hProcess, 2000 );           // confirm reap after job close
   CloseHandle( pi.hProcess );
+  drainer.join();
+  CloseHandle( rd );
 
   // Outcome precedence: read/fatal error > valid CONNECT (success even if ssh then exits nonzero)
   //                     > nonzero ssh exit > missing startup (handled by resolve_endpoint).

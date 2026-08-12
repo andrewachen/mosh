@@ -38,7 +38,7 @@
 #include <cstdint>
 #include <cwchar>
 
-/* argv: [1]=sentinel event handle value (decimal), [2]=expected marker, [3]=mode ("emit"|"hang"). */
+/* argv: [1]=sentinel event handle value (decimal), [2]=expected marker, [3]=mode ("emit"|"hang"|"silent"). */
 int wmain( int argc, wchar_t **argv )
 {
   if ( argc >= 2 ) {
@@ -50,9 +50,12 @@ int wmain( int argc, wchar_t **argv )
     return 4;
   }
   const bool hang = ( argc >= 4 && wcscmp( argv[3], L"hang" ) == 0 );
-  printf( "MOSH SSH_CONNECTION 10.0.0.2 51000 203.0.113.7 22\n" );
-  printf( "MOSH CONNECT 60001 ABCDEFGHIJKLMNOPQRSTUV\n" );
-  fflush( stdout );
-  if ( hang ) { for ( ;; ) Sleep( 60000 ); }   // stay alive to exercise timeout/reap
+  const bool silent = ( argc >= 4 && wcscmp( argv[3], L"silent" ) == 0 );
+  if ( !silent ) {
+    printf( "MOSH SSH_CONNECTION 10.0.0.2 51000 203.0.113.7 22\n" );
+    printf( "MOSH CONNECT 60001 ABCDEFGHIJKLMNOPQRSTUV\n" );
+    fflush( stdout );
+  }
+  if ( hang || silent ) { for ( ;; ) Sleep( 60000 ); }   // stay alive to exercise timeout/reap
   return 0;
 }
