@@ -34,6 +34,7 @@
 /* ABOUTME: Converts conhost CESU-8 input to UTF-8 before MoshCore receives it. */
 
 #include "win32/console_io.h"
+#include "win32/socket_events.h"
 
 #include <algorithm>
 #include <atomic>
@@ -598,58 +599,6 @@ public:
   }
 };
 
-class SocketEvents {
-private:
-  MoshCore &core;
-  std::map<intptr_t, WSAEVENT> events;
-
-public:
-  explicit SocketEvents( MoshCore &session_core ) : core( session_core ) {}
-
-  ~SocketEvents()
-  {
-    const std::vector<intptr_t> live_fds = core.socket_fds();
-    for ( std::map<intptr_t, WSAEVENT>::iterator it = events.begin(); it != events.end(); ++it ) {
-      if ( std::find( live_fds.begin(), live_fds.end(), it->first ) != live_fds.end() ) {
-        WSAEventSelect( static_cast<SOCKET>( it->first ), NULL, 0 );
-      }
-      WSACloseEvent( it->second );
-    }
-  }
-
-  void reconcile( const std::vector<intptr_t> &fds )
-  {
-    for ( std::map<intptr_t, WSAEVENT>::iterator it = events.begin(); it != events.end(); ) {
-      if ( std::find( fds.begin(), fds.end(), it->first ) == fds.end() ) {
-        WSACloseEvent( it->second );
-        it = events.erase( it );
-      } else {
-        ++it;
-      }
-    }
-    for ( std::vector<intptr_t>::const_iterator it = fds.begin(); it != fds.end(); ++it ) {
-      if ( events.find( *it ) != events.end() ) {
-        continue;
-      }
-      WSAEVENT event = WSACreateEvent();
-      if ( event == WSA_INVALID_EVENT ) {
-        const int error = WSAGetLastError();
-        throw ConsoleError( static_cast<DWORD>( error ), error_message( "WSACreateEvent", error ) );
-      }
-      if ( WSAEventSelect( static_cast<SOCKET>( *it ), event, FD_READ ) == SOCKET_ERROR ) {
-        const int error = WSAGetLastError();
-        WSACloseEvent( event );
-        throw ConsoleError( static_cast<DWORD>( error ), error_message( "WSAEventSelect", error ) );
-      }
-      events[*it] = event;
-    }
-  }
-
-  const std::map<intptr_t, WSAEVENT> &all() const
-  {
-    return events;
-  }
-};
 }
 
 BOOL WINAPI console_control_handler( DWORD type )
