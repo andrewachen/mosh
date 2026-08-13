@@ -434,11 +434,8 @@ static void test_spawn_fixture()
 }
 
 /* hang mode: spawn the fixture in "hang" (emits CONNECT then sleeps forever).
-   Asserts: no error, endpoint resolves, returns within a bounded time. The
-   internal 10s wait + terminate path ran, proving timeout/terminate/job-reap
-   works; the child is confined to the kill-on-close job so reaping is
-   guaranteed when spawn_and_drain closes the job. ~10s duration, within the
-   2-min CI step timeout. A fuller external liveness oracle is deferred. */
+   Once the valid reply has drained, bootstrap must stop supervising the child
+   instead of waiting out its ten-second watchdog. */
 static void test_spawn_timeout_reap()
 {
   std::wstring child;
@@ -451,7 +448,9 @@ static void test_spawn_timeout_reap()
   cmd += " " + win_quote_arg( "hang" );
 
   ServerReply r;
+  const ULONGLONG start = GetTickCount64();
   std::string err = spawn_and_drain( child, widen( cmd ), &r );
+  assert( GetTickCount64() - start < 5000 );
   assert( err.empty() );
 
   BootstrapResult out;

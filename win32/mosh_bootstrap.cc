@@ -40,7 +40,8 @@
 #include <regex>
 #include <sstream>
 #include <vector>
-#include <thread>
+#include <new>
+#include <process.h>
 #include <cstdlib>
 #include <cstdio>
 #include <getopt.h>
@@ -255,6 +256,40 @@ std::string resolve_ssh_path( std::wstring *out )
 }
 
 namespace {
+class JoiningThread {
+  HANDLE handle_;
+
+public:
+  typedef unsigned (__stdcall *Entry)( void * );
+
+  JoiningThread( Entry entry, void *arg ) : handle_( (HANDLE) _beginthreadex( NULL, 0, entry, arg, 0, NULL ) ) {}
+  ~JoiningThread() { if ( handle_ ) { WaitForSingleObject( handle_, INFINITE ); CloseHandle( handle_ ); } }
+
+  HANDLE handle() const { return handle_; }
+  void join() { WaitForSingleObject( handle_, INFINITE ); CloseHandle( handle_ ); handle_ = NULL; }
+};
+
+struct DrainState {
+  HANDLE read_end;
+  HANDLE done;
+  ServerReply *reply;
+  std::string error;
+};
+
+unsigned __stdcall drain_thread( void *arg )
+{
+  DrainState *state = static_cast<DrainState *>( arg );
+  try {
+    state->error = drain_and_parse( state->read_end, state->reply );
+  } catch ( const std::bad_alloc & ) {
+    state->error = "mosh: out of memory while reading ssh output";
+  } catch ( ... ) {
+    state->error = "mosh: failed while reading ssh output";
+  }
+  SetEvent( state->done );
+  return 0;
+}
+
 /* Child-inheritable duplicate of a std handle. A VALID handle that fails to
    duplicate is FATAL (never silently substitute NUL for a real console handle
    — that would hide auth prompts). Only an absent/redirected handle falls back
@@ -348,24 +383,40 @@ std::string spawn_and_drain( const std::wstring &app_path, const std::wstring &c
   }
   CloseHandle( pi.hThread );   // child is in the job atomically at creation; no suspend/assign window
 
-  std::string derr;
-  std::thread drainer( [&] { derr = drain_and_parse( rd, r ); } );
+  HANDLE drain_done = CreateEventW( NULL, TRUE, FALSE, NULL );
+  if ( !drain_done ) {
+    CloseHandle( job ); CloseHandle( pi.hProcess ); CloseHandle( rd );
+    return "mosh: could not create the ssh output completion event";
+  }
+  DrainState state = { rd, drain_done, r, "" };
+  JoiningThread drainer( drain_thread, &state );
+  if ( !drainer.handle() ) {
+    CloseHandle( drain_done ); CloseHandle( job ); CloseHandle( pi.hProcess ); CloseHandle( rd );
+    return "mosh: could not start the ssh output reader";
+  }
 
-  DWORD exit_code = 0; bool have_exit = false;
-  if ( WaitForSingleObject( pi.hProcess, 10000 ) == WAIT_TIMEOUT ) {
+  HANDLE waits[2] = { pi.hProcess, drain_done };
+  const DWORD waited = WaitForMultipleObjects( 2, waits, FALSE, 10000 );
+  if ( waited == WAIT_TIMEOUT ) {
     TerminateProcess( pi.hProcess, 1 );
     WaitForSingleObject( pi.hProcess, 5000 );        // wait for confirmed exit after terminate
   }
-  have_exit = GetExitCodeProcess( pi.hProcess, &exit_code ) && exit_code != STILL_ACTIVE;
+  DWORD exit_code = 0;
+  const bool have_exit = GetExitCodeProcess( pi.hProcess, &exit_code ) && exit_code != STILL_ACTIVE;
   CloseHandle( job );                                 // kill-on-close reaps ssh and pipe writers
   WaitForSingleObject( pi.hProcess, 2000 );           // confirm reap after job close
   CloseHandle( pi.hProcess );
+  if ( WaitForSingleObject( drainer.handle(), 2000 ) == WAIT_TIMEOUT ) {
+    if ( !CancelSynchronousIo( drainer.handle() ) ) state.error = "mosh: could not stop reading ssh output";
+    WaitForSingleObject( drainer.handle(), 2000 );
+  }
   drainer.join();
+  CloseHandle( drain_done );
   CloseHandle( rd );
 
   // Outcome precedence: read/fatal error > valid CONNECT (success even if ssh then exits nonzero)
   //                     > nonzero ssh exit > missing startup (handled by resolve_endpoint).
-  if ( !derr.empty() ) return derr;
+  if ( !state.error.empty() ) return state.error;
   if ( r->have_connect ) return "";
   if ( have_exit && exit_code != 0 ) return "mosh: ssh exited with status " + std::to_string( exit_code );
   return "";
