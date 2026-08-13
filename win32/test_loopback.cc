@@ -40,7 +40,6 @@
 
 #ifdef _WIN32
 #include "win32/wincompat.h"
-#include <mswsock.h> /* SIO_UDP_CONNRESET */
 #endif
 
 #include "src/network/network.h"
@@ -140,37 +139,53 @@ static void expect_no_packet( Connection& client, const char* what )
 static void expect_no_connreset( Connection& conn, const char* what )
 {
 #ifdef _WIN32
-  /* Force an ICMP port-unreachable response on the socket's path. The ioctl
-     must already be in force from socket construction; the datagram below is
-     what would have escalated to WSAECONNRESET before the fix. */
-  SOCKET raw = static_cast<SOCKET>( conn.fds().back() );
-  DWORD bytes_returned = 0;
-  /* Not implemented as a check: this is the probe, so its own failure must be
-     a test failure. */
-  const int ioctl_status = WSAIoctl( raw, SIO_UDP_CONNRESET,
-                                     NULL, 0, NULL, 0, &bytes_returned,
-                                     NULL, NULL );
-  if ( ioctl_status == SOCKET_ERROR ) {
-    fprintf( stderr, "%s: WSAIoctl(SIO_UDP_CONNRESET) read failed: %s\n",
-             what, wsa_strerror( WSAGetLastError() ) );
+  /* Send to a bound-but-unread loopback port, then close it before receiving.
+     The resulting ICMP port-unreachable would make recvfrom report
+     WSAECONNRESET if the constructor did not disable reset notifications. */
+  SOCKET closed_port = socket( AF_INET, SOCK_DGRAM, IPPROTO_UDP );
+  if ( closed_port == INVALID_SOCKET ) {
+    fprintf( stderr, "%s: socket: %s\n", what, wsa_strerror( WSAGetLastError() ) );
     exit( 1 );
   }
-#endif
-
-  try {
-    conn.recv();
-    fprintf( stderr, "%s: recv unexpectedly returned a packet\n", what );
+  sockaddr_in target = {};
+  target.sin_family = AF_INET;
+  target.sin_addr.s_addr = htonl( INADDR_LOOPBACK );
+  if ( bind( closed_port, reinterpret_cast<sockaddr*>( &target ), sizeof( target ) ) == SOCKET_ERROR ) {
+    fprintf( stderr, "%s: bind: %s\n", what, wsa_strerror( WSAGetLastError() ) );
     exit( 1 );
-  } catch ( const NetworkException& e ) {
-    if ( e.the_errno != 0 ) {
+  }
+  int target_len = sizeof( target );
+  if ( getsockname( closed_port, reinterpret_cast<sockaddr*>( &target ), &target_len ) == SOCKET_ERROR
+       || closesocket( closed_port ) == SOCKET_ERROR ) {
+    fprintf( stderr, "%s: closed loopback port setup: %s\n", what, wsa_strerror( WSAGetLastError() ) );
+    exit( 1 );
+  }
+
+  const SOCKET raw = static_cast<SOCKET>( conn.fds().back() );
+  const char byte = 'x';
+  if ( sendto( raw, &byte, 1, 0, reinterpret_cast<const sockaddr*>( &target ), target_len ) != 1 ) {
+    fprintf( stderr, "%s: sendto: %s\n", what, wsa_strerror( WSAGetLastError() ) );
+    exit( 1 );
+  }
+
+  for ( int retries = 0; retries < 100; ++retries ) {
+    sleep_ms( 10 );
+    try {
+      conn.recv();
+      fprintf( stderr, "%s: recv unexpectedly returned a packet\n", what );
+      exit( 1 );
+    } catch ( const NetworkException& e ) {
+      if ( e.the_errno == 0 ) {
+        continue;
+      }
       fprintf( stderr, "%s: recv threw: %s\n", what, e.what() );
       exit( 1 );
     }
   }
-#ifdef _WIN32
-  printf( "%s: no packet, no error\n", what );
 #else
+  expect_no_packet( conn, what );
 #endif
+  printf( "%s: no packet, no error\n", what );
 }
 
 int main( int argc, char* argv[] )

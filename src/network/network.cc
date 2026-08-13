@@ -33,9 +33,9 @@
 #include "src/include/config.h"
 
 #ifdef _WIN32
+#include <mswsock.h> /* SIO_UDP_CONNRESET */
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#include <mswsock.h> /* SIO_UDP_CONNRESET */
 #else
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -219,16 +219,14 @@ Connection::Socket::Socket( int family ) : _fd( socket( family, SOCK_DGRAM, 0 ) 
 
   /* Disable the UDP reset notification: without it an ICMP port-unreachable
      response to this unconnected socket is surfaced by recvfrom as
-     WSAECONNRESET, which the receive path treats as fatal. With the ioctl in
-     force, recvfrom behaves like POSIX and returns WSAEWOULDBLOCK instead.
-     The input data pointer and length must both be NULL per SIO_UDP_CONNRESET
-     documentation. */
+     WSAECONNRESET. Providers that do not support this optional behavior must
+     still leave a usable socket, and recv() also continues over the reset. */
+  BOOL disable_reset = FALSE;
   DWORD bytes_returned = 0;
-  if ( WSAIoctl( _fd, SIO_UDP_CONNRESET, NULL, 0, NULL, 0, &bytes_returned,
-                 NULL, NULL ) == SOCKET_ERROR ) {
-    int err = WSAGetLastError();
-    closesocket( _fd ); /* ctor is throwing, so ~Socket won't run -- don't leak the handle */
-    throw NetworkException( "WSAIoctl(SIO_UDP_CONNRESET)", err );
+  if ( WSAIoctl(
+         _fd, SIO_UDP_CONNRESET, &disable_reset, sizeof disable_reset, NULL, 0, &bytes_returned, NULL, NULL )
+       == SOCKET_ERROR ) {
+    fprintf( stderr, "WSAIoctl( SIO_UDP_CONNRESET ): %s\n", wsa_strerror( WSAGetLastError() ) );
   }
 
   /* Disable path MTU discovery */
@@ -556,6 +554,15 @@ void Connection::send( const std::string& s )
   }
 }
 
+static bool receive_should_continue( const NetworkException& error )
+{
+#ifdef _WIN32
+  return error.the_errno == WSAEWOULDBLOCK || error.the_errno == WSAEMSGSIZE || error.the_errno == WSAECONNRESET;
+#else
+  return error.the_errno == EAGAIN || error.the_errno == EWOULDBLOCK;
+#endif
+}
+
 std::string Connection::recv( void )
 {
   assert( !socks.empty() );
@@ -563,21 +570,11 @@ std::string Connection::recv( void )
     std::string payload;
     try {
       payload = recv_one( it->fd() );
-    } catch ( NetworkException& e ) {
-#ifdef _WIN32
-      /* WinSock has no EAGAIN - treat both WSAEWOULDBLOCK and WSAEMSGSIZE as continue */
-      if ( e.the_errno == WSAEWOULDBLOCK || e.the_errno == WSAEMSGSIZE ) {
+    } catch ( NetworkException& error ) {
+      if ( receive_should_continue( error ) ) {
         continue;
-      } else {
-        throw;
       }
-#else
-      if ( ( e.the_errno == EAGAIN ) || ( e.the_errno == EWOULDBLOCK ) ) {
-        continue;
-      } else {
-        throw;
-      }
-#endif
+      throw;
     }
 
     /* succeeded */
@@ -591,9 +588,16 @@ std::string Connection::recv_from( mosh_socket_t sock_to_recv )
 {
   for ( std::deque<Socket>::const_iterator it = socks.begin(); it != socks.end(); it++ ) {
     if ( it->fd() == sock_to_recv ) {
-      std::string payload = recv_one( sock_to_recv );
-      prune_sockets();
-      return payload;
+      try {
+        std::string payload = recv_one( sock_to_recv );
+        prune_sockets();
+        return payload;
+      } catch ( NetworkException& error ) {
+        if ( receive_should_continue( error ) ) {
+          break;
+        }
+        throw;
+      }
     }
   }
   throw NetworkException( "No packet received" );
