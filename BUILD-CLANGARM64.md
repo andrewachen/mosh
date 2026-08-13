@@ -82,11 +82,14 @@ unresolved and tracked as I10. The retired direct-endpoint form was the workarou
 for the reachability half of it, and removing it is worth more than the
 topologies it covered.
 
-Crash-dump exposure is untouched by all of that and remains open: the Windows
-counterpart of `disable_dumping_core()` is a no-op and is never called, so a
-crash while the key is in memory can still persist it through Windows Error
-Reporting or any other minidump path. That is a release blocker (see Spike-only
-shims below), and `win32/PARITY.md` finding S2 holds its disposition.
+Crash-dump exposure is unchanged by all of that and is resolved as accepted
+risk: the Windows counterpart of `disable_dumping_core()` is a no-op and is
+never called, so a crash while the key is in memory can still persist it
+through Windows Error Reporting or any other minidump path. That was recorded
+as a release blocker here; on 2026-08-12 it was reclassified to match the
+ecosystem — no Windows port of a secret-holding tool (Win32-OpenSSH, GnuPG,
+PuTTY) suppresses crash dumps — and the one anchoring mechanism proved
+unverifiable on CI. `win32/PARITY.md` finding S2 holds the full disposition.
 
 ## Historical M0 standalone-engine spike record
 
@@ -690,10 +693,13 @@ build.
   explicit build-time mechanism (e.g. a spike-only define that a production
   target refuses) so they cannot leak into a production build. The build-time
   refusal is necessary but not sufficient: the production build must also define
-  the *required Windows behavior* the shims stand in for — in particular the
-  Windows counterpart of `disable_dumping_core()`, i.e. preventing Windows Error
-  Reporting / crash dumps from persisting session keys or other secrets — not
-  merely remove the no-op.
+  the *required Windows behavior* the shims stand in for, not merely remove the
+  no-op. For the core-dump shim specifically, that required behavior was
+  resolved on 2026-08-12 as *documented accepted risk* rather than an
+  implementation: no Windows port of a secret-holding tool suppresses crash
+  dumps, and the one anchoring mechanism proved unverifiable on CI — see
+  `win32/PARITY.md` finding S2. The gating requirement stands; the dump
+  shim's production counterpart is the S2 disposition, not new code.
 
 ## M2 Steps 6-8: Windows console frontend
 
