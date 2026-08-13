@@ -157,6 +157,8 @@ jobs:
           ./test_console_lifecycle.exe deadline-publication
           ./test_console_lifecycle.exe deadline-escalation
           ./test_console_lifecycle.exe deadline-wedged-reader
+          ./test_console_lifecycle.exe wait-failed-reader
+          ./test_console_lifecycle.exe deadline-throw-unwind
           ./test_console_lifecycle.exe poll-throttle
           # Ctrl-Z console-read behavior. probe-ctrlz-read records the attached
           # conhost's raw ReadFile response to a physical Ctrl-Z (zero-byte on a
