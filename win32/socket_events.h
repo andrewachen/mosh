@@ -68,6 +68,8 @@ public:
         registered = events.insert( std::make_pair( *it, event ) ).first;
         created = true;
       }
+      /* WSAEventSelect re-records FD_READ when data is already queued. Re-arm
+         every pass so a recycled SOCKET value is registered on its new socket. */
       if ( WSAEventSelect( static_cast<SOCKET>( *it ), registered->second, FD_READ ) == SOCKET_ERROR ) {
         const int error = WSAGetLastError();
         if ( created ) {

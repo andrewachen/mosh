@@ -90,9 +90,22 @@ static void service( MoshCore& core, TestServer& server )
    Fill the original client socket past MoshCore's read budget, then hop and
    put one reply on the new socket. After consuming that new socket's FD_READ
    record, on_readable(new_fd) must drain new_fd rather than the older socket. */
-static void test_readable_socket_identity( MoshCore& core, TestServer& server )
+static void test_readable_socket_identity()
 {
-  for ( int i = 0; i < 32; ++i ) {
+  TestServer server( 80, 24 );
+  MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
+                 80, 24, never_prediction() );
+
+  core.feed_input( "c", 1 );
+  bool connected = false;
+  for ( int retries = 0; retries < 200 && !connected; ++retries ) {
+    service( core, server );
+    connected = server.received_byte( 'c' ) && core.next_frame().find( 'c' ) != std::string::npos;
+    Sleep( 10 );
+  }
+  assert( connected );
+
+  for ( int i = 0; i < 33; ++i ) {
     const char byte = static_cast<char>( 'a' + ( i % 26 ) );
     core.feed_input( &byte, 1 );
     freeze_timestamp();
@@ -136,6 +149,7 @@ static void test_readable_socket_identity( MoshCore& core, TestServer& server )
   assert( WSAEnumNetworkEvents( new_fd, event, &network_events ) == 0 );
   assert( ( network_events.lNetworkEvents & FD_READ ) != 0 );
   core.on_readable( static_cast<intptr_t>( new_fd ) );
+  assert( core.next_frame().find( "recvfrom" ) == std::string::npos );
 
   char byte = '\0';
   const int received = recv( new_fd, &byte, 1, 0 );
@@ -200,7 +214,7 @@ int main()
   assert( !core.socket_fds().empty() );
 
 #ifdef _WIN32
-  test_readable_socket_identity( core, server );
+  test_readable_socket_identity();
 #endif
 
   core.feed_input( "x", 1 );
