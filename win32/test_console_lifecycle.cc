@@ -1126,19 +1126,21 @@ static int run_deadline_throw_unwind()
   must( finished.get() != NULL, "CreateEvent(deadline throw finished)" );
   std::atomic<int> result( 0 );
   std::thread owner( [&]() {
-    ConsoleSession session( core );
-    session.request_shutdown( ShutdownCause::CTRL_CLOSE );
-    console_test_throw_after_restore();
-    int outcome = 0;
-    try {
-      session.run();
-      outcome = 1;
-    } catch ( const ConsoleError &error ) {
-      outcome = error.win32_code == ERROR_CANCELLED ? 0 : 2;
-    } catch ( ... ) {
-      outcome = 3;
+    {
+      ConsoleSession session( core );
+      session.request_shutdown( ShutdownCause::CTRL_CLOSE );
+      console_test_throw_after_restore();
+      int outcome = 0;
+      try {
+        session.run();
+        outcome = 1;
+      } catch ( const ConsoleError &error ) {
+        outcome = error.win32_code == ERROR_CANCELLED ? 0 : 2;
+      } catch ( ... ) {
+        outcome = 3;
+      }
+      result.store( outcome );
     }
-    result.store( outcome );
     SetEvent( finished.get() );
   } );
 
@@ -1156,9 +1158,9 @@ static int run_deadline_throw_unwind()
   return 0;
 }
 
-/* A thread wait can fail while the reader still runs. Close the real duplicated
-   thread handle, then leave the injected reader alive; teardown must surface the
-   failed wait and must not destroy the Reader underneath its worker. */
+/* A thread wait can fail while the reader still runs. The injected failure leaves
+   its real worker handle live; teardown must surface the failure and must not
+   destroy the Reader underneath its worker. */
 static int run_wait_failed_reader()
 {
   ConsoleTestInjectionGuard injections;
@@ -1177,22 +1179,38 @@ static int run_wait_failed_reader()
                           ACCEPTANCE_WATCHDOG_MS );
 
   auto session = std::make_unique<ConsoleSession>( core );
-  const HANDLE worker = session->reader_worker_for_test();
-  must( worker != NULL, "reader worker handle" );
-  must( CloseHandle( worker ), "CloseHandle(reader worker)" );
+  console_test_fail_reader_wait();
   const char quit[] = { 0x1e, '.' };
   core.feed_input( quit, sizeof quit );
   watchdog_at.store( GetTickCount64() + ACCEPTANCE_WATCHDOG_MS );
   must( SetEvent( deadline_start.get() ), "SetEvent(deadline_start)" );
   session->run();
   const CleanupReport cleanup = session->cleanup_report();
+  if ( !session->reader_detached_for_test() ) {
+    fprintf( stderr, "FAIL: wait-failed-reader did not detach the live reader\n" );
+    return 1;
+  }
+  if ( session->input_backlog_for_test() != 0
+       || session->input_ever_drained_for_test()
+       || session->signal_termination_against_backlog_for_test( 0 ) ) {
+    fprintf( stderr, "FAIL: wait-failed-reader exposed detached reader state\n" );
+    return 1;
+  }
+  const ULONGLONG destruction_started = GetTickCount64();
+  watchdog_at.store( destruction_started + MID_TEARDOWN_CLOSE_BOUND_MS );
   session.reset();
+  const ULONGLONG destruction_finished = GetTickCount64();
   must( SetEvent( session_done.get() ), "SetEvent(session_done)" );
   watchdog.stop();
 
   if ( cleanup.reader_error != ERROR_INVALID_HANDLE ) {
     fprintf( stderr, "FAIL: wait-failed-reader reported %lu, expected %lu\n",
              cleanup.reader_error, ERROR_INVALID_HANDLE );
+    return 1;
+  }
+  if ( destruction_finished > destruction_started + MID_TEARDOWN_CLOSE_BOUND_MS ) {
+    fprintf( stderr, "FAIL: wait-failed-reader destruction exceeded %lums\n",
+             MID_TEARDOWN_CLOSE_BOUND_MS );
     return 1;
   }
   return 0;

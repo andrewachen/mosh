@@ -96,6 +96,8 @@ std::atomic<DWORD> g_shutdown_budget_override_ms( 0 );
 std::atomic<HANDLE> g_teardown_entered( NULL );
 std::atomic<HANDLE> g_teardown_resume( NULL );
 std::atomic<bool> g_throw_after_restore( false );
+/* Makes the next reader-stop wait fail without invalidating its live worker handle. */
+std::atomic<bool> g_fail_reader_wait( false );
 
 /* The restored event of the most recently created control block. Readable after
    a constructor throws, when no session object survives to be asked. Safe to
@@ -543,11 +545,6 @@ public:
     }
   }
 
-  HANDLE worker_handle() const
-  {
-    return worker;
-  }
-
   void close_input()
   {
     HANDLE handle = input.exchange( NULL );
@@ -580,6 +577,10 @@ public:
         return false;
       }
       const DWORD wait_timeout = std::min<DWORD>( RESIZE_POLL_CAP_MS, remaining );
+      if ( g_fail_reader_wait.exchange( false ) ) {
+        record_stop_failure( ERROR_INVALID_HANDLE );
+        return false;
+      }
       const DWORD wait_result = WaitForSingleObject( worker, wait_timeout );
       if ( wait_result == WAIT_OBJECT_0 ) {
         close_input();
@@ -684,6 +685,11 @@ void console_test_throw_after_restore()
   g_throw_after_restore.store( true );
 }
 
+void console_test_fail_reader_wait()
+{
+  g_fail_reader_wait.store( true );
+}
+
 void console_test_clear_setup_injections()
 {
   g_fail_after_step.store( -1 );
@@ -693,6 +699,7 @@ void console_test_clear_setup_injections()
   g_teardown_entered.store( NULL );
   g_teardown_resume.store( NULL );
   g_throw_after_restore.store( false );
+  g_fail_reader_wait.store( false );
 }
 
 HANDLE console_test_last_restored_event()
@@ -1049,12 +1056,12 @@ public:
 
   size_t input_backlog() const
   {
-    return reader->pending_bytes();
+    return reader ? reader->pending_bytes() : 0;
   }
 
   bool input_ever_drained() const
   {
-    return reader->ever_drained_to_empty();
+    return reader && reader->ever_drained_to_empty();
   }
 
   bool reader_detached() const
@@ -1062,14 +1069,9 @@ public:
     return !reader;
   }
 
-  HANDLE reader_worker() const
-  {
-    return reader ? reader->worker_handle() : NULL;
-  }
-
   bool signal_termination_against_backlog( size_t minimum )
   {
-    return reader->signal_termination_against_backlog( control->termination, minimum );
+    return reader && reader->signal_termination_against_backlog( control->termination, minimum );
   }
 
   bool shutdown_observed_for_test() const
@@ -1343,11 +1345,6 @@ bool ConsoleSession::input_ever_drained_for_test() const
 bool ConsoleSession::reader_detached_for_test() const
 {
   return impl->reader_detached();
-}
-
-HANDLE ConsoleSession::reader_worker_for_test() const
-{
-  return impl->reader_worker();
 }
 
 bool ConsoleSession::shutdown_observed_for_test() const

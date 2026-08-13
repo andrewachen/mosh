@@ -414,7 +414,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A42. `WAIT_FAILED` is treated as a worker exit
 
 * **Upstream:** A failed wait is an error, not evidence that the worker terminated (`src/util/select.h:143`).
-* **Port:** Fixed. `Reader::stop_until_deadline()` now separately accepts `WAIT_OBJECT_0`, loops only for `WAIT_TIMEOUT`, and records `WAIT_FAILED` without closing or nulling the worker (`win32/console_io.cc:570-614`). The `wait-failed-reader` lifecycle mode closes the real duplicate thread handle while its worker remains live and checks that teardown reports `ERROR_INVALID_HANDLE` (`win32/test_console_lifecycle.cc:1108-1146`).
+* **Port:** Fixed. `Reader::stop_until_deadline()` now separately accepts `WAIT_OBJECT_0`, loops only for `WAIT_TIMEOUT`, and records `WAIT_FAILED` without closing or nulling the worker (`win32/console_io.cc:565-612`). The `wait-failed-reader` lifecycle mode injects `ERROR_INVALID_HANDLE` without closing its live worker, then checks cleanup reporting, reader detachment, null-safe accessors, and bounded destruction (`win32/test_console_lifecycle.cc:1161-1217`). CI runs the mode (`.github/workflows/clangarm64-spike.yml:154`).
 * **Consequence:** A failed worker wait no longer masquerades as a completed join or releases a still-running worker's state.
 * **Class:** `FIXED`, **high** — thread lifecycle.
 * **Fix:** Distinguish `WAIT_OBJECT_0`, `WAIT_TIMEOUT`, and `WAIT_FAILED`; retain the handle and surface the failure unless termination policy explicitly and safely cancels the worker.
@@ -422,7 +422,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A43. Reader teardown closes a duplicated input handle during an in-flight read
 
 * **Upstream:** Synchronous input ownership ends after the read operation returns (`src/frontend/stmclient.cc:310-316`).
-* **Port:** Fixed. Deadline cancellation now only marks the reader stopping and calls `CancelSynchronousIo`; `input` closes only after `WAIT_OBJECT_0` joins the worker (`win32/console_io.cc:536-542`, `win32/console_io.cc:585-603`). The existing `deadline-wedged-reader` mode now asserts that deadline cleanup detached the live reader rather than destroying it (`win32/test_console_lifecycle.cc:1049-1104`).
+* **Port:** Fixed. Deadline cancellation now only marks the reader stopping and calls `CancelSynchronousIo`; `input` closes only after `WAIT_OBJECT_0` joins the worker (`win32/console_io.cc:539-545`, `win32/console_io.cc:582-609`). The `deadline-wedged-reader` mode asserts that deadline cleanup detached the live reader rather than destroying it (`win32/test_console_lifecycle.cc:1053-1109`). CI runs the mode (`.github/workflows/clangarm64-spike.yml:153`).
 * **Consequence:** A live `ReadFile` keeps its duplicated input handle until the worker has exited, so teardown cannot recycle the handle beneath it.
 * **Class:** `FIXED`, **high** — thread/handle lifetime.
 * **Fix:** Give the worker stable handle ownership until it exits, then close it after a successful join; cancellation must not close a handle still usable by the worker.
@@ -446,7 +446,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A46. Exception unwinding can perform an unbounded reader join after a deadline
 
 * **Upstream:** The main loop's exit path does not leave a detached worker whose destructor can block indefinitely (`src/frontend/stmclient.cc:490-572`).
-* **Port:** Fixed. `release_and_signal()` releases a reader whose deadline or failed wait left it non-joined, so `ConsoleSession` destruction during `run_console_session()` unwinding cannot reach `Reader::~Reader()`'s unbounded join (`win32/console_io.cc:1001-1021`). The `deadline-throw-unwind` lifecycle mode makes `run()` throw after deadline teardown, then bounds destruction of its by-value session (`win32/test_console_lifecycle.cc:1112-1155`).
+* **Port:** Fixed. `release_and_signal()` releases a reader whose deadline or failed wait left it non-joined, so `ConsoleSession` destruction during `run_console_session()` unwinding cannot reach `Reader::~Reader()`'s unbounded join (`win32/console_io.cc:1002-1026`). The `deadline-throw-unwind` lifecycle mode makes `run()` throw after deadline teardown and signals completion only after its by-value session is destroyed (`win32/test_console_lifecycle.cc:1112-1158`). CI runs the mode (`.github/workflows/clangarm64-spike.yml:155`).
 * **Consequence:** Every deadline or wait-error exit either joins before destruction or intentionally retains the active reader and its handles; exception unwinding remains bounded.
 * **Class:** `FIXED`, **high** — termination/thread lifecycle.
 * **Fix:** Make the unwind path release the deliberately non-joined worker without blocking, or ensure every exception path retains a bounded teardown contract.
