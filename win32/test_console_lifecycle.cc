@@ -1110,8 +1110,9 @@ static int run_mid_teardown_close()
 }
 
 /* Forces the precise A46 sequence: deadline teardown detaches the live reader,
-   then run() throws. The owner thread lets its by-value ConsoleSession unwind;
-   the bounded wait catches the old destructor's unbounded Reader::stop(). */
+   then run() throws. The owner thread publishes a post-run tick and lets its
+   by-value ConsoleSession unwind, measuring the old destructor's unbounded
+   Reader::stop() without charging setup or run() against the destructor bound. */
 static int run_deadline_throw_unwind()
 {
   ConsoleTestInjectionGuard injections;
@@ -1125,6 +1126,8 @@ static int run_deadline_throw_unwind()
   UniqueHandle finished( CreateEvent( NULL, TRUE, FALSE, NULL ) );
   must( finished.get() != NULL, "CreateEvent(deadline throw finished)" );
   std::atomic<int> result( 0 );
+  std::atomic<ULONGLONG> destruction_started( 0 );
+  std::atomic<ULONGLONG> destruction_finished( 0 );
   std::thread owner( [&]() {
     {
       ConsoleSession session( core );
@@ -1140,13 +1143,21 @@ static int run_deadline_throw_unwind()
         outcome = 3;
       }
       result.store( outcome );
+      destruction_started.store( GetTickCount64() );
     }
+    destruction_finished.store( GetTickCount64() );
     SetEvent( finished.get() );
   } );
 
-  const DWORD wait = WaitForSingleObject( finished.get(), MID_TEARDOWN_CLOSE_BOUND_MS );
+  const DWORD wait = WaitForSingleObject( finished.get(), ACCEPTANCE_WATCHDOG_MS );
   if ( wait != WAIT_OBJECT_0 ) {
     fprintf( stderr, "FAIL: deadline-throw-unwind: owner did not unwind within %lums\n",
+             ACCEPTANCE_WATCHDOG_MS );
+    std::_Exit( 1 );
+  }
+  if ( destruction_finished.load() > destruction_started.load()
+       + MID_TEARDOWN_CLOSE_BOUND_MS ) {
+    fprintf( stderr, "FAIL: deadline-throw-unwind: destruction exceeded %lums\n",
              MID_TEARDOWN_CLOSE_BOUND_MS );
     std::_Exit( 1 );
   }
