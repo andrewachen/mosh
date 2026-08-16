@@ -271,7 +271,7 @@ test_console_lifecycle: $(BUILD)/win32/test_console_lifecycle.o $(BUILD)/win32/c
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ $(BUILD)/win32/test_console_lifecycle.o $(BUILD)/win32/console_io.o $(BUILD)/win32/mosh_core.o $(BUILD)/win32/test_server.o -Wl,--start-group src/crypto/libmoshcrypto.a $(BUILD)/win32/wincompat.o src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a src/frontend/libmoshfrontend.a src/network/libmoshnetwork.a -Wl,--end-group -Wl,-Bstatic $(shell pkg-config --libs --static protobuf) -Wl,-Bdynamic $(LDFLAGS) $(STATIC_C_LIBS_BEGIN) $(C_LIBS) $(STATIC_C_LIBS_END) -lws2_32 -luser32 -lcrypt32 -lbcrypt -l:libwinpthread.a -static-libstdc++ -static-libgcc
 
 clean:
-	rm -rf $(BUILD) $(LIBS) mosh.exe test_loopback test_loopback.exe test_core test_core.exe test_console_lifecycle test_console_lifecycle.exe test_bootstrap test_bootstrap.exe test_startup_options test_startup_options.exe test_terminal_width test_terminal_width.exe test_prediction_width test_prediction_width.exe bootstrap_child bootstrap_child.exe src/protobufs/*.pb.cc src/protobufs/*.pb.h src/include/config.h
+	rm -rf $(BUILD) $(LIBS) mosh.exe test_loopback test_loopback.exe test_core test_core.exe test_socket_events test_socket_events.exe test_console_lifecycle test_console_lifecycle.exe test_bootstrap test_bootstrap.exe test_startup_options test_startup_options.exe test_terminal_width test_terminal_width.exe test_prediction_width test_prediction_width.exe bootstrap_child bootstrap_child.exe src/protobufs/*.pb.cc src/protobufs/*.pb.h src/include/config.h
 
 # Pull in the compiler-generated header dependencies (-MMD -MP above). The
 # wildcard is empty on a fresh tree; the leading dash makes that non-fatal.
