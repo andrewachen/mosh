@@ -359,19 +359,19 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 * **Class:** `DEFECT`, medium — executable resolution.
 * **Fix:** Normalize or reject relative path components before passing the list to `SearchPathW`, and define the intended empty-component behavior.
 
-#### A35. Bootstrap draining can block before its timeout starts
+#### A35. Bootstrap drain cleanup did not participate in lifecycle cancellation
 
-* **Upstream:** The wrapper's SSH child and startup parsing are coordinated so a child that stops producing output can still be terminated by the surrounding lifecycle (`scripts/mosh.pl:409`).
-* **Port:** `spawn_and_drain()` called the blocking `drain_and_parse()` before waiting for the child (`win32/mosh_bootstrap.cc:350-354`). `drain_and_parse()` performed an unbounded blocking `ReadFile` loop (`win32/mosh_bootstrap.cc:192-218`), so the ten-second wait and terminate path were reached only after the pipe closed or the parser returned. The original test covered a fixture that emitted `CONNECT` and then slept, exercising only the post-drain reap (`win32/test_bootstrap.cc:436-441`).
-* **Consequence:** An SSH child that kept its stdout pipe open without producing a complete reply could hang the bootstrap forever; the documented ten-second process wait could not bound that case.
+* **Upstream:** The wrapper reads until `MOSH CONNECT` or EOF, with no fixed authentication deadline (`scripts/mosh.pl:415-443`); surrounding lifecycle termination may still stop the child.
+* **Port:** `spawn_and_drain()` previously imposed a ten-second pre-reply wait, incorrectly rejecting slow DNS, host-key, password, MFA, or proxy authentication. Its worker error state could also race a failed `CancelSynchronousIo` diagnostic.
+* **Consequence:** Slow valid logins failed on an arbitrary deadline, and concurrent writes to the drainer's `std::string` error state were undefined behavior.
 * **Class:** `FIXED`, high — bootstrap liveness.
-* **Fix:** `spawn_and_drain()` runs the drain in a contained worker and waits for either child exit or drain completion, so a valid reply goes directly to job close instead of waiting out the watchdog (`win32/mosh_bootstrap.cc:385-415`). After the process reap window, the worker has a bounded wait and `CancelSynchronousIo` fallback before its joining guard closes the native thread handle (`win32/mosh_bootstrap.cc:407-415`). Real hanging and silent child fixtures cover the fast drain-complete path and the drain-timeout path (`win32/bootstrap_child.cc:52-59`, `win32/test_bootstrap.cc:436-486`).
+* **Fix:** `spawn_and_drain()` waits indefinitely before `MOSH CONNECT` for reply, child exit, clean EOF, or an explicit lifecycle-cancellation handle (`win32/mosh_bootstrap.cc:398-404`). Cancellation closes the job, then uses bounded waits and `CancelSynchronousIo` for the drainer. A false cancellation is rechecked as a completion race, and its supervisor diagnostic remains local until after the final join (`win32/mosh_bootstrap.cc:409-427`). Cleanup is best-effort bounded, not a hard return-time guarantee: if cancellation fails and the drainer is wedged forwarding a banner through `std::fprintf(stdout, ...)` to a stalled sink, its final infinite join can still hang. That narrow residual is accepted. Real hanging and silent fixtures cover drain completion and explicit lifecycle cancellation (`win32/bootstrap_child.cc:52-59`, `win32/test_bootstrap.cc:436-486`).
 
 #### A36. Forced SSH termination is reported as the child's status
 
 * **Upstream:** The wrapper's parent reads the SSH pipe as a line stream and reports its own connection/bootstrap failure rather than formatting a separately reaped child status (`scripts/mosh.pl:412-425`).
-* **Port:** After the ten-second wait, `spawn_and_drain()` calls `TerminateProcess(..., 1)` and then treats any exit code other than `STILL_ACTIVE` as a real child exit (`win32/mosh_bootstrap.cc:353-358`). It later formats every nonzero code as `ssh exited with status` (`win32/mosh_bootstrap.cc:363-368`).
-* **Consequence:** A forced termination is surfaced as SSH status 1 instead of identifying the bootstrap timeout. In addition, the valid Windows process exit code 259 is indistinguishable from `STILL_ACTIVE` in the `have_exit` test.
+* **Port:** On lifecycle cancellation, `spawn_and_drain()` calls `TerminateProcess(..., 1)` and then treats any exit code other than `STILL_ACTIVE` as a real child exit (`win32/mosh_bootstrap.cc:399-405`). It later formats every nonzero code as `ssh exited with status` (`win32/mosh_bootstrap.cc:424-432`).
+* **Consequence:** A forced lifecycle termination can be surfaced as SSH status 1 instead of identifying cancellation. In addition, the valid Windows process exit code 259 is indistinguishable from `STILL_ACTIVE` in the `have_exit` test.
 * **Class:** `DEFECT`, medium — bootstrap diagnostics.
 
 #### A37. CRT bootstrap banners can overtake raw console session output
