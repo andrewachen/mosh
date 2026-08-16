@@ -577,11 +577,11 @@ public:
         return false;
       }
       const DWORD wait_timeout = std::min<DWORD>( RESIZE_POLL_CAP_MS, remaining );
+      DWORD wait_result = WaitForSingleObject( worker, wait_timeout );
       if ( g_fail_reader_wait.exchange( false ) ) {
-        record_stop_failure( ERROR_INVALID_HANDLE );
-        return false;
+        SetLastError( ERROR_INVALID_HANDLE );
+        wait_result = WAIT_FAILED;
       }
-      const DWORD wait_result = WaitForSingleObject( worker, wait_timeout );
       if ( wait_result == WAIT_OBJECT_0 ) {
         close_input();
         CloseHandle( worker );

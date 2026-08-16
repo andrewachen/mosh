@@ -414,7 +414,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A42. `WAIT_FAILED` is treated as a worker exit
 
 * **Upstream:** A failed wait is an error, not evidence that the worker terminated (`src/util/select.h:143`).
-* **Port:** Fixed. `Reader::stop_until_deadline()` now separately accepts `WAIT_OBJECT_0`, loops only for `WAIT_TIMEOUT`, and records `WAIT_FAILED` without closing or nulling the worker (`win32/console_io.cc:565-612`). The `wait-failed-reader` lifecycle mode injects `ERROR_INVALID_HANDLE` without closing its live worker, then checks cleanup reporting, reader detachment, null-safe accessors, and bounded destruction (`win32/test_console_lifecycle.cc:1161-1217`). CI runs the mode (`.github/workflows/clangarm64-spike.yml:154`).
+* **Port:** Fixed. `Reader::stop_until_deadline()` now separately accepts `WAIT_OBJECT_0`, loops only for `WAIT_TIMEOUT`, and records `WAIT_FAILED` without closing or nulling the worker (`win32/console_io.cc:565-612`). The `wait-failed-reader` lifecycle mode injects `ERROR_INVALID_HANDLE` as a `WAIT_FAILED` result after one real bounded wait, then checks cleanup reporting, reader detachment, null-safe accessors, and bounded destruction (`win32/test_console_lifecycle.cc:1164-1217`). CI runs the mode (`.github/workflows/clangarm64-spike.yml:154`).
 * **Consequence:** A failed worker wait no longer masquerades as a completed join or releases a still-running worker's state.
 * **Class:** `FIXED`, **high** — thread lifecycle.
 * **Fix:** Distinguish `WAIT_OBJECT_0`, `WAIT_TIMEOUT`, and `WAIT_FAILED`; retain the handle and surface the failure unless termination policy explicitly and safely cancels the worker.
