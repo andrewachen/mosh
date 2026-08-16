@@ -71,6 +71,7 @@ int main()
   assert( getsockname( new_fd, reinterpret_cast<sockaddr *>( &local ), &local_len ) == 0 );
   const char byte = 'x';
   assert( sendto( new_fd, &byte, 1, 0, reinterpret_cast<const sockaddr *>( &local ), local_len ) == 1 );
+  assert( WSAWaitForMultipleEvents( 1, &event, FALSE, 1000, FALSE ) == WSA_WAIT_EVENT_0 );
   socket_events.reconcile( { static_cast<intptr_t>( new_fd ) } );
 
   WSANETWORKEVENTS network_events = {};

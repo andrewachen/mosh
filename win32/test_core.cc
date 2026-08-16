@@ -205,6 +205,10 @@ int main()
     assert( wcrtomb( mb, L'\u00E9', &mbs ) == 2 );
   }
 
+#ifdef _WIN32
+  test_readable_socket_identity();
+#endif
+
   MoshCore core( "127.0.0.1", server_port.c_str(), server_key.c_str(), 80, 24, never_prediction() );
 
   /* Display(false) deliberately supplies portable ANSI sequences; the native
@@ -212,10 +216,6 @@ int main()
   assert( !core.open_sequence().empty() );
   assert( !core.close_sequence().empty() );
   assert( !core.socket_fds().empty() );
-
-#ifdef _WIN32
-  test_readable_socket_identity();
-#endif
 
   core.feed_input( "x", 1 );
   bool got_frame = false;
