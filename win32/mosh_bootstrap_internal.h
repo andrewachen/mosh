@@ -56,4 +56,4 @@ std::string drain_and_parse( HANDLE read_end, ServerReply *r );
    reap the child. "" on a valid MOSH CONNECT, or an error (ssh-exit / fatal /
    read). */
 std::string spawn_and_drain( const std::wstring &app_path, const std::wstring &cmdline,
-                             ServerReply *r );
+                             ServerReply *r, HANDLE cancel = NULL );

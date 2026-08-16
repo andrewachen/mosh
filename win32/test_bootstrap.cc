@@ -433,6 +433,30 @@ static void test_spawn_fixture()
   CloseHandle( sentinel );
 }
 
+/* delayed mode has no reply until a slow but valid authentication period has
+   elapsed. It must not inherit an arbitrary pre-CONNECT timeout. */
+static void test_spawn_slow_login()
+{
+  std::wstring child;
+  if ( !locate_fixture( &child ) ) return;         /* fixture build failure, asserted inside */
+
+  const std::string marker = "round trip \"marker\"";
+  std::string cmd = "bootstrap_child.exe";
+  cmd += " " + win_quote_arg( std::to_string( (uintptr_t) 0 ) );
+  cmd += " " + win_quote_arg( marker );
+  cmd += " " + win_quote_arg( "delayed" );
+
+  ServerReply r;
+  const ULONGLONG start = GetTickCount64();
+  const std::string err = spawn_and_drain( child, widen( cmd ), &r );
+  const ULONGLONG elapsed = GetTickCount64() - start;
+  assert( elapsed >= 10000 && elapsed < 15000 );
+  assert( err.empty() );
+
+  BootstrapResult out;
+  assert( resolve_endpoint( r, "host", &out ).empty() );
+}
+
 /* hang mode: spawn the fixture in "hang" (emits CONNECT then sleeps forever).
    Once the valid reply has drained, bootstrap must stop supervising the child
    instead of waiting out its ten-second watchdog. */
@@ -458,9 +482,9 @@ static void test_spawn_timeout_reap()
   assert( out.ip == "203.0.113.7" && out.port == "60001" );
 }
 
-/* silent mode: the fixture keeps stdout open without a complete reply. The
-   watchdog proves the bootstrap's timeout covers the drain, not just reap. */
-static void test_spawn_timeout_during_drain()
+/* silent mode keeps stdout open without a reply. An explicit lifecycle
+   cancellation must end the bootstrap without imposing a login deadline. */
+static void test_spawn_cancellation_during_drain()
 {
   std::wstring child;
   if ( !locate_fixture( &child ) ) return;         /* fixture build failure, asserted inside */
@@ -471,18 +495,28 @@ static void test_spawn_timeout_during_drain()
   cmd += " " + win_quote_arg( marker );
   cmd += " " + win_quote_arg( "silent" );
 
+  HANDLE cancel = CreateEventW( NULL, TRUE, FALSE, NULL );
+  HANDLE started = CreateEventW( NULL, TRUE, FALSE, NULL );
   HANDLE done = CreateEventW( NULL, TRUE, FALSE, NULL );
+  assert( cancel && cancel != INVALID_HANDLE_VALUE );
+  assert( started && started != INVALID_HANDLE_VALUE );
   assert( done && done != INVALID_HANDLE_VALUE );
   std::string err;
   ServerReply r;
   std::thread worker( [&] {
-    err = spawn_and_drain( child, widen( cmd ), &r );
+    SetEvent( started );
+    err = spawn_and_drain( child, widen( cmd ), &r, cancel );
     SetEvent( done );
   } );
-  assert( WaitForSingleObject( done, 15000 ) == WAIT_OBJECT_0 );
+  assert( WaitForSingleObject( started, 5000 ) == WAIT_OBJECT_0 );
+  Sleep( 100 );
+  SetEvent( cancel );
+  assert( WaitForSingleObject( done, 5000 ) == WAIT_OBJECT_0 );
   worker.join();
   CloseHandle( done );
-  assert( !err.empty() );
+  CloseHandle( started );
+  CloseHandle( cancel );
+  assert( err == "mosh: bootstrap cancelled" );
 }
 
 int main()
@@ -507,8 +541,9 @@ int main()
   test_build_ssh_command_line();
   test_mosh_bootstrap_rejects_invalid_target();
   test_spawn_fixture();
+  test_spawn_slow_login();
   test_spawn_timeout_reap();
-  test_spawn_timeout_during_drain();
+  test_spawn_cancellation_during_drain();
   puts( "test_bootstrap: passed" );
   return 0;
 }

@@ -312,10 +312,11 @@ std::string dup_or_nul( DWORD which, HANDLE *out )
 
 /* Launch app_path with cmdline: whitelist only the 3 std handles, confine the
    child to a kill-on-close Job Object ATOMICALLY at creation (no suspend/assign
-   window), then drain stdout on THIS thread (blocking — cancellation is the
-   termination-lifecycle owner's job, not M3's). Every setup call is checked and
-   fails closed (no CreateProcessW with an incomplete whitelist). Reaps the child. */
-std::string spawn_and_drain( const std::wstring &app_path, const std::wstring &cmdline, ServerReply *r )
+   window), and drain stdout until a reply, child exit, or lifecycle cancellation.
+   Every setup call is checked and fails closed (no CreateProcessW with an
+   incomplete whitelist). Reaps the child. */
+std::string spawn_and_drain( const std::wstring &app_path, const std::wstring &cmdline,
+                             ServerReply *r, HANDLE cancel )
 {
   SECURITY_ATTRIBUTES sa = {}; sa.nLength = sizeof sa; sa.bInheritHandle = TRUE;
   HANDLE rd = NULL, wr = NULL;
@@ -395,28 +396,38 @@ std::string spawn_and_drain( const std::wstring &app_path, const std::wstring &c
     return "mosh: could not start the ssh output reader";
   }
 
-  HANDLE waits[2] = { pi.hProcess, drain_done };
-  const DWORD waited = WaitForMultipleObjects( 2, waits, FALSE, 10000 );
-  if ( waited == WAIT_TIMEOUT ) {
-    TerminateProcess( pi.hProcess, 1 );
-    WaitForSingleObject( pi.hProcess, 5000 );        // wait for confirmed exit after terminate
-  }
+  HANDLE waits[3] = { pi.hProcess, drain_done, cancel };
+  const DWORD wait_count = cancel ? 3 : 2;
+  const DWORD waited = WaitForMultipleObjects( wait_count, waits, FALSE, INFINITE );
+  const bool cancelled = cancel && waited == WAIT_OBJECT_0 + 2;
+  if ( cancelled ) TerminateProcess( pi.hProcess, 1 );
   DWORD exit_code = 0;
   const bool have_exit = GetExitCodeProcess( pi.hProcess, &exit_code ) && exit_code != STILL_ACTIVE;
   CloseHandle( job );                                 // kill-on-close reaps ssh and pipe writers
   WaitForSingleObject( pi.hProcess, 2000 );           // confirm reap after job close
   CloseHandle( pi.hProcess );
+  std::string cancel_error;
   if ( WaitForSingleObject( drainer.handle(), 2000 ) == WAIT_TIMEOUT ) {
-    if ( !CancelSynchronousIo( drainer.handle() ) ) state.error = "mosh: could not stop reading ssh output";
-    WaitForSingleObject( drainer.handle(), 2000 );
+    if ( !CancelSynchronousIo( drainer.handle() ) ) {
+      const DWORD cancel_status = GetLastError();
+      /* ERROR_NOT_FOUND can mean the read completed between the timeout and
+         cancellation. Recheck the native thread handle before reporting it. */
+      if ( WaitForSingleObject( drainer.handle(), 2000 ) == WAIT_TIMEOUT )
+        cancel_error = "mosh: could not stop reading ssh output (error "
+          + std::to_string( cancel_status ) + ")";
+    } else {
+      WaitForSingleObject( drainer.handle(), 2000 );
+    }
   }
   drainer.join();
   CloseHandle( drain_done );
   CloseHandle( rd );
 
-  // Outcome precedence: read/fatal error > valid CONNECT (success even if ssh then exits nonzero)
-  //                     > nonzero ssh exit > missing startup (handled by resolve_endpoint).
+  // Outcome precedence: read/fatal error > cancellation failure > valid CONNECT
+  //                     > nonzero ssh exit > missing startup (resolve_endpoint).
   if ( !state.error.empty() ) return state.error;
+  if ( !cancel_error.empty() ) return cancel_error;
+  if ( cancelled ) return "mosh: bootstrap cancelled";
   if ( r->have_connect ) return "";
   if ( have_exit && exit_code != 0 ) return "mosh: ssh exited with status " + std::to_string( exit_code );
   return "";
