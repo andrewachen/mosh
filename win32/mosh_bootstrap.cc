@@ -264,6 +264,8 @@ public:
 
   JoiningThread( Entry entry, void *arg ) : handle_( (HANDLE) _beginthreadex( NULL, 0, entry, arg, 0, NULL ) ) {}
   ~JoiningThread() { if ( handle_ ) { WaitForSingleObject( handle_, INFINITE ); CloseHandle( handle_ ); } }
+  JoiningThread( const JoiningThread & ) = delete;
+  JoiningThread &operator=( const JoiningThread & ) = delete;
 
   HANDLE handle() const { return handle_; }
   void join() { WaitForSingleObject( handle_, INFINITE ); CloseHandle( handle_ ); handle_ = NULL; }
@@ -274,6 +276,7 @@ struct DrainState {
   HANDLE done;
   ServerReply *reply;
   std::string error;
+  const char *nonallocating_error;
 };
 
 unsigned __stdcall drain_thread( void *arg )
@@ -282,9 +285,9 @@ unsigned __stdcall drain_thread( void *arg )
   try {
     state->error = drain_and_parse( state->read_end, state->reply );
   } catch ( const std::bad_alloc & ) {
-    state->error = "mosh: out of memory while reading ssh output";
+    state->nonallocating_error = "mosh: out of memory while reading ssh output";
   } catch ( ... ) {
-    state->error = "mosh: failed while reading ssh output";
+    state->nonallocating_error = "mosh: failed while reading ssh output";
   }
   SetEvent( state->done );
   return 0;
@@ -389,7 +392,7 @@ std::string spawn_and_drain( const std::wstring &app_path, const std::wstring &c
     CloseHandle( job ); CloseHandle( pi.hProcess ); CloseHandle( rd );
     return "mosh: could not create the ssh output completion event";
   }
-  DrainState state = { rd, drain_done, r, "" };
+  DrainState state = { rd, drain_done, r, "", NULL };
   JoiningThread drainer( drain_thread, &state );
   if ( !drainer.handle() ) {
     CloseHandle( drain_done ); CloseHandle( job ); CloseHandle( pi.hProcess ); CloseHandle( rd );
@@ -399,6 +402,15 @@ std::string spawn_and_drain( const std::wstring &app_path, const std::wstring &c
   HANDLE waits[3] = { pi.hProcess, drain_done, cancel };
   const DWORD wait_count = cancel ? 3 : 2;
   const DWORD waited = WaitForMultipleObjects( wait_count, waits, FALSE, INFINITE );
+  if ( waited == WAIT_FAILED ) {
+    const DWORD wait_error = GetLastError();
+    CloseHandle( job );
+    drainer.join();
+    CloseHandle( drain_done );
+    CloseHandle( rd );
+    CloseHandle( pi.hProcess );
+    return "mosh: failed waiting for ssh bootstrap events (error " + std::to_string( wait_error ) + ")";
+  }
   const bool cancelled = cancel && waited == WAIT_OBJECT_0 + 2;
   if ( cancelled ) TerminateProcess( pi.hProcess, 1 );
   DWORD exit_code = 0;
@@ -413,7 +425,7 @@ std::string spawn_and_drain( const std::wstring &app_path, const std::wstring &c
       /* ERROR_NOT_FOUND can mean the read completed between the timeout and
          cancellation. Recheck the native thread handle before reporting it. */
       if ( WaitForSingleObject( drainer.handle(), 2000 ) == WAIT_TIMEOUT )
-        cancel_error = "mosh: could not stop reading ssh output (error "
+        cancel_error = "mosh: ssh output reader did not stop within the cancellation bound (error "
           + std::to_string( cancel_status ) + ")";
     } else {
       WaitForSingleObject( drainer.handle(), 2000 );
@@ -425,6 +437,10 @@ std::string spawn_and_drain( const std::wstring &app_path, const std::wstring &c
 
   // Outcome precedence: read/fatal error > cancellation failure > valid CONNECT
   //                     > nonzero ssh exit > missing startup (resolve_endpoint).
+  if ( state.nonallocating_error ) return state.nonallocating_error;
+  if ( cancelled && state.error == "mosh: failed reading ssh output (error "
+                                  + std::to_string( ERROR_OPERATION_ABORTED ) + ")" )
+    return "mosh: bootstrap cancelled";
   if ( !state.error.empty() ) return state.error;
   if ( !cancel_error.empty() ) return cancel_error;
   if ( cancelled ) return "mosh: bootstrap cancelled";
