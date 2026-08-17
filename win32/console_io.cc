@@ -35,6 +35,7 @@
 
 #include "win32/console_io.h"
 #include "win32/socket_events.h"
+#include "src/util/fatal_assert.h"
 
 #include <algorithm>
 #include <atomic>
@@ -476,7 +477,7 @@ public:
 
   ~Reader()
   {
-    stop();
+    fatal_assert( stop_until_deadline( NULL ) );
     CloseHandle( ready_event );
   }
 

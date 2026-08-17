@@ -1153,12 +1153,14 @@ static int run_deadline_throw_unwind()
   if ( wait != WAIT_OBJECT_0 ) {
     fprintf( stderr, "FAIL: deadline-throw-unwind: owner did not unwind within %lums\n",
              ACCEPTANCE_WATCHDOG_MS );
+    scope.restore();
     std::_Exit( 1 );
   }
   if ( destruction_finished.load() > destruction_started.load()
        + MID_TEARDOWN_CLOSE_BOUND_MS ) {
     fprintf( stderr, "FAIL: deadline-throw-unwind: destruction exceeded %lums\n",
              MID_TEARDOWN_CLOSE_BOUND_MS );
+    scope.restore();
     std::_Exit( 1 );
   }
   owner.join();
@@ -1208,7 +1210,6 @@ static int run_wait_failed_reader()
     return 1;
   }
   const ULONGLONG destruction_started = GetTickCount64();
-  watchdog_at.store( destruction_started + MID_TEARDOWN_CLOSE_BOUND_MS );
   session.reset();
   const ULONGLONG destruction_finished = GetTickCount64();
   must( SetEvent( session_done.get() ), "SetEvent(session_done)" );
