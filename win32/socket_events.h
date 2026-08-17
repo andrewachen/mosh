@@ -20,6 +20,7 @@
 
 #include "win32/console_io.h"
 
+/* Duplicates console_io.cc's anonymous-namespace helper because it is private. */
 inline std::string socket_event_error_message( const char *what, DWORD error )
 {
   std::ostringstream message;

@@ -15,6 +15,7 @@
 #include <clocale>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "src/frontend/terminaloverlay.h"
 #include "src/util/locale_utils.h"
@@ -49,6 +50,7 @@ int main()
   assert( closesocket( old_fd ) == 0 );
 
   SOCKET new_fd = INVALID_SOCKET;
+  std::vector<SOCKET> held_fds;
   for ( int attempts = 0; attempts < 1024; ++attempts ) {
     SOCKET candidate = socket( AF_INET, SOCK_DGRAM, IPPROTO_UDP );
     assert( candidate != INVALID_SOCKET );
@@ -56,9 +58,12 @@ int main()
       new_fd = candidate;
       break;
     }
-    assert( closesocket( candidate ) == 0 );
+    held_fds.push_back( candidate );
   }
   assert( new_fd != INVALID_SOCKET );
+  for ( std::vector<SOCKET>::const_iterator it = held_fds.begin(); it != held_fds.end(); ++it ) {
+    assert( closesocket( *it ) == 0 );
+  }
 
   socket_events.reconcile( { static_cast<intptr_t>( new_fd ) } );
   const WSAEVENT event = socket_events.all().at( static_cast<intptr_t>( new_fd ) );

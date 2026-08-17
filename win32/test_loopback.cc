@@ -182,10 +182,10 @@ static void expect_no_connreset( Connection& conn, const char* what )
       exit( 1 );
     }
   }
+  printf( "%s: no packet, no error\n", what );
 #else
   expect_no_packet( conn, what );
 #endif
-  printf( "%s: no packet, no error\n", what );
 }
 
 int main( int argc, char* argv[] )

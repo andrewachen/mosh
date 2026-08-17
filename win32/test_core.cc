@@ -176,17 +176,13 @@ int main()
 #endif
   mosh_winsock_init();
 
-  TestServer server( 80, 24 );
-  const std::string server_port = server.port();
-  const std::string server_key = server.get_key();
-
   /* Negative test: verify the locale probe fires when the locale is "C". */
   {
     assert( setlocale( LC_ALL, "C" ) != nullptr );
 
     bool threw = false;
     try {
-      MoshCore core( "127.0.0.1", server_port.c_str(), server_key.c_str(), 80, 24, never_prediction() );
+      MoshCore core( "127.0.0.1", "0", "", 80, 24, never_prediction() );
     } catch ( const std::runtime_error& error ) {
       threw = true;
       assert( std::string( error.what() ).find( "UTF-8 locale" ) != std::string::npos );
@@ -209,6 +205,9 @@ int main()
   test_readable_socket_identity();
 #endif
 
+  TestServer server( 80, 24 );
+  const std::string server_port = server.port();
+  const std::string server_key = server.get_key();
   MoshCore core( "127.0.0.1", server_port.c_str(), server_key.c_str(), 80, 24, never_prediction() );
 
   /* Display(false) deliberately supplies portable ANSI sequences; the native
