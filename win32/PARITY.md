@@ -23,17 +23,17 @@ Severity is **high** for correctness, security, or resource-exhaustion consequen
 | `PLATFORM` | 8 |
 | `POLICY` | 3 |
 | `DEFERRED` | 0 |
-| `DEFECT` | 36 |
+| `DEFECT` | 29 |
 | `OPEN` | 3 |
-| **Total** | **50** |
+| **Total** | **43** |
 
-Eighteen repaired or confirmed behavior records — connection-timeout shutdown, reader input ending, bare Ctrl-Z passthrough, interrupt control events versus a typed Ctrl-C, bounded close-handler restoration attempts, post-wait timestamp freezing, resize framebuffer ownership, UCRT wide-printf semantics, the retired command-line key channel, the bounded zero-length wait, the fresh-client-socket receive pass, `MOSH_NO_TERM_INIT`, `MOSH_ESCAPE_KEY`, `MOSH_PREDICTION_OVERWRITE`, the prediction display preference, the `[mosh] ` title prefix, transport verbosity, and astral-plane character decoding — are recorded at the end and are not counted as findings. The bounded zero-length wait is implemented rather than fully verified; the coverage it still owes is counted, as A26.
+Twenty-five repaired or confirmed behavior records — connection-timeout shutdown, reader input ending, bare Ctrl-Z passthrough, interrupt control events versus a typed Ctrl-C, bounded close-handler restoration attempts, post-wait timestamp freezing, resize framebuffer ownership, UCRT wide-printf semantics, the retired command-line key channel, the bounded zero-length wait, the fresh-client-socket receive pass, `MOSH_NO_TERM_INIT`, `MOSH_ESCAPE_KEY`, `MOSH_PREDICTION_OVERWRITE`, the prediction display preference, the `[mosh] ` title prefix, transport verbosity, readable-socket identity (A29), recycled-socket re-arming (A30), unconnected UDP reset handling (A31), bootstrap drain cancellation (A35), failed reader waits (A42), reader input-handle teardown (A43), bounded reader-unwind teardown (A46), and astral-plane character decoding — are recorded at the end and are not counted as findings. The bounded zero-length wait is implemented rather than fully verified; the coverage it still owes is counted, as A26.
 
 ## How the defects cluster
 
 Startup parsing is resolved for A1, A2, A3, and A25 through the shared `src/frontend/startup_config` module used by both frontends. A4's transport-verbosity tier is parsed independently by each frontend's getopt loop, and A20's presence check is independent in the Windows startup path; their behavior currently matches but can drift separately. The remaining configuration-adjacent defects are teardown behavior, not parsing: A13's escape-shutdown wording and A14's full normal-exit cleanup transition remain open, with A21 retaining the related exit diagnostics.
 
-The event-loop, timing, and diagnostics cluster is **A5, A6, A7, A8, A9, A12, A15, A22, A23, A24, A26, A27, A29, A30, A31, and A32**. `STMClient::main()` was re-derived rather than extracted, so every ordering, exception-boundary, and poll-diagnostics decision was re-made independently; A27 is the unimplemented Select verbosity level-two-and-above tier of A4 and remains coupled to A26's wait seam. A29 and A30 are handle/event-registration lifetime defects; A31 is the Windows-only UDP reset error path; A32 is the status/cleanup reporting split. A42, A43, and A46 are the separate reader-thread and teardown-lifetime cluster. The final whole-branch review also found A33–A41 in bootstrap, locale, and console handling, and A47–A49 in the build and lifecycle bookkeeping; all A29–A49 records are for later scheduling, with fixes deferred.
+The event-loop, timing, and diagnostics cluster is **A5, A6, A7, A8, A9, A12, A15, A22, A23, A24, A26, A27, and A32**. `STMClient::main()` was re-derived rather than extracted, so every ordering, exception-boundary, and poll-diagnostics decision was re-made independently; A27 is the unimplemented Select verbosity level-two-and-above tier of A4 and remains coupled to A26's wait seam. A32 is the status/cleanup reporting split. The final whole-branch review also found A33–A41 in bootstrap, locale, and console handling, and A47–A49 in the build and lifecycle bookkeeping. A29, A30, A31, A35, A42, A43, and A46 are repaired records in Confirmed parity; A32–A41 and A47–A49 remain deferred for later scheduling.
 
 A28 is an open behavior decision in the escape-suspend path: A16 covers only the genuinely platform-forced absence of SIGSTOP, while A28 covers the unresolved choice between an unsupported notification and literal pass-through, including whether the escape-prefix byte is forwarded.
 
@@ -41,9 +41,9 @@ Whether the correct remedy is a shared platform-neutral loop coordinator (taking
 
 What must be settled first is the **behavioral contract**, not the code organization: the intended phase ordering, exception boundaries, timer semantics, fairness limits, and shutdown invariants, recorded as expected event traces rather than prose — ordinary input, simultaneous input and network readiness, receive error, send error, crypto error, resize during shutdown, a typed Ctrl-C reaching the remote, a first and a repeated interrupt control event, close or session-end termination, and a run of zero-length wait requests with the nonzero request that clears it. That last trace is there to keep an already-repaired invariant from being lost silently: a coordinator that reordered or dropped the throttle would still pass every other trace. It has to record the requested interval and the timeout the wait actually receives as separate values, and it constrains neither the iteration rate nor a wait whose handle is already signalled — what it forbids is an idle source that is repeatedly due issuing unbounded zero-length waits. It has to run again with an expired termination deadline, which must still drive the effective timeout to zero and take the restoration exit ahead of resize, socket, input, and frame dispatch, so that the floor can never delay close handling. Those traces serve either architecture and make the eventual coordinator decision evidence-based. Sharing an implementation stays an evaluated option, not a prerequisite. Recording a trace is not the same as being able to run one: the loop currently exposes no boundary a harness can enter, which is A26, and whichever architecture is chosen has to provide one.
 
-Only the genuinely coupled findings wait on that contract: A5 and A9 (phase ordering) and A6, A7, and A15 (exception boundaries and retry timing). The cluster's former high-severity defect did not wait on it and is now repaired: the zero-wait throttle was an independent safety invariant with a local contract test, and holding a resource-exhaustion fix behind a speculative refactor would have been the wrong trade. The final whole-branch review added high-severity A29, A30, A31, A35, A42, A43, and A46; S2 was reclassified from a release blocker to accepted-risk `POLICY` on 2026-08-12, matching the ecosystem's posture (see its record). A22 is local error-state bookkeeping and is likewise independently fixable.
+Only the genuinely coupled findings wait on that contract: A5 and A9 (phase ordering) and A6, A7, and A15 (exception boundaries and retry timing). The cluster's former high-severity defect did not wait on it and is now repaired: the zero-wait throttle was an independent safety invariant with a local contract test, and holding a resource-exhaustion fix behind a speculative refactor would have been the wrong trade. The final whole-branch review added high-severity A29, A30, A31, A35, A42, A43, and A46; all are now repaired and recorded in Confirmed parity. S2 was reclassified from a release blocker to accepted-risk `POLICY` on 2026-08-12, matching the ecosystem's posture (see its record). A22 is local error-state bookkeeping and is likewise independently fixable.
 
-The remaining defects are exit-path omissions (A13, A14, A21), the loop's missing test boundary and level-two diagnostics gap (A26, A27), and the new event-loop/network, bootstrap, locale, console-lifecycle, and build defects (A29–A49). A28 is an open suspend-behavior decision alongside these defects. The final whole-branch review found the A29–A49 records; they are inventory entries for later scheduling, not fixes made by this ledger update.
+The remaining defects are exit-path omissions (A13, A14, A21), the loop's missing test boundary and level-two diagnostics gap (A26, A27), and the bootstrap, locale, console-lifecycle, and build defects A32–A41 and A47–A49. A28 is an open suspend-behavior decision alongside these defects. The final whole-branch review found the A29–A49 records; A29, A30, A31, A35, A42, A43, and A46 are repaired, while the remaining records are inventory entries for later scheduling.
 
 ### The host loop, for reference
 
@@ -313,30 +313,6 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 
 ### Final whole-branch review additions
 
-#### A29. Enumerating a readable socket can strand a later socket's FD_READ event
-
-* **Upstream:** `Select::select()` returns the complete ready set, and `process_network_input()` performs one receive action for the pass (`src/frontend/stmclient.cc:476`, `src/frontend/stmclient.cc:296`).
-* **Port:** `run_loop()` enumerates each signaled socket with `WSAEnumNetworkEvents`, which clears the recorded network event, then calls `core.on_readable()` for the first `FD_READ` and breaks (`win32/console_io.cc:1274`, `win32/console_io.cc:1277`, `win32/console_io.cc:1283`). `on_readable()` discards the socket argument and sweeps the transport sockets in deque order (`win32/mosh_core.cc:362`, `src/network/network.cc:489`).
-* **Consequence:** If the first socket consumes the 32-datagram budget (`win32/mosh_core.cc:66`, `win32/mosh_core.cc:201`) or receives a non-`No packet received` exception (`win32/mosh_core.cc:205`), `Connection::recv()` returns or throws after the first productive socket (`src/network/network.cc:513`, `src/network/network.cc:517`). A later socket whose `FD_READ` record was already cleared by enumeration is then neither received from nor re-armed, so its traffic can remain frozen until another event re-arms it.
-* **Class:** `DEFECT`, **high** — event-loop/network. A readable event can be consumed as bookkeeping without a corresponding `recvfrom`, and a port hop can leave the user waiting indefinitely.
-* **Status:** **FIXED.** `MoshCore::on_readable()` now passes the enumerated socket to its receive pass (`win32/mosh_core.cc:198-227`, `win32/mosh_core.cc:362-366`), which preserves the existing 32-datagram budget and error handling. `Transport::recv(intptr_t)` uses `Connection::recv_from()` (`src/network/networktransport.h:59,86-87`, `src/network/networktransport-impl.h:68-81`, `src/network/network.h:274-275`, `src/network/network.cc:587-605`) to receive only from that live socket and treats a pruned handle and all standard would-block conditions as no packet. The no-argument sweep remains unchanged. `test_readable_socket_identity()` (`win32/test_core.cc:93-160`) uses its own established real loopback transport pair, builds a backlog larger than the 32-datagram budget, clears the new socket's `FD_READ` record, and asserts the same socket is drained through the public `MoshCore::on_readable(fd)` API without a receive error; it is RED before the identity plumbing and GREEN afterward on native windows-11-arm CI.
-
-#### A30. Socket-event registrations are keyed only by recycled `SOCKET` values
-
-* **Upstream:** File descriptors in the selected set identify the live descriptor for that poll; a closed descriptor is not silently reused as the same registration.
-* **Port:** `SocketEvents::reconcile()` stores registrations in `std::map<intptr_t, WSAEVENT>` and compares only the raw socket value (`win32/console_io.cc:601`, `win32/console_io.cc:620`, `win32/console_io.cc:630`). It does not re-issue `WSAEventSelect` when a value remains present (`win32/console_io.cc:630-633`).
-* **Consequence:** Across iterations, `run_loop()` calls `core.tick()` before reconciliation (`win32/console_io.cc:1163`, `win32/console_io.cc:1168`). A receive-side prune can close a socket after the existing registration was captured, and a newly created socket can receive the same handle value before the next reconciliation. The map then treats the new socket as the old one and leaves it without `WSAEventSelect(FD_READ)`, so it is never reported readable.
-* **Class:** `DEFECT`, **high** — event-loop/network. Raw handle identity is not a socket generation identity.
-* **Status:** **FIXED.** `SocketEvents` is now the production-visible internal class in `win32/socket_events.h:30-90`; `reconcile()` retains registrations for live handles but calls `WSAEventSelect(fd, event, FD_READ)` for each one (`win32/socket_events.h:59-82`), relying on Winsock's documented re-recording of `FD_READ` for queued datagrams so a recycled raw handle is armed for its new socket. It preserves event creation, error cleanup, and the destructor's deregistration semantics. `win32/test_socket_events.cc:31-81` creates real loopback UDP sockets, requires a recycled raw `SOCKET` value, sends a datagram, waits until `FD_READ` is recorded, reconciles again before enumerating, and observes that `FD_READ` was re-recorded through `WSAEnumNetworkEvents`; it is RED before the re-arm and GREEN afterward on native windows-11-arm CI.
-
-#### A31. Unconnected UDP consumes `WSAECONNRESET`
-
-* **Upstream:** Mosh sockets are unconnected to permit roaming. On Linux, an unconnected UDP socket does not report an ICMP port-unreachable as `ECONNREFUSED` unless the application connects the socket or opts into the error queue, neither of which mosh does.
-* **Port:** A Windows provider can report that ICMP response as `WSAECONNRESET` from `recvfrom` on the same unconnected socket (`src/network/network.cc:489`, `src/network/network.cc:497-503`).
-* **Consequence:** Treating it as a packet would expose a Windows-only receive error that upstream unconnected sockets do not see.
-* **Class:** resolved parity behavior.
-* **Status:** **FIXED** (commits `4fe02e3` and follow-up). `Connection::Socket`'s Win32 ctor passes a `BOOL FALSE` input to `WSAIoctl(SIO_UDP_CONNRESET)` (`src/network/network.cc:220-230`) to disable reset notifications, but logs and continues if a provider rejects this optional ioctl. `receive_should_continue()` (`src/network/network.cc:557-564`) consumes `WSAECONNRESET`, `WSAEWOULDBLOCK`, and `WSAEMSGSIZE` as no-packet results for both `recv()` and `recv_from()` (`src/network/network.cc:565-605`), matching upstream behavior for unconnected sockets. `win32/test_loopback.cc:expect_no_connreset()` (`:139-189`) sends to a just-closed loopback UDP port and asserts that consuming its ICMP response does not let `WSAECONNRESET` escape; it runs on native windows-11-arm CI (the Linux cross-compile image only compiles it).
-
 #### A32. Remote logout does not set the user-quit status
 
 * **Upstream:** The exit path distinguishes user-requested shutdown from remote/session termination when selecting its final status and diagnostics (`src/frontend/stmclient.cc:344`, `src/frontend/stmclient.cc:508`).
@@ -358,14 +334,6 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 * **Consequence:** A caller-controlled relative `PATH` entry can resolve `ssh.exe` relative to a changing working directory, making executable selection depend on CWD and weakening the intended explicit-path lookup boundary.
 * **Class:** `DEFECT`, medium — executable resolution.
 * **Fix:** Normalize or reject relative path components before passing the list to `SearchPathW`, and define the intended empty-component behavior.
-
-#### A35. Bootstrap drain cleanup did not participate in lifecycle cancellation
-
-* **Upstream:** The wrapper reads until `MOSH CONNECT` or EOF, with no fixed authentication deadline (`scripts/mosh.pl:415-443`); surrounding lifecycle termination may still stop the child.
-* **Port:** `spawn_and_drain()` previously imposed a ten-second pre-reply wait, incorrectly rejecting slow DNS, host-key, password, MFA, or proxy authentication. Its worker error state could also race a failed `CancelSynchronousIo` diagnostic.
-* **Consequence:** Slow valid logins failed on an arbitrary deadline, and concurrent writes to the drainer's `std::string` error state were undefined behavior.
-* **Class:** `FIXED`, high — bootstrap liveness.
-* **Fix:** `spawn_and_drain()` waits indefinitely before `MOSH CONNECT` for reply, child exit, clean EOF, or an explicit lifecycle-cancellation handle (`win32/mosh_bootstrap.cc:402-415`). The `cancel` handle is currently TEST-ONLY: production passes null (`win32/mosh_bootstrap.cc:501`) and relies on Ctrl-C plus the kill-on-close job, matching upstream's lack of a pre-reply deadline. Lifecycle-coordinator integration is deferred to A23 territory. Cancellation closes the job, then uses bounded waits and `CancelSynchronousIo` for the drainer. A false cancellation is rechecked as a completion race, and its supervisor diagnostic remains local until after the final join (`win32/mosh_bootstrap.cc:421-445`). Cleanup is best-effort bounded, not a hard return-time guarantee: if cancellation fails and the drainer is wedged forwarding a banner through `std::fprintf(stdout, ...)` to a stalled sink, its final infinite join can still hang. That narrow residual is accepted. Real hanging and silent fixtures cover drain completion and explicit lifecycle cancellation (`win32/bootstrap_child.cc:52-61`, `win32/test_bootstrap.cc:487-520`).
 
 #### A36. Forced SSH termination is reported as the child's status
 
@@ -411,22 +379,6 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 * **Consequence:** A Windows code path that clears locale variables and then consults the CRT environment can continue to observe stale locale settings.
 * **Class:** `DEFECT`, low — latent locale handling.
 
-#### A42. `WAIT_FAILED` is treated as a worker exit
-
-* **Upstream:** A failed wait is an error, not evidence that the worker terminated (`src/util/select.h:143`).
-* **Port:** Fixed. `Reader::stop_until_deadline()` now separately accepts `WAIT_OBJECT_0`, loops only for `WAIT_TIMEOUT`, and records `WAIT_FAILED` without closing or nulling the worker (`win32/console_io.cc:565-612`). The `wait-failed-reader` lifecycle mode injects `ERROR_INVALID_HANDLE` as a `WAIT_FAILED` result after one real bounded wait, then checks cleanup reporting, reader detachment, null-safe accessors, and bounded destruction (`win32/test_console_lifecycle.cc:1164-1217`). CI runs the mode (`.github/workflows/clangarm64-spike.yml:154`).
-* **Consequence:** A failed worker wait no longer masquerades as a completed join or releases a still-running worker's state.
-* **Class:** `FIXED`, **high** — thread lifecycle.
-* **Fix:** Distinguish `WAIT_OBJECT_0`, `WAIT_TIMEOUT`, and `WAIT_FAILED`; retain the handle and surface the failure unless termination policy explicitly and safely cancels the worker.
-
-#### A43. Reader teardown closes a duplicated input handle during an in-flight read
-
-* **Upstream:** Synchronous input ownership ends after the read operation returns (`src/frontend/stmclient.cc:310-316`).
-* **Port:** Fixed. Deadline cancellation now only marks the reader stopping and calls `CancelSynchronousIo`; `input` closes only after `WAIT_OBJECT_0` joins the worker (`win32/console_io.cc:539-545`, `win32/console_io.cc:582-609`). The `deadline-wedged-reader` mode asserts that deadline cleanup detached the live reader rather than destroying it (`win32/test_console_lifecycle.cc:1053-1109`). CI runs the mode (`.github/workflows/clangarm64-spike.yml:153`).
-* **Consequence:** A live `ReadFile` keeps its duplicated input handle until the worker has exited, so teardown cannot recycle the handle beneath it.
-* **Class:** `FIXED`, **high** — thread/handle lifetime.
-* **Fix:** Give the worker stable handle ownership until it exits, then close it after a successful join; cancellation must not close a handle still usable by the worker.
-
 #### A44. Restoring the original input mode can leave QuickEdit disabled
 
 * **Upstream:** Restores the terminal's input mode through the same terminal-state contract used before raw mode (`src/frontend/stmclient.cc:153`).
@@ -442,14 +394,6 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 * **Consequence:** If a failed Win32 call leaves `GetLastError()` as `ERROR_SUCCESS`, the report remains apparently clean and `mosh_main` suppresses the rollback warning (`win32/mosh_main.cc:185-190`). These calls have no generic failure backstop unlike the close-sequence write.
 * **Class:** `DEFECT`, low — cleanup diagnostics.
 * **Fix:** Record a generic restore failure whenever the boolean operation fails and `GetLastError()` is `ERROR_SUCCESS`.
-
-#### A46. Exception unwinding can perform an unbounded reader join after a deadline
-
-* **Upstream:** The main loop's exit path does not leave a detached worker whose destructor can block indefinitely (`src/frontend/stmclient.cc:490-572`).
-* **Port:** Fixed. `release_and_signal()` releases a reader whose deadline or failed wait left it non-joined, so `ConsoleSession` destruction during `run_console_session()` unwinding cannot reach `Reader::~Reader()`'s unbounded join (`win32/console_io.cc:1005-1029`). The `deadline-throw-unwind` lifecycle mode makes `run()` throw after deadline teardown, publishes a tick immediately before its by-value session is destroyed, and bounds only that destruction interval (`win32/test_console_lifecycle.cc:1112-1172`). CI runs the mode (`.github/workflows/clangarm64-spike.yml:155`).
-* **Consequence:** Every deadline or wait-error exit either joins before destruction or intentionally retains the active reader and its handles; exception unwinding remains bounded.
-* **Class:** `FIXED`, **high** — termination/thread lifecycle.
-* **Fix:** Make the unwind path release the deliberately non-joined worker without blocking, or ensure every exception path retains a bounded teardown contract.
 
 #### A47. Protobuf header prerequisites hardcode the default build directory
 
@@ -525,6 +469,62 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 * **Consequence:** Windows can request transport verbosity with `-v`; poll diagnostics remain outside this finding.
 * **Status:** parity for transport verbosity only. The option parser uses `getopt`; `Select` poll diagnostics are not implemented. The unimplemented poll-diagnostics tier is tracked separately as A27.
 * **Verification:** `win32/test_bootstrap.cc::test_parse_invocation()` covers repeatable `-v`/`-vv`; the CI “mosh.exe rejects bad invocations” usage-code check covers invalid option forms and the supported invocation contract.
+
+#### A29. Enumerating a readable socket can strand a later socket's FD_READ event
+
+* **Upstream:** `Select::select()` returns the complete ready set, and `process_network_input()` performs one receive action for the pass (`src/frontend/stmclient.cc:476`, `src/frontend/stmclient.cc:296`).
+* **Port:** `MoshCore::on_readable()` passes the enumerated socket to its receive pass (`win32/mosh_core.cc:198-227`, `win32/mosh_core.cc:362-366`). `Transport::recv(intptr_t)` uses `Connection::recv_from()` (`src/network/networktransport.h:59,86-87`, `src/network/networktransport-impl.h:68-81`, `src/network/network.h:274-275`, `src/network/network.cc:587-605`) to receive only from that live socket and treats a pruned handle and all standard would-block conditions as no packet. The no-argument sweep remains unchanged.
+* **Consequence:** A readable event is consumed with a corresponding receive from its live socket, so a port hop cannot leave its traffic frozen after another socket consumes the receive budget or raises an error.
+* **Status:** parity. The enumerated socket identifies the receive pass while preserving the existing 32-datagram budget and error handling.
+* **Verification:** `test_readable_socket_identity()` (`win32/test_core.cc:93-160`) uses its established real loopback transport pair, builds a backlog larger than the 32-datagram budget, clears the new socket's `FD_READ` record, and asserts the same socket is drained through public `MoshCore::on_readable(fd)` without a receive error. It was RED before the identity plumbing and GREEN afterward on native windows-11-arm CI.
+
+#### A30. Socket-event registrations are keyed only by recycled `SOCKET` values
+
+* **Upstream:** File descriptors in the selected set identify the live descriptor for that poll; a closed descriptor is not silently reused as the same registration.
+* **Port:** `SocketEvents` is the production-visible internal class in `win32/socket_events.h:31-90`; `reconcile()` retains registrations for live handles but calls `WSAEventSelect(fd, event, FD_READ)` for each one (`win32/socket_events.h:50-82`), relying on Winsock's documented re-recording of `FD_READ` for queued datagrams so a recycled raw handle is armed for its new socket. It preserves event creation, error cleanup, and the destructor's deregistration semantics.
+* **Consequence:** A recycled raw socket handle is re-armed for its live socket rather than being treated as the prior registration.
+* **Status:** parity. Each reconciliation records `FD_READ` for the socket that is currently live, including one with a recycled raw handle value.
+* **Verification:** `win32/test_socket_events.cc:34-89` creates real loopback UDP sockets, requires a recycled raw `SOCKET` value, sends a datagram, waits until `FD_READ` is recorded, reconciles again before enumerating, and observes that `FD_READ` was re-recorded through `WSAEnumNetworkEvents`. It was RED before the re-arm and GREEN afterward on native windows-11-arm CI.
+
+#### A31. Unconnected UDP consumes `WSAECONNRESET`
+
+* **Upstream:** Mosh sockets are unconnected to permit roaming. On Linux, an unconnected UDP socket does not report an ICMP port-unreachable as `ECONNREFUSED` unless the application connects the socket or opts into the error queue, neither of which mosh does.
+* **Port:** `Connection::Socket`'s Win32 ctor passes a `BOOL FALSE` input to `WSAIoctl(SIO_UDP_CONNRESET)` (`src/network/network.cc:220-230`) to disable reset notifications, but logs and continues if a provider rejects this optional ioctl. `receive_should_continue()` (`src/network/network.cc:557-564`) consumes `WSAECONNRESET`, `WSAEWOULDBLOCK`, and `WSAEMSGSIZE` as no-packet results for both `recv()` and `recv_from()` (`src/network/network.cc:565-605`).
+* **Consequence:** An ICMP port-unreachable response from an unconnected UDP socket is a no-packet result rather than a Windows-only receive error.
+* **Status:** parity. Optional reset suppression and the receive continuation path match upstream's unconnected-socket behavior.
+* **Verification:** `win32/test_loopback.cc:139-189,231` sends to a just-closed loopback UDP port and asserts that consuming its ICMP response does not let `WSAECONNRESET` escape; it runs on native windows-11-arm CI, while the Linux cross-compile image compiles it.
+
+#### A35. Bootstrap drain cleanup did not participate in lifecycle cancellation
+
+* **Upstream:** The wrapper reads until `MOSH CONNECT` or EOF, with no fixed authentication deadline (`scripts/mosh.pl:415-443`); surrounding lifecycle termination may still stop the child.
+* **Port:** `spawn_and_drain()` waits indefinitely before `MOSH CONNECT` for reply, child exit, clean EOF, or an explicit lifecycle-cancellation handle (`win32/mosh_bootstrap.cc:402-415`). The `cancel` handle is currently TEST-ONLY: production passes null (`win32/mosh_bootstrap.cc:501`) and relies on Ctrl-C plus the kill-on-close job, matching upstream's lack of a pre-reply deadline. Lifecycle-coordinator integration is deferred to A23 territory. Cancellation closes the job, then uses bounded waits and `CancelSynchronousIo` for the drainer. A false cancellation is rechecked as a completion race, and its supervisor diagnostic remains local until after the final join (`win32/mosh_bootstrap.cc:421-445`). Cleanup is best-effort bounded, not a hard return-time guarantee: if cancellation fails and the drainer is wedged forwarding a banner through `std::fprintf(stdout, ...)` to a stalled sink, its final infinite join can still hang. That narrow residual is accepted.
+* **Consequence:** Slow valid authentication has no arbitrary pre-reply deadline, and the drainer's worker-error state is not concurrently written.
+* **Status:** parity. Bootstrap waits for reply, child exit, clean EOF, or explicit cancellation rather than imposing a fixed authentication deadline.
+* **Verification:** Real hanging and silent fixtures cover drain completion and explicit lifecycle cancellation (`win32/bootstrap_child.cc:52-61`, `win32/test_bootstrap.cc:487-520`).
+
+#### A42. `WAIT_FAILED` is treated as a worker exit
+
+* **Upstream:** A failed wait is an error, not evidence that the worker terminated (`src/util/select.h:143`).
+* **Port:** `Reader::stop_until_deadline()` separately accepts `WAIT_OBJECT_0`, loops only for `WAIT_TIMEOUT`, and records `WAIT_FAILED` without closing or nulling the worker (`win32/console_io.cc:565-612`).
+* **Consequence:** A failed worker wait does not masquerade as a completed join or release a still-running worker's state.
+* **Status:** parity. `WAIT_OBJECT_0`, `WAIT_TIMEOUT`, and `WAIT_FAILED` remain distinct, retaining the worker handle and surfacing the failure unless termination policy explicitly and safely cancels it.
+* **Verification:** The `wait-failed-reader` lifecycle mode injects `ERROR_INVALID_HANDLE` as a `WAIT_FAILED` result after one real bounded wait, then checks cleanup reporting, reader detachment, null-safe accessors, and bounded destruction (`win32/test_console_lifecycle.cc:1164-1217`). CI runs the mode (`.github/workflows/clangarm64-spike.yml:154`).
+
+#### A43. Reader teardown closes a duplicated input handle during an in-flight read
+
+* **Upstream:** Synchronous input ownership ends after the read operation returns (`src/frontend/stmclient.cc:310-316`).
+* **Port:** Deadline cancellation only marks the reader stopping and calls `CancelSynchronousIo`; `input` closes only after `WAIT_OBJECT_0` joins the worker (`win32/console_io.cc:539-545`, `win32/console_io.cc:582-609`).
+* **Consequence:** A live `ReadFile` keeps its duplicated input handle until the worker exits, so teardown cannot recycle the handle beneath it.
+* **Status:** parity. The worker retains stable handle ownership until it exits, and cancellation does not close a handle still usable by the worker.
+* **Verification:** The `deadline-wedged-reader` mode asserts that deadline cleanup detached the live reader rather than destroying it (`win32/test_console_lifecycle.cc:1053-1109`). CI runs the mode (`.github/workflows/clangarm64-spike.yml:153`).
+
+#### A46. Exception unwinding can perform an unbounded reader join after a deadline
+
+* **Upstream:** The main loop's exit path does not leave a detached worker whose destructor can block indefinitely (`src/frontend/stmclient.cc:490-572`).
+* **Port:** `release_and_signal()` releases a reader whose deadline or failed wait left it non-joined, so `ConsoleSession` destruction during `run_console_session()` unwinding cannot reach `Reader::~Reader()`'s unbounded join (`win32/console_io.cc:1005-1029`).
+* **Consequence:** Every deadline or wait-error exit either joins before destruction or intentionally retains the active reader and its handles; exception unwinding remains bounded.
+* **Status:** parity. The unwind path releases deliberately non-joined workers without blocking while preserving the bounded teardown contract.
+* **Verification:** The `deadline-throw-unwind` lifecycle mode makes `run()` throw after deadline teardown, publishes a tick immediately before its by-value session is destroyed, and bounds only that destruction interval (`win32/test_console_lifecycle.cc:1112-1172`). CI runs the mode (`.github/workflows/clangarm64-spike.yml:155`).
 
 #### Reader input ending enters graceful shutdown
 
