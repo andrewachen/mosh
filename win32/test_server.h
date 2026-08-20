@@ -58,6 +58,7 @@ public:
   std::vector<intptr_t> socket_fds() const;
   void on_readable( intptr_t which_fd );
   void tick();
+  uint64_t sent_state_num() const;
   /* Begin the server side of the real transport shutdown handshake. */
   void start_shutdown();
   /* True after the server has processed at least one client state. Safe to

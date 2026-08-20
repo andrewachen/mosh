@@ -170,6 +170,11 @@ void TestServer::tick()
   impl->network.tick();
 }
 
+uint64_t TestServer::sent_state_num() const
+{
+  return impl->network.get_sent_state_last();
+}
+
 void TestServer::start_shutdown()
 {
   impl->network.start_shutdown();

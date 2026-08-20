@@ -105,37 +105,34 @@ static void test_readable_socket_identity()
   }
   assert( connected );
 
+  uint64_t sent_state = server.sent_state_num();
   for ( int i = 0; i < 33; ++i ) {
-    const char byte = static_cast<char>( 'a' + ( i % 26 ) );
-    core.feed_input( &byte, 1 );
+    server.set_title( std::to_string( i ) );
     freeze_timestamp();
-    core.tick();
-    for ( const intptr_t fd : server.socket_fds() ) {
-      server.on_readable( fd );
-    }
     server.tick();
     Sleep( 260 );
+    freeze_timestamp();
+    server.tick();
+    sent_state++;
+    assert( server.sent_state_num() == sent_state );
   }
 
   assert( core.socket_fds().size() == 1 );
   Sleep( 11000 );
-  freeze_timestamp();
   core.feed_input( "h", 1 );
+  core.tick();
+  Sleep( 260 );
   core.tick();
   const std::vector<intptr_t> old_fds = core.socket_fds();
   assert( old_fds.size() == 2 );
   for ( const intptr_t fd : server.socket_fds() ) {
     server.on_readable( fd );
   }
-  server.tick();
 
   core.feed_input( "i", 1 );
-  Sleep( 260 );
-  freeze_timestamp();
   core.tick();
-  for ( const intptr_t fd : server.socket_fds() ) {
-    server.on_readable( fd );
-  }
+  Sleep( 260 );
+  core.tick();
   const std::vector<intptr_t> fds = core.socket_fds();
   assert( fds.size() == 2 );
   const SOCKET new_fd = static_cast<SOCKET>( fds.back() );
@@ -144,9 +141,15 @@ static void test_readable_socket_identity()
   assert( event != WSA_INVALID_EVENT );
   assert( WSAEventSelect( new_fd, event, FD_READ ) == 0 );
 
+  for ( const intptr_t fd : server.socket_fds() ) {
+    server.on_readable( fd );
+  }
+  server.tick();
   Sleep( 260 );
   freeze_timestamp();
   server.tick();
+  sent_state++;
+  assert( server.sent_state_num() == sent_state );
   assert( WSAWaitForMultipleEvents( 1, &event, FALSE, 1000, FALSE ) == WSA_WAIT_EVENT_0 );
 
   WSANETWORKEVENTS network_events = {};
