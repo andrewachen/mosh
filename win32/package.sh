@@ -207,20 +207,11 @@ llvm_readobj_version='unavailable'
 [[ -n "$llvm_readobj" ]] && llvm_readobj_version=$(version_line "$llvm_readobj")
 objdump_version='not used (GNU architecture assertions are unsupported)'
 
-# The LLVM inspection tools are native Windows binaries on MSYS2; hand them a
-# Windows-native path (C:\...) rather than an MSYS2 /c/... path, which a native
-# tool may fail to open or report against. cygpath is always present on MSYS2.
-native_path() {
-  if command -v cygpath >/dev/null 2>&1; then
-    cygpath -w -- "$1"
-  else
-    printf '%s' "$1"
-  fi
-}
-
-# The per-arch PE/COFF identity gate (assert_arch) lives in package-arch.sh so
-# the docker discrimination test can source exactly that gate — not the whole
-# staging body — and exercise match/mismatch for both architectures.
+# The per-arch PE/COFF identity gate (assert_arch) and its helper native_path
+# live in package-arch.sh so the docker discrimination test can source exactly
+# that gate — not the whole staging body — and exercise match/mismatch for both
+# architectures. native_path converts a path to Windows-native form (C:\...)
+# for the LLVM tools, which are native Windows binaries on MSYS2.
 # shellcheck source=package-arch.sh
 . "$script_dir/package-arch.sh"
 
@@ -450,13 +441,16 @@ stage_static_license() {
   ((found_license)) || die "license text not found for statically folded $component"
 }
 
-# By this point the arg loop has run and MINGW_PREFIX is either set (dll_dirs
-# was derived from it) or dll_dirs was given explicitly. Either way a missing
-# MINGW_PREFIX here means the script is being run outside MSYS2, so fail closed
-# like every other missing tool: the ${MINGW_PREFIX:?} abort cannot fire during
-# --help because that path exits before licensing starts.
-mingw_prefix="${MINGW_PREFIX:?MINGW_PREFIX must be set}"
-license_roots=("$mingw_prefix/share/licenses" "/opt/mosh-$arch/share/licenses")
+# Static-license roots. The per-dll-dir roots appended below cover an explicit
+# --dll-dirs override (which is how a caller outside MSYS2 supplies license
+# text), so a missing MINGW_PREFIX here must NOT abort: only add the MSYS2
+# license root when MINGW_PREFIX is actually set. /opt/mosh-$arch is the local
+# cross-image dep tree. (--help exits before licensing starts, so it is never
+# affected by a missing MINGW_PREFIX.)
+license_roots=("/opt/mosh-$arch/share/licenses")
+if [[ -n "${MINGW_PREFIX:-}" ]]; then
+  license_roots+=("$MINGW_PREFIX/share/licenses")
+fi
 IFS=: read -r -a DLL_DIR_LIST <<<"$dll_dirs"
 for dll_dir in "${DLL_DIR_LIST[@]}"; do
   [[ -n "$dll_dir" ]] || continue
