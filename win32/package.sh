@@ -33,7 +33,7 @@
 */
 MOSH_LICENSE
 
-# ABOUTME: Stages the native Windows ARM64 mosh runtime (a single static mosh.exe).
+# ABOUTME: Stages the native Windows mosh runtime (ARM64 or x64), a single static mosh.exe.
 # ABOUTME: Verifies imports, architecture, licenses, and a reproducible manifest.
 #
 # Use this script after building win32/mosh.exe to make the fail-closed
@@ -44,15 +44,16 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: win32/package.sh [--exe PATH] [--stage DIR] [--dll-dirs DIR[:DIR...]] [--zip PATH]
+Usage: win32/package.sh [--arch {arm64|x64}] [--exe PATH] [--stage DIR]
+       [--dll-dirs DIR[:DIR...]] [--zip PATH]
 
 Stage mosh.exe, license notices, and MANIFEST.txt. Every mosh.exe import must
 be a Windows system DLL — a non-system import fails the staging, since the
-deliverable is a single statically-linked executable. Defaults are ./mosh.exe,
-win32/build/stage/mosh-arm64, and ${MINGW_PREFIX:-/clangarm64}/bin
-respectively (the DLL dirs are used only to locate license text). --zip also
-writes a zip archive of the staged directory (contents at the archive root)
-for distribution.
+deliverable is a single statically-linked executable. Defaults are arm64
+(the default --arch), ./mosh.exe, win32/build/stage/mosh-<arch>, and
+${MINGW_PREFIX}/bin respectively (the DLL dirs are used only to locate
+license text). --zip also writes a zip archive of the staged directory
+(contents at the archive root) for distribution.
 EOF
 }
 
@@ -61,9 +62,10 @@ die() {
   exit 1
 }
 
+arch='arm64'                 # default; --arch overrides
 exe='./mosh.exe'
-stage='win32/build/stage/mosh-arm64'
-dll_dirs="${MINGW_PREFIX:-/clangarm64}/bin"
+stage=''                     # set after parsing if still empty
+dll_dirs=''                  # set after parsing if still empty
 zip_path=''
 
 while (($#)); do
@@ -71,6 +73,12 @@ while (($#)); do
     -h|--help)
       usage
       exit 0
+      ;;
+    --arch)
+      (($# >= 2)) || die '--arch requires a value'
+      [[ "$2" == arm64 || "$2" == x64 ]] || die '--arch must be arm64 or x64'
+      arch=$2
+      shift 2
       ;;
     --exe)
       (($# >= 2)) || die '--exe requires a path'
@@ -98,6 +106,14 @@ while (($#)); do
       ;;
   esac
 done
+
+# Defaults that depend on --arch have to wait until after parsing so an
+# explicit --stage/--dll-dirs still wins.
+[[ -n "$stage" ]] || stage="win32/build/stage/mosh-$arch"
+if [[ -z "$dll_dirs" ]]; then
+  [[ -n "${MINGW_PREFIX:-}" ]] || die 'MINGW_PREFIX must be set (msys2 sets it); or pass --dll-dirs'
+  dll_dirs="$MINGW_PREFIX/bin"
+fi
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repo_root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
@@ -202,32 +218,11 @@ native_path() {
   fi
 }
 
-assert_arm64() {
-  local file=$1
-  local label=$2
-  local output
-  local tool_file
-  tool_file=$(native_path "$file")
-
-  if [[ -n "$llvm_objdump" ]]; then
-    output=$("$llvm_objdump" -f "$tool_file" 2>&1) || die "llvm-objdump could not inspect $label: $file"
-    # The format line is "<path>: file format coff-arm64"; the path may carry a
-    # Windows drive-letter colon (C:\...) once native_path() converts it, so match
-    # the format token at end-of-line rather than anchoring on the path prefix.
-    if ! grep -Eiq '^[[:space:]]*architecture: aarch64[[:space:]]*$' <<<"$output" ||
-       ! grep -Eiq 'file format coff-arm64[[:space:]]*$' <<<"$output"; then
-      printf 'llvm-objdump -f output for %s follows (arch assertion failed):\n%s\n' "$file" "$output" >&2
-      die "$label is not an ARM64 PE/COFF image according to llvm-objdump: $file"
-    fi
-  else
-    output=$("$llvm_readobj" --file-headers "$tool_file" 2>&1) || die "llvm-readobj could not inspect $label: $file"
-    if ! grep -Eiq '^[[:space:]]*Format:[[:space:]]*COFF-ARM64([[:space:]]|$)' <<<"$output" ||
-       ! grep -Eiq '^[[:space:]]*(Arch:[[:space:]]+aarch64|Machine:[[:space:]]+IMAGE_FILE_MACHINE_ARM64([[:space:]]|$))' <<<"$output"; then
-      printf 'llvm-readobj --file-headers output for %s follows (arch assertion failed):\n%s\n' "$file" "$output" >&2
-      die "$label is not an ARM64 PE/COFF image according to llvm-readobj: $file"
-    fi
-  fi
-}
+# The per-arch PE/COFF identity gate (assert_arch) lives in package-arch.sh so
+# the docker discrimination test can source exactly that gate — not the whole
+# staging body — and exercise match/mismatch for both architectures.
+# shellcheck source=package-arch.sh
+. "$script_dir/package-arch.sh"
 
 dump_imports() {
   local file=$1
@@ -292,7 +287,7 @@ copy_staged() {
 }
 
 copy_staged "$exe_path" "$stage_dir/mosh.exe"
-assert_arm64 "$exe_path" 'mosh.exe'
+assert_arch "$exe_path" 'mosh.exe'
 
 # Every mosh.exe import must classify as a Windows system DLL; anything else is
 # rejected inside the loop. There is no transitive closure to walk: the exe is
@@ -455,8 +450,13 @@ stage_static_license() {
   ((found_license)) || die "license text not found for statically folded $component"
 }
 
-mingw_prefix="${MINGW_PREFIX:-/clangarm64}"
-license_roots=("$mingw_prefix/share/licenses" "/opt/mosh-arm64/share/licenses")
+# By this point the arg loop has run and MINGW_PREFIX is either set (dll_dirs
+# was derived from it) or dll_dirs was given explicitly. Either way a missing
+# MINGW_PREFIX here means the script is being run outside MSYS2, so fail closed
+# like every other missing tool: the ${MINGW_PREFIX:?} abort cannot fire during
+# --help because that path exits before licensing starts.
+mingw_prefix="${MINGW_PREFIX:?MINGW_PREFIX must be set}"
+license_roots=("$mingw_prefix/share/licenses" "/opt/mosh-$arch/share/licenses")
 IFS=: read -r -a DLL_DIR_LIST <<<"$dll_dirs"
 for dll_dir in "${DLL_DIR_LIST[@]}"; do
   [[ -n "$dll_dir" ]] || continue
@@ -509,7 +509,7 @@ manifest="$stage_dir/MANIFEST.txt"
 manifest_tmp=$(mktemp "${TMPDIR:-/tmp}/mosh-package-manifest.XXXXXX")
 trap 'rm -f "$manifest_tmp"' EXIT
 {
-  printf 'mosh ARM64 runtime bundle\n'
+  printf 'mosh %s runtime bundle\n' "$arch"
   printf 'Executable source: %s\n' "$exe_path"
   printf 'DLL search dirs: %s\n' "$dll_dirs"
   printf 'Static components folded into mosh.exe: protobuf, abseil, LLVM C++ runtime (libc++/libunwind/compiler-rt), OCB, winpthreads, OpenSSL (libcrypto), zlib, ncurses\n'
@@ -535,7 +535,7 @@ trap 'rm -f "$manifest_tmp"' EXIT
 } >"$manifest_tmp"
 mv "$manifest_tmp" "$manifest"
 
-printf 'Staged ARM64 runtime bundle in %s\n' "$stage_dir"
+printf 'Staged %s runtime bundle in %s\n' "$arch" "$stage_dir"
 
 if [[ -n "$zip_path" ]]; then
   if [[ "$zip_path" != /* ]]; then
@@ -550,7 +550,7 @@ if [[ -n "$zip_path" ]]; then
   [[ ! -d "$zip_path" ]] || die "zip path is a directory: $zip_path"
   rm -f -- "$zip_path"
   # Archive the stage contents at the zip root (mosh.exe at top level, not under
-  # a mosh-arm64/ directory) so the archive can be unzipped and run in place.
+  # a mosh-<arch>/ directory) so the archive can be unzipped and run in place.
   (cd "$stage_dir" && zip -q -r -X "$zip_path" .) || die "zip failed: $zip_path"
   [[ -s "$zip_path" ]] || die "zip did not produce a non-empty archive: $zip_path"
   printf 'Wrote zip archive %s\n' "$zip_path"
