@@ -67,14 +67,16 @@ jobs:
         #
         # The x64 leg builds with -march=meteorlake on windows-latest, a generic
         # hosted VM rather than a Meteor Lake-class host, so the emitted ISA may
-        # not be runnable there; the leg then SIGILLs — the same accepted
-        # fail-closed signal. The runner's actual CPU is recorded in evidence
-        # for exactly this diagnosis.
+        # not be runnable there. Whether it fails is host-dependent — the
+        # windows-latest pool is heterogeneous (Ice Lake-SP / AMD EPYC mix), so
+        # the resulting SIGILL is intermittent, not a clean fail-closed signal.
+        # That intermittency is exactly why the runner's CPU identity is
+        # recorded in evidence for this diagnosis.
         run: make -f win32/Makefile.win check
 
       - name: Build and run loopback test
         # The loopback test verifies the WinSock port of network.cc works correctly
-        # on native ${{ matrix.arch }}. It drives two Connection objects over localhost UDP and
+        # on native <arch>. It drives two Connection objects over localhost UDP and
         # verifies payload round-trips in both directions.
         run: |
           make -f win32/Makefile.win protobufs test_loopback
@@ -289,7 +291,7 @@ jobs:
         # args), so it prints usage and exits with the defined usage code (2 —
         # USAGE_EXIT_CODE in win32/mosh_main.cc). Asserting that exact code
         # proves the binary this job builds loads, resolves its imports, runs C++
-        # static init, and reaches its entry path on native ${{ matrix.arch }} — a
+        # static init, and reaches its entry path on native <arch> — a
         # signal distinct from the static PE/ABI checks and from the separate
         # test_core.exe / test_loopback.exe binaries. Capture into evidence so
         # the runtime result survives after logs expire.
@@ -380,7 +382,7 @@ jobs:
         run: |
           mkdir -p evidence
           echo "${GITHUB_SHA:-unknown}" > evidence/commit-sha.txt
-          echo 'CI build: ${{ matrix.win_mcpu }} (see makefile default); runs on the ${{ matrix.runner }} host' > evidence/effective-flags.txt
+          echo 'CI build: ${{ matrix.win_mcpu }} (from the job WIN_MCPU env); runs on the ${{ matrix.runner }} host' > evidence/effective-flags.txt
           powershell.exe -NoProfile -Command "(Get-CimInstance Win32_Processor).Name" > evidence/cpu-name.txt 2>&1 || true
           clang++ --version > evidence/compiler.txt 2>&1 || true
           pacman -Q > evidence/packages.txt 2>&1 || true
@@ -403,8 +405,8 @@ jobs:
             win32/build/stage/
 
       # The consumer-facing deliverable: the verified staged bundle as a single
-      # zip, downloadable via `gh run download -n mosh-windows-${{ matrix.arch }}`.
-      # This is the ${{ matrix.win_mcpu }} product binary, executed and verified
+      # zip, downloadable via `gh run download -n mosh-windows-<arch>`.
+      # This is the <win_mcpu-flag> product binary, executed and verified
       # on the runner. The x64 zip is built with -march=meteorlake, so it targets
       # Meteor Lake-class CPUs, not pre-AVX2 x64 hosts.
       - uses: actions/upload-artifact@v7
