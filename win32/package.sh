@@ -459,7 +459,18 @@ for dll_dir in "${DLL_DIR_LIST[@]}"; do
   [[ -n "$dll_dir" ]] || continue
   root="$(dirname -- "$dll_dir")/share/licenses"
   # Skip a root already seeded above (default dll_dirs derives from MINGW_PREFIX).
-  [[ " ${license_roots[*]} " == *" $root "* ]] || license_roots+=("$root")
+  # Compare element-by-element with exact string equality: a flattened
+  # space-delimited substring match would skip a distinct root whose text is
+  # a substring of another root, and glob metacharacters in "$root" must never
+  # be interpreted as a pattern.
+  dedup_seen=0
+  for existing in "${license_roots[@]}"; do
+    if [[ "$existing" == "$root" ]]; then
+      dedup_seen=1
+      break
+    fi
+  done
+  ((dedup_seen)) || license_roots+=("$root")
 done
 
 static_license_destination="$stage_dir/licenses/static"
