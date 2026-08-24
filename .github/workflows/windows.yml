@@ -1,62 +1,88 @@
-name: CLANGARM64 build spike
+name: Windows
 
 on: [push, pull_request, workflow_dispatch]
 
-# Least privilege: the spike only reads the repo and uploads an artifact.
+# Least privilege: the build only reads the repo and uploads an artifact.
 permissions:
   contents: read
 
 jobs:
-  spike:
-    runs-on: windows-11-arm
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: windows-11-arm
+            msystem: CLANGARM64
+            pkgprefix: clang-aarch64
+            win_mcpu: -mcpu=oryon-1
+            pe_format: coff-arm64
+          - arch: x64
+            runner: windows-latest
+            msystem: CLANG64
+            pkgprefix: clang-x86_64
+            win_mcpu: -march=meteorlake
+            pe_format: coff-x86-64
+    env:
+      WIN_MCPU: ${{ matrix.win_mcpu }}
+    defaults:
+      run:
+        shell: msys2 {0}
     steps:
       - uses: actions/checkout@v6
 
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: CLANGARM64
+          msystem: ${{ matrix.msystem }}
           install: >-
-            mingw-w64-clang-aarch64-clang
-            mingw-w64-clang-aarch64-openssl
-            mingw-w64-clang-aarch64-protobuf
-            mingw-w64-clang-aarch64-zlib
-            mingw-w64-clang-aarch64-ncurses
-            mingw-w64-clang-aarch64-pkgconf
+            mingw-w64-${{ matrix.pkgprefix }}-clang
+            mingw-w64-${{ matrix.pkgprefix }}-openssl
+            mingw-w64-${{ matrix.pkgprefix }}-protobuf
+            mingw-w64-${{ matrix.pkgprefix }}-zlib
+            mingw-w64-${{ matrix.pkgprefix }}-ncurses
+            mingw-w64-${{ matrix.pkgprefix }}-pkgconf
             make
             zip
 
       - name: Record toolchain and dependency versions
-        shell: msys2 {0}
         run: |
           clang++ --version
-          pacman -Q mingw-w64-clang-aarch64-clang mingw-w64-clang-aarch64-openssl \
-            mingw-w64-clang-aarch64-protobuf mingw-w64-clang-aarch64-zlib \
-            mingw-w64-clang-aarch64-ncurses mingw-w64-clang-aarch64-pkgconf
+          pacman -Q mingw-w64-${{ matrix.pkgprefix }}-clang mingw-w64-${{ matrix.pkgprefix }}-openssl \
+            mingw-w64-${{ matrix.pkgprefix }}-protobuf mingw-w64-${{ matrix.pkgprefix }}-zlib \
+            mingw-w64-${{ matrix.pkgprefix }}-ncurses mingw-w64-${{ matrix.pkgprefix }}-pkgconf
 
-      - name: Build native ARM64 engine spike
-        shell: msys2 {0}
+      - name: Build native ${{ matrix.arch }} engine
         # The hosted windows-11-arm runner is Azure Cobalt 100 (Arm Neoverse N2),
         # NOT Qualcomm Oryon, yet it runs the -mcpu=oryon-1 product build (the
         # makefile default): oryon-1's extra ISA extensions over N2 (SM4,
         # RandGen, SPE) are never emitted for this codebase — verified by
         # disassembling the CI-built mosh.exe with llvm-18 (zero SM4/RandGen/
         # SPE instructions; the only extensions present are LSE atomics, which
-        # N2 also has). If a future toolchain ever does emit one, this job
+        # N2 also has). If a future toolchain ever does emit one, this leg
         # fails with a SIGILL — the desired fail-closed signal.
+        #
+        # The x64 leg builds with -march=meteorlake on windows-latest, a generic
+        # hosted VM rather than a Meteor Lake-class host, so the emitted ISA may
+        # not be runnable there. Whether it fails is host-dependent — the
+        # windows-latest pool is heterogeneous (Ice Lake-SP / AMD EPYC mix), so
+        # the resulting SIGILL is intermittent, not a clean fail-closed signal.
+        # That intermittency is exactly why the runner's CPU identity is
+        # recorded in evidence for this diagnosis.
         run: make -f win32/Makefile.win check
 
       - name: Build and run loopback test
-        shell: msys2 {0}
         # The loopback test verifies the WinSock port of network.cc works correctly
-        # on native ARM64. It drives two Connection objects over localhost UDP and
+        # on native <arch>. It drives two Connection objects over localhost UDP and
         # verifies payload round-trips in both directions.
         run: |
           make -f win32/Makefile.win protobufs test_loopback
           ./test_loopback.exe
 
       - name: Build and run core lifecycle test
-        shell: msys2 {0}
         timeout-minutes: 2
         # A bounded native test catches stalled cached timestamps, locale setup,
         # transport round-trips, frame generation, and shutdown acknowledgements.
@@ -65,46 +91,39 @@ jobs:
           ./test_core.exe
 
       - name: Build and run socket event regression test
-        shell: msys2 {0}
         run: |
           make -f win32/Makefile.win protobufs test_socket_events
           ./test_socket_events.exe
 
       - name: Build and run terminal width regression test
-        shell: msys2 {0}
         run: |
           make -f win32/Makefile.win test_terminal_width
           ./test_terminal_width.exe
 
       - name: Build and run prediction width regression test
-        shell: msys2 {0}
         run: |
           make -f win32/Makefile.win test_prediction_width
           ./test_prediction_width.exe
 
       - name: Build and run bootstrap test
-        shell: msys2 {0}
         timeout-minutes: 2
         run: |
           make -f win32/Makefile.win test_bootstrap bootstrap_child
           ./test_bootstrap.exe
 
       - name: Build and run startup-options test
-        shell: msys2 {0}
         timeout-minutes: 2
         run: |
           make -f win32/Makefile.win test_startup_options
           ./test_startup_options.exe
 
       - name: Build and run exit-diagnostics test
-        shell: msys2 {0}
         timeout-minutes: 2
         run: |
           make -f win32/Makefile.win test_exit_diagnostics
           ./test_exit_diagnostics.exe
 
       - name: mosh.exe rejects bad invocations
-        shell: msys2 {0}
         run: |
           make -f win32/Makefile.win mosh.exe
           set +e
@@ -118,7 +137,6 @@ jobs:
           set -e
 
       - name: Build and run console lifecycle test
-        shell: msys2 {0}
         # Covers the build plus thirteen modes. Fairness backlog establishment
         # is bounded at 5s, and every mode that enters run() has an in-process
         # watchdog with enough headroom for the transport retry cap. This cap
@@ -181,7 +199,6 @@ jobs:
           ./test_console_lifecycle.exe probe-ctrlz-e2e
 
       - name: Verify the event loop's wait timeout comes from the poll throttle
-        shell: msys2 {0}
         # PollThrottle keeps a source that repeatedly asks for a zero-length wait
         # from spinning a core. Its unit test proves the arithmetic; nothing can
         # drive the loop itself through a sustained zero, so this guards the shape
@@ -220,7 +237,6 @@ jobs:
           echo "the sole wait's timeout comes from the poll throttle and only the deadline clamp adjusts it"
 
       - name: Verify wide printf uses POSIX semantics where mosh needs them
-        shell: msys2 {0}
         # Upstream writes wide format strings against POSIX, where %s is a narrow
         # string; UCRT reads %s as wide and would render adjacent bytes as UTF-16
         # garbage. POSIX_WIDE_STDIO selects mingw's conformant implementation for
@@ -248,15 +264,14 @@ jobs:
           fi
           echo "no object uses UCRT wide printf"
 
-      - name: Verify mosh.exe is a native ARM64 PE
-        shell: msys2 {0}
+      - name: Verify mosh.exe is a native ${{ matrix.arch }} PE
         run: |
           llvm-objdump -f mosh.exe
-          llvm-objdump -f mosh.exe | grep -qiE 'coff-arm64|aarch64' \
-            || { echo "ERROR: mosh.exe is not a native ARM64 PE"; exit 1; }
+          if [ -z "${{ matrix.pe_format }}" ]; then echo "ERROR: empty pe_format"; exit 1; fi
+          llvm-objdump -f mosh.exe | grep -qiE "${{ matrix.pe_format }}" \
+            || { echo "ERROR: mosh.exe is not a native ${{ matrix.arch }} PE"; exit 1; }
 
       - name: Verify UCRT ABI (reject msvcrt, require UCRT)
-        shell: msys2 {0}
         # The target ABI is UCRT (api-ms-win-crt-*), not the legacy msvcrt.dll. A
         # build that silently linked msvcrt — or pulled mixed-CRT inputs — would
         # pass every other gate, so assert the exact target-CRT boundary that makes
@@ -268,15 +283,14 @@ jobs:
           grep -qi 'api-ms-win-crt' objdump-p.txt \
             || { echo "ERROR: mosh.exe has no UCRT (api-ms-win-crt-*) import"; exit 1; }
 
-      - name: Verify mosh.exe runs on native ARM64 (usage/liveness)
-        shell: msys2 {0}
+      - name: Verify mosh.exe runs on native ${{ matrix.arch }} (usage/liveness)
         # mosh.exe is now the real Windows-console client, not the standalone
-        # engine spike. A bare invocation cannot open a session (no target
+        # engine. A bare invocation cannot open a session (no target
         # args), so it prints usage and exits with the defined usage code (2 —
         # USAGE_EXIT_CODE in win32/mosh_main.cc). Asserting that exact code
         # proves the binary this job builds loads, resolves its imports, runs C++
-        # static init, and reaches its entry path on native ARM64 — a signal
-        # distinct from the static PE/ABI checks and from the separate
+        # static init, and reaches its entry path on native <arch> — a
+        # signal distinct from the static PE/ABI checks and from the separate
         # test_core.exe / test_loopback.exe binaries. Capture into evidence so
         # the runtime result survives after logs expire.
         run: |
@@ -289,12 +303,11 @@ jobs:
           cat evidence/runtime-output.txt
           cat evidence/runtime-result.txt
           if [ "$rc" -eq 2 ]; then \
-            echo "mosh.exe ran and exited with the usage code (2) on native ARM64"; \
+            echo "mosh.exe ran and exited with the usage code (2) on native ${{ matrix.arch }}"; \
           else \
-            echo "ERROR: mosh.exe exited $rc on native ARM64 (expected usage code 2)"; exit 1; fi
+            echo "ERROR: mosh.exe exited $rc on native ${{ matrix.arch }} (expected usage code 2)"; exit 1; fi
 
       - name: Reject the retired direct-endpoint invocation
-        shell: msys2 {0}
         # mosh.exe has no direct-endpoint grammar: it accepts one destination and
         # gets the session key from the server over the ssh pipe. A Windows command
         # line cannot be cleared after it is read, so an argument that carried the
@@ -334,22 +347,19 @@ jobs:
           echo "the retired direct-endpoint invocation is refused"
 
       - name: Stage runtime bundle
-        shell: msys2 {0}
-        run: win32/package.sh --zip win32/build/mosh-windows-arm64.zip
+        run: win32/package.sh --arch ${{ matrix.arch }} --zip win32/build/mosh-windows-${{ matrix.arch }}.zip
 
       - name: Verify bundle in a clean environment
-        shell: msys2 {0}
         # No -ExpectDlls: the bundle is a single statically-linked mosh.exe, so
         # verify-bundle's missing-DLL negative control skips by construction.
         run: |
           mkdir -p evidence
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File win32/verify-bundle.ps1 \
-            -BundleDir win32/build/stage/mosh-arm64 -TestCoreExe ./test_core.exe \
+            -BundleDir win32/build/stage/mosh-${{ matrix.arch }} -TestCoreExe ./test_core.exe \
             >evidence/verify-bundle-output.txt 2>&1
           cat evidence/verify-bundle-output.txt
 
       - name: Verify mosh.exe imports only Windows system DLLs
-        shell: msys2 {0}
         # Positive allowlist replacing the DLL-closure coverage the static link
         # removed: every import must be a Windows system/UCRT DLL. Anything else
         # means a dependency resolved to an import library instead of the static
@@ -364,39 +374,41 @@ jobs:
 
       - name: Collect durable evidence bundle
         if: always()
-        shell: msys2 {0}
         # Capture M0 closure evidence to files so it does not live only in expiring
         # workflow logs. Each probe is guarded so the bundle is produced even when
         # an earlier gate failed.
         run: |
           mkdir -p evidence
           echo "${GITHUB_SHA:-unknown}" > evidence/commit-sha.txt
-          echo 'CI build: -mcpu=oryon-1 (makefile default); runs on the Cobalt N2 runner because no Oryon-only ISA extension is emitted for this codebase' > evidence/effective-flags.txt
+          echo 'CI build: ${{ matrix.win_mcpu }} (from the job WIN_MCPU env); runs on the ${{ matrix.runner }} host' > evidence/effective-flags.txt
+          powershell.exe -NoProfile -Command "(Get-CimInstance Win32_Processor).Name" > evidence/cpu-name.txt 2>&1 || true
           clang++ --version > evidence/compiler.txt 2>&1 || true
           pacman -Q > evidence/packages.txt 2>&1 || true
           llvm-objdump -f mosh.exe > evidence/pe-machine.txt 2>&1 || true
           llvm-objdump -p mosh.exe > evidence/imports.txt 2>&1 || true
           llvm-nm -u mosh.exe > evidence/undefined-symbols.txt 2>&1 || true
           sha256sum mosh.exe > evidence/mosh.exe.sha256 2>&1 || true
-          sha256sum win32/build/mosh-windows-arm64.zip > evidence/mosh-zip.sha256 2>&1 || true
+          sha256sum win32/build/mosh-windows-${{ matrix.arch }}.zip > evidence/mosh-zip.sha256 2>&1 || true
           find win32/build/stage -type f -print | sort > evidence/staged-bundle-files.txt 2>&1 || true
-          cp win32/build/stage/mosh-arm64/MANIFEST.txt evidence/staged-bundle-manifest.txt 2>&1 || true
+          cp win32/build/stage/mosh-${{ matrix.arch }}/MANIFEST.txt evidence/staged-bundle-manifest.txt 2>&1 || true
           test -f evidence/verify-bundle-output.txt || echo 'verify-bundle step did not produce output' > evidence/verify-bundle-output.txt
 
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: mosh-clangarm64-spike
+          name: mosh-windows-evidence-${{ matrix.arch }}
           path: |
             mosh.exe
             evidence/
             win32/build/stage/
 
       # The consumer-facing deliverable: the verified staged bundle as a single
-      # zip, downloadable via `gh run download -n mosh-windows-arm64`. This is
-      # the -mcpu=oryon-1 product binary, executed and verified on the runner.
+      # zip, downloadable via `gh run download -n mosh-windows-<arch>`.
+      # This is the <win_mcpu-flag> product binary, executed and verified
+      # on the runner. The x64 zip is built with -march=meteorlake, so it targets
+      # Meteor Lake-class CPUs, not pre-AVX2 x64 hosts.
       - uses: actions/upload-artifact@v7
         if: success()
         with:
-          name: mosh-windows-arm64
-          path: win32/build/mosh-windows-arm64.zip
+          name: mosh-windows-${{ matrix.arch }}
+          path: win32/build/mosh-windows-${{ matrix.arch }}.zip

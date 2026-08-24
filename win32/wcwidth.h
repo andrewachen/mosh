@@ -44,7 +44,7 @@
 /* Do NOT declare the extern `int wcwidth( wchar_t )` here: terminaloverlay.cc
    receives that declaration through win32/wincompat.h, while terminal.cc uses its
    own file-local `wcwidth_scalar` helper. The declaration is limited to the
-   translation unit that needs it; see win32/config.h.clangarm64.
+   translation unit that needs it; see win32/config.h.windows.
 
    Mosh passes one wchar_t at a time; on Windows wchar_t is a UTF-16 code unit, so
    astral Unicode scalar values cannot reach this function as a single character.

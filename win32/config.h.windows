@@ -30,10 +30,10 @@
     also delete it here.
 */
 
-/* ABOUTME: Hand-authored feature configuration for native Windows ARM64 builds. */
+/* ABOUTME: Hand-authored feature configuration for native Windows builds (ARM64 and x64). */
 /* ABOUTME: Replaces cross-target autotools probing for the standalone DLL spike. */
-#ifndef MOSH_WIN32_CONFIG_H_CLANGARM64
-#define MOSH_WIN32_CONFIG_H_CLANGARM64
+#ifndef MOSH_WIN32_CONFIG_H_WINDOWS
+#define MOSH_WIN32_CONFIG_H_WINDOWS
 
 /* Prevent <windows.h> from defining DrawState, which collides with mosh's
    Terminal::DrawState. This header is force-included before all Win32 headers. */
