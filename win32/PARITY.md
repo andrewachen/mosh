@@ -327,14 +327,14 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A38. The optional Windows MTU-discovery failure path leaks its socket
 
 * **Upstream:** A socket-construction failure closes the descriptor before propagating the error (`src/network/network.cc:201-206`).
-* **Port:** The Windows constructor closes the socket for a nonblocking-mode failure but not when `setsockopt(IP_MTU_DISCOVER)` fails (`src/network/network.cc:155-175`). The ARM64 configuration currently leaves `HAVE_IP_MTU_DISCOVER` undefined (`win32/config.h.clangarm64:88`), so this is latent in the current build.
+* **Port:** The Windows constructor closes the socket for a nonblocking-mode failure but not when `setsockopt(IP_MTU_DISCOVER)` fails (`src/network/network.cc:155-175`). The ARM64 configuration currently leaves `HAVE_IP_MTU_DISCOVER` undefined (`win32/config.h.windows:88`), so this is latent in the current build.
 * **Consequence:** A build or configuration enabling the feature leaks every socket whose MTU-discovery setup fails.
 * **Class:** `DEFECT`, low — latent resource leak.
 
 #### A39. The optional Windows ECN receive path contradicts its own policy and uses POSIX diagnostics
 
 * **Upstream:** Requests and consumes the ECN receive metadata when the platform supports it (`src/network/network.cc:215-223`).
-* **Port:** The Windows comment says ECN is deliberately not requested because `IP_RECVTOS`/`recvmsg` is unavailable, but an optional `HAVE_IP_RECVTOS` block still calls `setsockopt` and reports failure with POSIX `perror` (`src/network/network.cc:178-191`). The feature is currently undefined in the ARM64 configuration (`win32/config.h.clangarm64:89`).
+* **Port:** The Windows comment says ECN is deliberately not requested because `IP_RECVTOS`/`recvmsg` is unavailable, but an optional `HAVE_IP_RECVTOS` block still calls `setsockopt` and reports failure with POSIX `perror` (`src/network/network.cc:178-191`). The feature is currently undefined in the ARM64 configuration (`win32/config.h.windows:89`).
 * **Consequence:** Enabling the feature would contradict the stated Not-ECT policy and could emit a misleading errno-based diagnostic for a WinSock error; the current build hides the defect rather than resolving it.
 * **Class:** `DEFECT`, low — latent network diagnostics/policy drift.
 

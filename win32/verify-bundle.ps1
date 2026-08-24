@@ -29,7 +29,7 @@
 #     this exception statement from all source files in the program, then
 #     also delete it here.
 #
-# ABOUTME: Verifies that a staged Windows ARM64 mosh bundle runs without MSYS2.
+# ABOUTME: Verifies that a staged Windows mosh bundle (ARM64 or x64) runs without MSYS2.
 # ABOUTME: Retains a missing-DLL negative control from the DLL-bundling era.
 #
 # The bundle is now a single statically-linked mosh.exe, so the probe-3

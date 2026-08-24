@@ -100,21 +100,21 @@ WSL, or MSYS.
 
 **Target CPU: Qualcomm Oryon (Snapdragon X-class).** This port intentionally
 targets Oryon-class Windows-on-ARM hardware — the makefile default is
-`ARM_MCPU ?= -mcpu=oryon-1`, and `-mcpu` may emit ISA that faults on older
+`WIN_MCPU ?= -mcpu=oryon-1`, and `-mcpu` may emit ISA that faults on older
 Windows-on-ARM parts (e.g. SQ1/SQ2, Ampere). Baseline portability to non-Oryon
 ARM64 is an explicit **non-goal** for now (the deliverable is validated on
 Snapdragon X hardware at M5). Consequence: this `-mcpu=oryon-1` default must
 **not** silently become a general-release build configuration — a
 broadly-distributable artifact would first require choosing a conservative
 `-march` baseline (with `-mtune=oryon-1` for tuning) and validating on a
-non-Oryon environment. See Toolchain for the `ARM_MCPU` override mechanics.
+non-Oryon environment. See Toolchain for the `WIN_MCPU` override mechanics.
 
 **CI build vs product build.** The hosted `windows-11-arm` runner is Azure
 Cobalt 100 (Arm Neoverse N2), **not** Oryon. Executing an `-mcpu=oryon-1` binary
 there would be nondiagnostic — a failure could mean a port defect *or* an
 Oryon-only instruction the N2 runner lacks, and a pass would only mean the
 spike's reached code happened to avoid such an instruction. So the CI gate
-**builds a conservative baseline** (`ARM_MCPU=-march=armv8-a -mtune=oryon-1`;
+**builds a conservative baseline** (`WIN_MCPU=-march=armv8-a -mtune=oryon-1`;
 `-mtune` is scheduling-only and does not change the ISA) that genuinely runs on
 the Cobalt runner. This makes CI a *diagnostic* native-ARM64 build/link/ABI/
 liveness gate: a failure is a real port defect, not an incompatible runner. It
@@ -386,7 +386,7 @@ closure rule in Result):
 | --- | --- |
 | Commit (build inputs) | `ba642de0424217f2a517d9417949d8ff8bfd0917` |
 | CI run | `andrewachen/mosh` Actions run `29928638939` (job `spike`, 2m49s, success) |
-| Effective flags | `ARM_MCPU=-march=armv8-a -mtune=oryon-1` (baseline; product `-mcpu=oryon-1` validated at M5) |
+| Effective flags | `WIN_MCPU=-march=armv8-a -mtune=oryon-1` (baseline; product `-mcpu=oryon-1` validated at M5) |
 | PE machine type | `coff-arm64` / `architecture: aarch64` (native ARM64, not emulated) |
 | Undefined symbols | 0 (no C++-runtime undefs) |
 | Runtime | `./mosh.exe` exit status `0` on native ARM64 (Cobalt N2) |
@@ -541,13 +541,13 @@ On CI with protobuf v22+ (which uses Abseil), `pkg-config --libs --static
 protobuf` expands to include the Abseil and utf8-cpp closure. The local
 image's protobuf 3.21.12 has no such closure.
 
-`ARM_MCPU` override matrix. `win32/Makefile.win` defaults to
-`ARM_MCPU ?= -mcpu=oryon-1` (the Oryon product target). The local image's
+`WIN_MCPU` override matrix. `win32/Makefile.win` defaults to
+`WIN_MCPU ?= -mcpu=oryon-1` (the Oryon product target). The local image's
 clang 22 accepts that flag, and local invocations use the default — the smoke
 test exercises the same oryon-1 product codegen that M5 validates on
 Snapdragon X hardware (verified: the built exe contains LSE `ldadd`/`swpal`
 atomics that baseline aarch64 would not emit). CI passes
-`ARM_MCPU="-march=armv8-a -mtune=oryon-1"` so the gate binary runs on the Cobalt
+`WIN_MCPU="-march=armv8-a -mtune=oryon-1"` so the gate binary runs on the Cobalt
 N2 runner (see the CI-build note at the top). As stated there, `-mcpu=oryon-1`
 establishes an Oryon-class hardware target; it is *not* a portable
 Windows-ARM64 default, is validated only at M5 on Snapdragon X hardware, and
@@ -561,7 +561,7 @@ its matching runtime.
 
 ## Configuration
 
-`win32/config.h.clangarm64` is copied to ignored
+`win32/config.h.windows` is copied to ignored
 `src/include/config.h` by the standalone makefile before compilation. Its
 resolved feature decisions are:
 
@@ -608,12 +608,12 @@ is not reliable in the MSYS2 CLANGARM64 runtime.
 
 ## Reproduction
 
-From the mosh repository (the harness `Dockerfile.mosh-arm64` +
-`build-mosh-arm64-local.sh` lives here), run:
+From the mosh repository (the harness `Dockerfile.mosh-win` +
+`build-mosh-local.sh` lives here), run:
 
 ```sh
 MOSH_LOCAL=~/git/gh/mosh/.claude/worktrees/mosh-termination \
-  ./build-mosh-arm64-local.sh
+  ./build-mosh-local.sh
 ```
 
 The `MOSH_LOCAL` override is mandatory when validating a worktree. Without it,
@@ -624,7 +624,7 @@ The script runs the M0a dependency smoke test first, then invokes:
 
 ```sh
 make -f win32/Makefile.win clean
-make -f win32/Makefile.win CXX=aarch64-w64-mingw32-clang++ AR=aarch64-w64-mingw32-ar NM=aarch64-w64-mingw32-nm OBJDUMP=aarch64-w64-mingw32-objdump ARM_MCPU= check
+make -f win32/Makefile.win CXX=aarch64-w64-mingw32-clang++ AR=aarch64-w64-mingw32-ar NM=aarch64-w64-mingw32-nm OBJDUMP=aarch64-w64-mingw32-objdump WIN_MCPU= check
 ```
 
 inside the mounted mosh checkout. The check verifies the five archives, the
@@ -632,15 +632,16 @@ executable, its absence of unresolved C++ runtime symbols, and absence of
 dynamic imports of C++/protobuf runtime DLLs and of the OpenSSL/zlib/ncurses
 DLLs (via the `objdump -p` deny-list).
 
-For the MSYS2 CLANGARM64 CI build (`.github/workflows/clangarm64-spike.yml`),
-the same makefile runs with the default `NM=llvm-nm` and `OBJDUMP=llvm-objdump`
-and the baseline override `ARM_MCPU="-march=armv8-a -mtune=oryon-1"`. Beyond the
-makefile `check`, CI adds the native-ARM64-PE assertion, the UCRT ABI check
-(reject `msvcrt.dll`, require `api-ms-win-crt-*`), a bare frontend invocation
-that asserts usage exit code `2`, and two artifact uploads: the durable
-evidence bundle and the consumer-facing zip `mosh-windows-arm64.zip`
-(`gh run download <run-id> -n mosh-windows-arm64`). The zip is the
-`-mcpu=oryon-1` product binary, executed and verified on the Cobalt N2 runner:
+For the matrixed MSYS2 Windows CI build (`.github/workflows/windows.yml`),
+the same makefile runs with the per-leg `WIN_MCPU` setting and the default
+`NM=llvm-nm` and `OBJDUMP=llvm-objdump`. Beyond the makefile `check`, CI adds
+the native-PE assertion, the UCRT ABI check (reject `msvcrt.dll`, require
+`api-ms-win-crt-*`), a bare frontend invocation that asserts usage exit code
+`2`, and two artifact uploads: the durable evidence bundle and the
+consumer-facing per-architecture zips `mosh-windows-arm64.zip` and
+`mosh-windows-x64.zip` (`gh run download <run-id> -n mosh-windows-<arch>`).
+The arm64 zip is the `-mcpu=oryon-1` product binary, executed and verified on
+the Cobalt N2 runner:
 oryon-1's extra ISA extensions over N2 (SM4, RandGen, SPE) are never emitted
 for this codebase — verified by disassembling the CI-built mosh.exe with
 llvm-18 (zero such instructions; the only extension present is LSE atomics,
@@ -728,7 +729,7 @@ real console/session validation remains native Windows ARM64 work.
 Local verification command (from the mosh repository):
 
 ```sh
-./build-mosh-arm64-local.sh
+./build-mosh-local.sh
 ```
 
 The command completed successfully on this revision (exit 0, with no
