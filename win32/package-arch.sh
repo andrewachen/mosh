@@ -48,9 +48,9 @@ MOSH_LICENSE
 # gate can be unit-tested in isolation (no such test exists yet — follow-up).
 
 # Per-arch PE/COFF identity tokens, verified against LLVM 18 output. Resolved
-# per call, not at source time: the helper is sourced by both package.sh (arch
-# already set) and the docker discrimination test (arch set per invocation), so
-# the case must observe $arch when assert_arch actually runs.
+# per call, not at source time: package.sh sets arch once at parse time, while
+# an isolated unit test would set it per invocation — so the case must observe
+# $arch when assert_arch actually runs.
 set_arch_tokens() {
   case "$arch" in
     arm64)
@@ -108,7 +108,8 @@ assert_arch() {
   if ((result)); then
     # Match the plan's mandated wording ("is not an $arch PE/COFF image") and
     # the ERROR: prefix every other package.sh failure emits via die(), while
-    # keeping the return-1 behavior the docker discrimination test relies on.
+    # keeping return-1 (not die) so an isolated unit test can inspect the
+    # mismatch status with `if`.
     local tool_name=llvm-readobj
     [[ -n "$llvm_objdump" ]] && tool_name=llvm-objdump
     printf 'ERROR: %s is not an %s PE/COFF image via %s\n%s: %s\n' \

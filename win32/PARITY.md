@@ -504,7 +504,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 * **Port:** `Reader::stop_until_deadline()` separately accepts `WAIT_OBJECT_0`, loops only for `WAIT_TIMEOUT`, and records `WAIT_FAILED` without closing or nulling the worker (`win32/console_io.cc:565-612`).
 * **Consequence:** A failed worker wait does not masquerade as a completed join or release a still-running worker's state.
 * **Status:** parity. `WAIT_OBJECT_0`, `WAIT_TIMEOUT`, and `WAIT_FAILED` remain distinct, retaining the worker handle and surfacing the failure unless termination policy explicitly and safely cancels it.
-* **Verification:** The `wait-failed-reader` lifecycle mode injects `ERROR_INVALID_HANDLE` as a `WAIT_FAILED` result after one real bounded wait, then checks cleanup reporting, reader detachment, null-safe accessors, and bounded destruction (`win32/test_console_lifecycle.cc:1164-1217`). CI runs the mode (`.github/workflows/windows.yml:189`).
+* **Verification:** The `wait-failed-reader` lifecycle mode injects `ERROR_INVALID_HANDLE` as a `WAIT_FAILED` result after one real bounded wait, then checks cleanup reporting, reader detachment, null-safe accessors, and bounded destruction (`win32/test_console_lifecycle.cc:1164-1217`). CI runs the mode (`.github/workflows/windows.yml:187`).
 
 #### A43. Reader teardown closes a duplicated input handle during an in-flight read
 
@@ -512,7 +512,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 * **Port:** Deadline cancellation only marks the reader stopping and calls `CancelSynchronousIo`; `input` closes only after `WAIT_OBJECT_0` joins the worker (`win32/console_io.cc:539-545`, `win32/console_io.cc:582-609`).
 * **Consequence:** A live `ReadFile` keeps its duplicated input handle until the worker exits, so teardown cannot recycle the handle beneath it.
 * **Status:** parity. The worker retains stable handle ownership until it exits, and cancellation does not close a handle still usable by the worker.
-* **Verification:** The `deadline-wedged-reader` mode asserts that deadline cleanup detached the live reader rather than destroying it (`win32/test_console_lifecycle.cc:1053-1109`). CI runs the mode (`.github/workflows/windows.yml:188`).
+* **Verification:** The `deadline-wedged-reader` mode asserts that deadline cleanup detached the live reader rather than destroying it (`win32/test_console_lifecycle.cc:1053-1109`). CI runs the mode (`.github/workflows/windows.yml:186`).
 
 #### A46. Exception unwinding can perform an unbounded reader join after a deadline
 
@@ -520,7 +520,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 * **Port:** `release_and_signal()` releases a reader whose deadline or failed wait left it non-joined, so `ConsoleSession` destruction during `run_console_session()` unwinding cannot reach `Reader::~Reader()`'s unbounded join (`win32/console_io.cc:1005-1029`).
 * **Consequence:** Every deadline or wait-error exit either joins before destruction or intentionally retains the active reader and its handles; exception unwinding remains bounded.
 * **Status:** parity. The unwind path releases deliberately non-joined workers without blocking while preserving the bounded teardown contract.
-* **Verification:** The `deadline-throw-unwind` lifecycle mode makes `run()` throw after deadline teardown, publishes a tick immediately before its by-value session is destroyed, and bounds only that destruction interval (`win32/test_console_lifecycle.cc:1112-1172`). CI runs the mode (`.github/workflows/windows.yml:190`).
+* **Verification:** The `deadline-throw-unwind` lifecycle mode makes `run()` throw after deadline teardown, publishes a tick immediately before its by-value session is destroyed, and bounds only that destruction interval (`win32/test_console_lifecycle.cc:1112-1172`). CI runs the mode (`.github/workflows/windows.yml:188`).
 
 #### Reader input ending enters graceful shutdown
 
