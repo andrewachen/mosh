@@ -1,7 +1,5 @@
-# ABOUTME: Cross-builds the Windows mosh engine dependencies (ARM64 and x64) as
-#          parallel buildx stages into /opt/mosh-arm64 and /opt/mosh-x64.
-# ABOUTME: deps-arm64/deps-x64 compile the shared docker/build-deps.sh; use the
-#          resulting mosh-win image with build-mosh-local.sh to pick the arch.
+# ABOUTME: Cross-builds the Windows mosh engine dependencies (ARM64 and x64) as parallel buildx stages.
+# ABOUTME: deps-arm64/deps-x64 compile the shared docker/build-deps.sh into /opt/mosh-arm64 and /opt/mosh-x64.
 
 FROM ubuntu:24.04 AS base
 

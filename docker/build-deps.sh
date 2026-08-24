@@ -1,7 +1,6 @@
 #!/bin/bash
 # ABOUTME: Builds the Windows mosh engine dependencies for one target arch.
-# ABOUTME: Arch comes from env (TARGET/CROSS_TRIPLE/PREFIX/ARCH); builds zlib,
-#          openssl, ncurses, protobuf into $PREFIX and writes .pc files.
+# ABOUTME: Reads TARGET/CROSS_TRIPLE/PREFIX/ARCH from env; builds zlib, openssl, ncurses, protobuf into $PREFIX and writes .pc files.
 set -euo pipefail
 
 : "${TARGET:?TARGET must be set (e.g. aarch64-w64-mingw32)}"

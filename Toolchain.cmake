@@ -1,6 +1,5 @@
 # ABOUTME: CMake cross toolchain for the llvm-mingw toolchain (aarch64 or x86_64).
-# ABOUTME: Derived from the dockcross windows-arm64 Toolchain.cmake; used by the
-#          protobuf target build in Dockerfile.mosh-win.
+# ABOUTME: Derived from the dockcross windows-arm64 Toolchain.cmake; used by the protobuf target build in Dockerfile.mosh-win.
 set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_SYSTEM_VERSION 1)
 
