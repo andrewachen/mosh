@@ -264,6 +264,10 @@ public:
      accessors above it takes no lock, because the samples are written from
      inside run() without one. */
   size_t clock_refresh_samples_for_test( ClockRefreshSample *out, size_t capacity ) const;
+  /* Number of final-frame writes attempted by the normal-exit transition. */
+  size_t final_frame_writes_for_test() const;
+  /* The frame returned by shutdown_transition(); read only after run() returns. */
+  const std::string& final_frame_for_test() const;
   static size_t input_budget_bytes();
   /* Holds the reader queue mutex across both the backlog check and the
      termination signal, so the backlog is read consistently against a queue the

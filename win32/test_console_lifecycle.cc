@@ -170,9 +170,8 @@ static int run_escape_key()
     MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(), 80, 24, opts );
     const char quit[] = { 0x01, '.' };
     core.feed_input( quit, sizeof quit );
-    if ( core.status_message() != "Exiting..." ) {
-      fprintf( stderr, "FAIL: escape-key: custom escape did not begin shutdown (status=\"%s\")\n",
-               core.status_message().c_str() );
+    if ( core.next_frame().find( "Exiting on user request..." ) == std::string::npos ) {
+      fprintf( stderr, "FAIL: escape-key: custom escape did not render the shutdown notification\n" );
       return 1;
     }
   }
@@ -185,7 +184,7 @@ static int run_escape_key()
     MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(), 80, 24, opts );
     const char seq[] = { 0x1e, '.' };
     core.feed_input( seq, sizeof seq );
-    if ( !core.status_message().empty() ) {
+    if ( core.next_frame().find( "Exiting on user request..." ) != std::string::npos ) {
       fprintf( stderr, "FAIL: escape-key: non-escape 0x1e began shutdown\n" );
       return 1;
     }
@@ -197,13 +196,15 @@ static int run_escape_key()
     MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(), 80, 24, opts );
     const char seq[] = { 0x1e, '.' };
     core.feed_input( seq, sizeof seq );
-    if ( !core.status_message().empty() ) {
+    if ( core.next_frame().find( "Exiting on user request..." ) != std::string::npos ) {
       fprintf( stderr, "FAIL: escape-key: disabled parser began shutdown\n" );
       return 1;
     }
   }
   return 0;
 }
+
+static int run_shutdown_transition();
 
 static int run_no_term_init()
 {
@@ -975,6 +976,198 @@ private:
   std::thread thread_;
 };
 
+static int run_shutdown_transition()
+{
+  ConsoleTestScope scope;
+  TestServer server( 80, 24 );
+  server.set_title( "server title" );
+  StartupOptions opts = never_prediction();
+  opts.title_prefix = true;
+  MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(), 80, 24, opts );
+  bool saw_title = false;
+
+  for ( int i = 0; i < 200 && core.still_connecting(); i++ ) {
+    core.tick();
+    server.tick();
+    for ( const intptr_t fd : server.socket_fds() ) {
+      server.on_readable( fd );
+    }
+    for ( const intptr_t fd : core.socket_fds() ) {
+      core.on_readable( fd );
+    }
+    const std::string& frame = core.next_frame();
+    if ( frame.find( "\033]0;[mosh] server title\007" ) != std::string::npos ) {
+      saw_title = true;
+    }
+    Sleep( 10 );
+  }
+  if ( core.still_connecting() ) {
+    fprintf( stderr, "FAIL: shutdown-transition: session never connected\n" );
+    return 1;
+  }
+  if ( !saw_title ) {
+    fprintf( stderr, "FAIL: shutdown-transition: title prefix was never rendered\n" );
+    return 1;
+  }
+
+  UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( session_done.get() != NULL, "CreateEvent(session_done)" );
+  UniqueHandle deadline_start( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( deadline_start.get() != NULL, "CreateEvent(deadline_start)" );
+  std::atomic<ULONGLONG> deadline_at( 0 );
+  WatchdogGuard watchdog( session_done.get(), deadline_start.get(), &deadline_at, &scope,
+                          ACCEPTANCE_WATCHDOG_MS );
+  ConsoleSession session( core );
+  const ConsoleSnapshot snapshot = session.original_console_for_test();
+  const char quit[] = { 0x1e, '.' };
+  core.feed_input( quit, sizeof quit );
+  const std::string& notification_frame = core.next_frame();
+  if ( notification_frame.find( "Exiting on user request..." ) == std::string::npos ) {
+    fprintf( stderr, "FAIL: shutdown-transition: shutdown notification was never rendered\n" );
+    return 1;
+  }
+  std::atomic<bool> stop_pumping( false );
+  std::thread pump( [&]() {
+    while ( !stop_pumping.load() ) {
+      for ( const intptr_t fd : server.socket_fds() ) {
+        server.on_readable( fd );
+      }
+      server.tick();
+      Sleep( 10 );
+    }
+  } );
+  int thrown = 0;
+  try {
+    deadline_at.store( GetTickCount64() + ACCEPTANCE_WATCHDOG_MS );
+    must( SetEvent( deadline_start.get() ), "SetEvent(deadline_start)" );
+    session.run();
+  } catch ( const std::exception &e ) {
+    fprintf( stderr, "FAIL: shutdown-transition: session.run() threw: %s\n", e.what() );
+    thrown = 1;
+  } catch ( ... ) {
+    fprintf( stderr, "FAIL: shutdown-transition: session.run() threw a non-standard exception\n" );
+    thrown = 1;
+  }
+  stop_pumping.store( true );
+  pump.join();
+  must( SetEvent( session_done.get() ), "SetEvent(session_done)" );
+  watchdog.stop();
+  if ( thrown || !core.is_finished() || !core.exited_cleanly()
+       || session.final_frame_writes_for_test() != 1 ) {
+    fprintf( stderr, "FAIL: shutdown-transition: local quit did not complete cleanly with one final frame\n" );
+    return 1;
+  }
+  const std::string& final_frame = session.final_frame_for_test();
+  /* The title prefix must be gone from the final frame. The notification is
+     asserted negatively: whether clearing the bar emits an erase sequence
+     depends on whether the pre-run render loop's last frame happened to
+     include the bar (the notification check above renders into a frame that
+     is never written), so requiring the erase would be timing-dependent.
+     What A14 requires is that the notification text does not survive into
+     the final frame — and against pre-A14 code, which never cleared it, the
+     text would persist. */
+  if ( final_frame.find( "\033]0;server title\007" ) == std::string::npos
+       || final_frame.find( "\033]0;[mosh]" ) != std::string::npos
+       || final_frame.find( "Exiting on user request" ) != std::string::npos ) {
+    fprintf( stderr, "FAIL: shutdown-transition: final frame did not clear both overlays\n" );
+    return 1;
+  }
+  DWORD restored_in_mode = 0;
+  DWORD restored_out_mode = 0;
+  must( GetConsoleMode( snapshot.input, &restored_in_mode ), "GetConsoleMode(local restored input)" );
+  must( GetConsoleMode( snapshot.output, &restored_out_mode ), "GetConsoleMode(local restored output)" );
+  if ( restored_in_mode != snapshot.input_mode || restored_out_mode != snapshot.output_mode ) {
+    fprintf( stderr, "FAIL: shutdown-transition: console was not restored after local quit\n" );
+    return 1;
+  }
+  return 0;
+}
+
+static int run_peer_shutdown()
+{
+  ConsoleTestScope scope;
+  TestServer server( 80, 24 );
+  server.set_title( "server title" );
+  StartupOptions opts = never_prediction();
+  opts.title_prefix = true;
+  MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
+                 80, 24, opts );
+  bool saw_title = false;
+  for ( int i = 0; i < 200 && core.still_connecting(); i++ ) {
+    core.tick();
+    server.tick();
+    for ( const intptr_t fd : server.socket_fds() ) {
+      server.on_readable( fd );
+    }
+    for ( const intptr_t fd : core.socket_fds() ) {
+      core.on_readable( fd );
+    }
+    const std::string& frame = core.next_frame();
+    if ( frame.find( "\033]0;[mosh] server title\007" ) != std::string::npos ) {
+      saw_title = true;
+    }
+    Sleep( 10 );
+  }
+  if ( core.still_connecting() || !saw_title ) {
+    fprintf( stderr, "FAIL: peer-shutdown: titled server never connected/rendered\n" );
+    return 1;
+  }
+  UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( session_done.get() != NULL, "CreateEvent(session_done)" );
+  UniqueHandle deadline_start( CreateEvent( NULL, TRUE, FALSE, NULL ) );
+  must( deadline_start.get() != NULL, "CreateEvent(deadline_start)" );
+  std::atomic<ULONGLONG> deadline_at( 0 );
+  WatchdogGuard watchdog( session_done.get(), deadline_start.get(), &deadline_at, &scope,
+                          ACCEPTANCE_WATCHDOG_MS );
+  ConsoleSession session( core );
+  const ConsoleSnapshot snapshot = session.original_console_for_test();
+  std::atomic<bool> stop_pumping( false );
+  std::thread pump( [&]() {
+    bool shutdown_started = false;
+    while ( !stop_pumping.load() ) {
+      for ( const intptr_t fd : server.socket_fds() ) {
+        server.on_readable( fd );
+      }
+      server.tick();
+      if ( !shutdown_started && server.received_client_state() ) {
+        server.start_shutdown();
+        shutdown_started = true;
+      }
+      Sleep( 10 );
+    }
+  } );
+  int thrown = 0;
+  try {
+    deadline_at.store( GetTickCount64() + ACCEPTANCE_WATCHDOG_MS );
+    must( SetEvent( deadline_start.get() ), "SetEvent(deadline_start)" );
+    session.run();
+  } catch ( const std::exception &e ) {
+    fprintf( stderr, "FAIL: peer-shutdown: session.run() threw: %s\n", e.what() );
+    thrown = 1;
+  } catch ( ... ) {
+    fprintf( stderr, "FAIL: peer-shutdown: session.run() threw a non-standard exception\n" );
+    thrown = 1;
+  }
+  stop_pumping.store( true );
+  pump.join();
+  must( SetEvent( session_done.get() ), "SetEvent(session_done)" );
+  watchdog.stop();
+  DWORD restored_mode = 0;
+  must( GetConsoleMode( snapshot.input, &restored_mode ), "GetConsoleMode(peer restored)" );
+  if ( thrown || !core.is_finished() || !core.exited_cleanly()
+       || session.final_frame_writes_for_test() != 1 || restored_mode != snapshot.input_mode ) {
+    fprintf( stderr, "FAIL: peer-shutdown: counterparty shutdown did not complete cleanly\n" );
+    return 1;
+  }
+  const std::string& final_frame = session.final_frame_for_test();
+  if ( final_frame.find( "\033]0;server title\007" ) == std::string::npos
+       || final_frame.find( "\033]0;[mosh]" ) != std::string::npos ) {
+    fprintf( stderr, "FAIL: peer-shutdown: final frame did not clear the title prefix\n" );
+    return 1;
+  }
+  return 0;
+}
+
 enum class DeadlineCase {
   PUBLICATION,
   ESCALATION,
@@ -1043,8 +1236,8 @@ static int run_deadline_case( DeadlineCase which )
   DWORD restored_mode = 0;
   const ConsoleSnapshot snapshot = session->original_console_for_test();
   must( GetConsoleMode( snapshot.input, &restored_mode ), "GetConsoleMode(deadline restored)" );
-  if ( restored_mode != snapshot.input_mode ) {
-    fprintf( stderr, "FAIL: deadline shutdown returned before restoring input mode\n" );
+  if ( restored_mode != snapshot.input_mode || session->final_frame_writes_for_test() != 0 ) {
+    fprintf( stderr, "FAIL: deadline shutdown restored incorrectly or wrote a final frame\n" );
     return 1;
   }
   return 0;
@@ -1255,9 +1448,14 @@ static int run_connection_timeout()
   /* The 15 s connection timeout plus the 4--5.6 s retry budget predicts
      19--20.6 s. The 18--23 s window leaves 1 s below the arithmetic floor,
      2.4 s above its ceiling, and makes the old immediate 15 s exit fail. */
+  const ConsoleSnapshot snapshot = session.original_console_for_test();
+  DWORD restored_mode = 0;
+  must( GetConsoleMode( snapshot.input, &restored_mode ), "GetConsoleMode(connection timeout restored)" );
   if ( elapsed < 18000 || elapsed > 23000 || !core.is_finished()
        || core.exited_cleanly()
-       || core.status_message() != "Timed out waiting for server..." ) {
+       || core.status_message() != "Timed out waiting for server..."
+       || session.final_frame_writes_for_test() != 1
+       || restored_mode != snapshot.input_mode ) {
     fprintf( stderr,
              "FAIL: connection timeout did not use transport shutdown (elapsed=%llu ms)\n",
              (unsigned long long)elapsed );
@@ -1272,6 +1470,10 @@ static int run_upstream_length()
   TestServer server( 80, 24 );
   MoshCore core( "127.0.0.1", server.port().c_str(), server.get_key().c_str(),
                  80, 24, never_prediction() );
+  if ( !core.still_connecting() ) {
+    fprintf( stderr, "FAIL: upstream-length core connected before quit input\n" );
+    return 1;
+  }
 
   UniqueHandle session_done( CreateEvent( NULL, TRUE, FALSE, NULL ) );
   must( session_done.get() != NULL, "CreateEvent(session_done)" );
@@ -1295,14 +1497,31 @@ static int run_upstream_length()
   /* Sixteen retries at 250--350 ms predict 4--5.6 s. The 3--8 s window is
      comfortably above a one-retry exit, leaves 1 s below the arithmetic floor
      and 2.4 s above its ceiling, yet stays 2 s below the 10 s timeout ceiling. */
+  /* Quit-before-connect starts shutdown before the 15 s connection timeout can
+     set the connection status, and A13 removed the quit path's own status text.
+     The session finishes through the shutdown-ack timeout, whose status proves
+     the path. The connecting notification is live by the first tick (the quit
+     is fed before run(), but console setup pushes the first tick past the
+     250 ms silence mark), so clearing it renders a non-empty final frame. */
+  const ConsoleSnapshot snapshot = session.original_console_for_test();
+  DWORD restored_mode = 0;
+  must( GetConsoleMode( snapshot.input, &restored_mode ), "GetConsoleMode(upstream length restored)" );
   if ( session.termination_deadline_for_test() != 0
        || elapsed < 3000 || elapsed > 8000 || !core.is_finished()
-       || core.exited_cleanly() ) {
+       || core.exited_cleanly()
+       || core.status_message() != "Timed out waiting for shutdown acknowledgement."
+       || session.final_frame_writes_for_test() != 1
+       || restored_mode != snapshot.input_mode ) {
     fprintf( stderr,
              "FAIL: uncapped in-band shutdown did not use transport bound "
-             "(elapsed=%llu ms deadline=%llu)\n",
+             "(elapsed=%llu ms deadline=%llu finished=%d clean=%d status=\"%s\" "
+             "final_frame_writes=%llu restored_in=%lu want=%lu)\n",
              (unsigned long long)elapsed,
-             (unsigned long long)session.termination_deadline_for_test() );
+             (unsigned long long)session.termination_deadline_for_test(),
+             core.is_finished() ? 1 : 0, core.exited_cleanly() ? 1 : 0,
+             core.status_message().c_str(),
+             (unsigned long long)session.final_frame_writes_for_test(),
+             restored_mode, snapshot.input_mode );
     return 1;
   }
   return 0;
@@ -1371,12 +1590,13 @@ static int run_graceful_shutdown()
     return 1;
   }
 
-  /* The status message should be "Exiting..." which is set by begin_shutdown().
-     This proves the session went through the graceful shutdown path. */
-  const std::string &status = core.status_message();
-  if ( status != "Exiting..." ) {
-    fprintf( stderr,
-             "FAIL: status message was \"%s\", expected \"Exiting...\"\n",
+  /* This scenario drives the shutdown-ack timeout path: the server never
+     acknowledges, so update_lifecycle() sets the timeout status
+     (win32/mosh_core.cc). begin_shutdown() itself assigns no status — the
+     status here comes from the ack timeout, which is what proves the path. */
+  const std::string& status = core.status_message();
+  if ( status != "Timed out waiting for shutdown acknowledgement." ) {
+    fprintf( stderr, "FAIL: shutdown status was \"%s\", expected the ack-timeout status\n",
              status.c_str() );
     return 1;
   }
@@ -1384,8 +1604,12 @@ static int run_graceful_shutdown()
   /* The clean_shutdown flag is set after either shutdown acknowledgement has
      been received or the counterparty's acknowledgement has been sent. It stays
      false on the timeout path, proving this session used that path. */
-  if ( core.exited_cleanly() ) {
-    fprintf( stderr, "FAIL: session exited cleanly (expected timeout path)\n" );
+  const ConsoleSnapshot snapshot = session->original_console_for_test();
+  DWORD restored_mode = 0;
+  must( GetConsoleMode( snapshot.input, &restored_mode ), "GetConsoleMode(graceful restored)" );
+  if ( core.exited_cleanly() || session->final_frame_writes_for_test() != 1
+       || restored_mode != snapshot.input_mode ) {
+    fprintf( stderr, "FAIL: graceful-shutdown: timeout path did not render once and restore\n" );
     return 1;
   }
 
@@ -1703,6 +1927,12 @@ int main( int argc, char *argv[] )
   try {
     if ( strcmp( argv[1], "escape-key" ) == 0 ) {
       return run_escape_key();
+    }
+    if ( strcmp( argv[1], "shutdown-transition" ) == 0 ) {
+      return run_shutdown_transition();
+    }
+    if ( strcmp( argv[1], "peer-shutdown" ) == 0 ) {
+      return run_peer_shutdown();
     }
     if ( strcmp( argv[1], "no-term-init" ) == 0 ) {
       return run_no_term_init();

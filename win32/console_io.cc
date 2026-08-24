@@ -35,6 +35,7 @@
 
 #include "win32/console_io.h"
 #include "win32/socket_events.h"
+#include "win32/upstream_strings.h"
 #include "src/util/fatal_assert.h"
 
 #include <algorithm>
@@ -784,6 +785,8 @@ public:
      wakeup where the termination event is signaled. */
   bool shutdown_observed;
   bool output_available;
+  size_t final_frame_writes;
+  std::string final_frame;
   /* Whether a drain had ever emptied the input queue at the moment the loop
      first observed a shutdown request. Sampled at that instant rather than
      after run() returns, because the loop keeps pumping afterward and will
@@ -800,7 +803,7 @@ public:
       control( NULL ), reader(), socket_events(), cols( 0 ), rows( 0 ),
       state( ConsoleLifecycleState::RUNNING ), restored_flag( false ), cleanup(),
       clock_samples(), clock_sample_count( 0 ),
-      shutdown_observed( false ), output_available( true ),
+      shutdown_observed( false ), output_available( true ), final_frame_writes( 0 ), final_frame(),
       input_drained_at_shutdown( false )
   {
     original.input = GetStdHandle( STD_INPUT_HANDLE );
@@ -1080,6 +1083,16 @@ public:
     return shutdown_observed;
   }
 
+  size_t final_frame_writes_for_test() const
+  {
+    return final_frame_writes;
+  }
+
+  const std::string& final_frame_for_test() const
+  {
+    return final_frame;
+  }
+
   ULONGLONG termination_deadline_for_test() const
   {
     return control->deadline.load();
@@ -1117,6 +1130,22 @@ public:
     try {
       run_loop();
     } catch ( ... ) {
+      try {
+        if ( control->deadline.load() == NO_TERMINATION_DEADLINE ) {
+          final_frame = core.shutdown_transition();
+          if ( output_available && !final_frame.empty()
+               && control->deadline.load() == NO_TERMINATION_DEADLINE ) {
+            ++final_frame_writes;
+            try {
+              write_all( original.output, final_frame );
+            } catch ( const ConsoleError & ) {
+              output_available = false;
+            }
+          }
+        }
+      } catch ( ... ) {
+        /* Preserve the original exception while unwinding. */
+      }
       release_and_signal();
       throw;
     }
@@ -1135,7 +1164,11 @@ private:
     publish_cause( control, cause );
     shutdown_observed = true;
     input_drained_at_shutdown = reader->ever_drained_to_empty();
-    core.begin_shutdown();
+    const wchar_t *notification = EXIT_ON_SIGNAL;
+    if ( cause == ShutdownCause::IO_LOSS ) {
+      notification = EXIT_ON_IO_LOSS;
+    }
+    core.begin_shutdown( notification );
     state = ConsoleLifecycleState::SHUTTING_DOWN;
   }
 
@@ -1158,6 +1191,20 @@ private:
       }
       const int timeout = core.tick();
       if ( core.is_finished() ) {
+        if ( control->deadline.load() == NO_TERMINATION_DEADLINE ) {
+          final_frame = core.shutdown_transition();
+          /* The close handler can arm the deadline during transition rendering;
+             re-test before writing so deadline-driven exits emit no final frame. */
+          if ( output_available && !final_frame.empty()
+               && control->deadline.load() == NO_TERMINATION_DEADLINE ) {
+            ++final_frame_writes;
+            try {
+              write_all( original.output, final_frame );
+            } catch ( const ConsoleError& ) {
+              output_available = false;
+            }
+          }
+        }
         break;
       }
 
@@ -1376,6 +1423,16 @@ bool ConsoleSession::signal_termination_against_backlog_for_test( size_t minimum
 size_t ConsoleSession::clock_refresh_samples_for_test( ClockRefreshSample *out, size_t capacity ) const
 {
   return impl->clock_refresh_samples( out, capacity );
+}
+
+size_t ConsoleSession::final_frame_writes_for_test() const
+{
+  return impl->final_frame_writes_for_test();
+}
+
+const std::string& ConsoleSession::final_frame_for_test() const
+{
+  return impl->final_frame_for_test();
 }
 
 CleanupReport ConsoleSession::cleanup_report() const

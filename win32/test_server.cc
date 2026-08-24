@@ -170,6 +170,16 @@ void TestServer::tick()
   impl->network.tick();
 }
 
+void TestServer::start_shutdown()
+{
+  impl->network.start_shutdown();
+}
+
+bool TestServer::received_client_state() const
+{
+  return impl->last_remote_num != 0;
+}
+
 bool TestServer::received_byte( char byte ) const
 {
   std::lock_guard<std::mutex> lock( impl->received_mutex );
