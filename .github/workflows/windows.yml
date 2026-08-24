@@ -91,7 +91,6 @@ jobs:
           ./test_core.exe
 
       - name: Build and run socket event regression test
-        shell: msys2 {0}
         run: |
           make -f win32/Makefile.win protobufs test_socket_events
           ./test_socket_events.exe
@@ -119,7 +118,6 @@ jobs:
           ./test_startup_options.exe
 
       - name: Build and run exit-diagnostics test
-        shell: msys2 {0}
         timeout-minutes: 2
         run: |
           make -f win32/Makefile.win test_exit_diagnostics

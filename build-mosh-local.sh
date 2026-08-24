@@ -1,7 +1,6 @@
 #!/bin/bash
 # ABOUTME: Locally cross-compile the Windows mosh engine (arm64 or x64) in Docker.
-# ABOUTME: MOSH_ARCH selects the driver, prefix, pkgconfig, and flags; runs the
-# ABOUTME: dependency smoke test and the Milestone 0 standalone engine build.
+# ABOUTME: MOSH_ARCH selects driver/prefix/pkgconfig/flags; runs the dep smoke test and M0 engine build.
 
 set -e
 

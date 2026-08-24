@@ -121,6 +121,8 @@ liveness gate: a failure is a real port defect, not an incompatible runner. It
 deliberately does **not** validate the `-mcpu=oryon-1` product ISA — that is
 owned by **M5** (execution on Snapdragon X hardware). The makefile default
 remains `-mcpu=oryon-1` for local and product builds; only CI overrides it.
+*(Historical M0 state; current CI passes `WIN_MCPU` per matrix leg — see
+Toolchain and dependencies.)*
 
 ## Result
 
@@ -547,8 +549,11 @@ clang 22 accepts that flag, and local invocations use the default — the smoke
 test exercises the same oryon-1 product codegen that M5 validates on
 Snapdragon X hardware (verified: the built exe contains LSE `ldadd`/`swpal`
 atomics that baseline aarch64 would not emit). CI passes
-`WIN_MCPU="-march=armv8-a -mtune=oryon-1"` so the gate binary runs on the Cobalt
-N2 runner (see the CI-build note at the top). As stated there, `-mcpu=oryon-1`
+job-level `WIN_MCPU` env from the CI matrix, and it differs per leg: the arm64
+leg passes `-mcpu=oryon-1` when it builds on the `windows-11-arm` runner, and
+the x64 leg passes `-march=meteorlake` on `windows-latest` (see the CI-build
+note at the top; the x64 gate binary therefore targets Meteor Lake-class
+CPUs, not pre-AVX2 x64 hosts). As stated there, `-mcpu=oryon-1`
 establishes an Oryon-class hardware target; it is *not* a portable
 Windows-ARM64 default, is validated only at M5 on Snapdragon X hardware, and
 must not silently ship as a general-release build.

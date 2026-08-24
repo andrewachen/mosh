@@ -3,7 +3,8 @@
 
 CXX = clang++
 AR = ar
-WIN_MCPU ?= -mcpu=oryon-1  # CI overrides per arch: -march=meteorlake for x64
+# CI overrides per arch: -march=meteorlake for x64 (job-level WIN_MCPU env).
+WIN_MCPU ?= -mcpu=oryon-1
 
 NM ?= llvm-nm
 OBJDUMP ?= llvm-objdump
