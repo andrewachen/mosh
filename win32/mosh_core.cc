@@ -34,6 +34,7 @@
 /* ABOUTME: Ports stmclient's state machine, prediction, overlay, and framebuffer diffing. */
 
 #include "win32/mosh_core.h"
+#include "win32/upstream_strings.h"
 
 #include <algorithm>
 #include <climits>
@@ -248,7 +249,7 @@ public:
 
       if ( quit_sequence_started ) {
         if ( byte == '.' ) {
-          begin_shutdown();
+          begin_shutdown( EXIT_ON_USER_REQUEST );
           return;
         } else if ( byte == 0x1a ) {
           /* Windows has no portable equivalent of STMClient's SIGSTOP path. */
@@ -292,20 +293,20 @@ public:
     return elapsed < deadline ? static_cast<int>( deadline - elapsed ) : 0;
   }
 
-  void begin_shutdown()
+  void begin_shutdown( const wchar_t *notification )
   {
     if ( finished || network->shutdown_in_progress() ) {
       return;
     }
     if ( !network->has_remote_addr() ) {
-      status = "Exiting before connecting to server.";
       finished = true;
       return;
     }
 
-    status = "Exiting...";
-    overlays.get_notification_engine().set_notification_string( L"Exiting...", true );
-    overlays.set_title_prefix( std::wstring( L"" ) );
+    if ( notification == nullptr ) {
+      notification = EXIT_ON_USER_REQUEST;
+    }
+    overlays.get_notification_engine().set_notification_string( notification, true );
     network->start_shutdown();
   }
 };
@@ -442,9 +443,22 @@ uint64_t MoshCore::cached_timestamp() const
   return frozen_timestamp();
 }
 
-void MoshCore::begin_shutdown()
+bool MoshCore::still_connecting() const
 {
-  impl->begin_shutdown();
+  return impl->network->get_remote_state_num() == 0;
+}
+
+void MoshCore::begin_shutdown( const wchar_t *notification )
+{
+  impl->begin_shutdown( notification );
+}
+
+const std::string& MoshCore::shutdown_transition()
+{
+  impl->overlays.get_notification_engine().set_notification_string( L"" );
+  impl->overlays.get_notification_engine().server_heard( timestamp() );
+  impl->overlays.set_title_prefix( L"" );
+  return next_frame();
 }
 
 bool MoshCore::is_finished() const

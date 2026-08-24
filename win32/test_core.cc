@@ -117,10 +117,13 @@ static void test_readable_socket_identity()
     Sleep( 260 );
   }
 
+  assert( core.socket_fds().size() == 1 );
   Sleep( 11000 );
   freeze_timestamp();
   core.feed_input( "h", 1 );
   core.tick();
+  const std::vector<intptr_t> old_fds = core.socket_fds();
+  assert( old_fds.size() == 2 );
   for ( const intptr_t fd : server.socket_fds() ) {
     server.on_readable( fd );
   }
@@ -133,16 +136,17 @@ static void test_readable_socket_identity()
   for ( const intptr_t fd : server.socket_fds() ) {
     server.on_readable( fd );
   }
-  Sleep( 260 );
-  freeze_timestamp();
-  server.tick();
-
   const std::vector<intptr_t> fds = core.socket_fds();
-  assert( fds.size() >= 2 );
+  assert( fds.size() == 2 );
   const SOCKET new_fd = static_cast<SOCKET>( fds.back() );
+  assert( new_fd != static_cast<SOCKET>( old_fds.front() ) );
   WSAEVENT event = WSACreateEvent();
   assert( event != WSA_INVALID_EVENT );
   assert( WSAEventSelect( new_fd, event, FD_READ ) == 0 );
+
+  Sleep( 260 );
+  freeze_timestamp();
+  server.tick();
   assert( WSAWaitForMultipleEvents( 1, &event, FALSE, 1000, FALSE ) == WSA_WAIT_EVENT_0 );
 
   WSANETWORKEVENTS network_events = {};
@@ -208,7 +212,9 @@ int main()
   TestServer server( 80, 24 );
   const std::string server_port = server.port();
   const std::string server_key = server.get_key();
+  server.set_title( "server title" );
   MoshCore core( "127.0.0.1", server_port.c_str(), server_key.c_str(), 80, 24, never_prediction() );
+  assert( core.still_connecting() );
 
   /* Display(false) deliberately supplies portable ANSI sequences; the native
      console frontend sets TERM before using environment-specific terminfo. */
@@ -227,6 +233,7 @@ int main()
     pause_for_network();
   }
   assert( got_frame );
+  assert( !core.still_connecting() );
 
   /* A resize to the dimensions the display already has changes nothing on
      screen, so it must not dirty the display: once the diff has settled, the
@@ -277,12 +284,39 @@ int main()
   }
 
   core.begin_shutdown();
+  bool saw_exit_notification = false;
+  for ( int i = 0; i < 400 && !saw_exit_notification; i++ ) {
+    service( core, server );
+    const std::string& frame = core.next_frame();
+    saw_exit_notification = frame.find( "Exiting on user request..." ) != std::string::npos;
+    pause_for_network();
+  }
+  assert( saw_exit_notification );
+
   for ( int i = 0; i < 400 && !core.is_finished(); i++ ) {
     service( core, server );
     pause_for_network();
   }
   assert( core.is_finished() );
   assert( core.exited_cleanly() );
+
+  /* The connected quit path must leave the title prefix in the rendered frame
+     until shutdown teardown; begin_shutdown() must not clear it early. */
+  {
+    TestServer titled_server( 80, 24 );
+    titled_server.set_title( "server title" );
+    MoshCore titled_core( "127.0.0.1", titled_server.port().c_str(), titled_server.get_key().c_str(),
+                          80, 24, never_prediction() );
+    for ( int i = 0; i < 200 && titled_core.still_connecting(); i++ ) {
+      service( titled_core, titled_server );
+      pause_for_network();
+    }
+    assert( !titled_core.still_connecting() );
+    titled_core.begin_shutdown();
+    service( titled_core, titled_server );
+    const std::string& title_frame = titled_core.next_frame();
+    assert( title_frame.find( "\033]0;[mosh] server title\007" ) != std::string::npos );
+  }
 
   puts( "test_core: passed" );
   return 0;

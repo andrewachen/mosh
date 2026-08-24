@@ -53,6 +53,8 @@ public:
 
   std::string port() const;
   std::string get_key() const;
+  /* Update the server framebuffer title and publish it in the next state. */
+  void set_title( const std::string& title );
   std::vector<intptr_t> socket_fds() const;
   void on_readable( intptr_t which_fd );
   void tick();

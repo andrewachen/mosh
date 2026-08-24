@@ -143,6 +143,12 @@ std::string TestServer::get_key() const
   return impl->network.get_key();
 }
 
+void TestServer::set_title( const std::string& title )
+{
+  impl->terminal.act( std::string( "\033]0;" ) + title + "\007" );
+  impl->network.set_current_state( impl->terminal );
+}
+
 std::vector<intptr_t> TestServer::socket_fds() const
 {
   std::vector<intptr_t> result;

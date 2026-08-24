@@ -107,7 +107,12 @@ public:
   uint64_t cached_timestamp() const;
 
   /* Lifecycle / status. */
-  void begin_shutdown();     /* user- or host-requested graceful shutdown */
+  /* Mirrors upstream STMClient::still_connecting() (src/frontend/stmclient.h:84).
+     True until the first remote state arrives. */
+  bool still_connecting() const;
+  void begin_shutdown( const wchar_t *notification = nullptr ); /* graceful shutdown */
+  /* Clears shutdown overlays and renders the final ordinary frame before restore. */
+  const std::string& shutdown_transition();
   bool is_finished() const;  /* true on clean shutdown, remote exit, or timeout */
   bool exited_cleanly() const;               /* clean vs unclean (for exit code/message) */
   const std::string& status_message() const; /* human-readable reason, mirrors upstream */
