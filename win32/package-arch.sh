@@ -40,12 +40,13 @@ MOSH_LICENSE
 # Sourceable, not executable (no shebang): it requires `arch' (arm64 or x64),
 # the LLVM tool paths set by package.sh (llvm_objdump/llvm_readobj), and the
 # `die' error helper from package.sh (prints "ERROR: ..." to stderr, exit 1).
-# It defines assert_arch FILE LABEL, which returns status 1 unless FILE is a
-# linkable PE/COFF image of the requested architecture. Under `set -e'
-# (package.sh) a bare call still aborts the script with exit 1, so staging
-# fails closed; under the discrimination test the mismatch is a plain non-zero
-# status that an `if` can inspect. Sourcing this file runs no staging logic,
-# so the arch gate can be unit-tested directly.
+# It defines assert_arch FILE LABEL — which returns status 1 unless FILE is a
+# linkable PE/COFF image of the requested architecture — and the native_path
+# helper it uses to hand the native Windows LLVM tools a C:\... path. Under
+# `set -e' (package.sh) a bare call still aborts the script with exit 1, so
+# staging fails closed; under the discrimination test the mismatch is a plain
+# non-zero status that an `if` can inspect. Sourcing this file runs no staging
+# logic, so the arch gate can be unit-tested directly.
 
 # Per-arch PE/COFF identity tokens, verified against LLVM 18 output. Resolved
 # per call, not at source time: the helper is sourced by both package.sh (arch

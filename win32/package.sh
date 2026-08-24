@@ -441,20 +441,25 @@ stage_static_license() {
   ((found_license)) || die "license text not found for statically folded $component"
 }
 
-# Static-license roots. The per-dll-dir roots appended below cover an explicit
-# --dll-dirs override (which is how a caller outside MSYS2 supplies license
-# text), so a missing MINGW_PREFIX here must NOT abort: only add the MSYS2
-# license root when MINGW_PREFIX is actually set. /opt/mosh-$arch is the local
-# cross-image dep tree. (--help exits before licensing starts, so it is never
-# affected by a missing MINGW_PREFIX.)
-license_roots=("/opt/mosh-$arch/share/licenses")
-if [[ -n "${MINGW_PREFIX:-}" ]]; then
-  license_roots+=("$MINGW_PREFIX/share/licenses")
-fi
+# Static-license roots, deduplicated so no root is staged twice. The MSYS2
+# license root comes first when MINGW_PREFIX is set (it is the canonical source
+# for the default dll_dirs), then the /opt/mosh-$arch cross-image dep tree. The
+# per-dll-dir roots below cover an explicit --dll-dirs override (which is how a
+# caller outside MSYS2 supplies license text), so a missing MINGW_PREFIX here
+# must NOT abort: only add the MSYS2 root when MINGW_PREFIX is actually set.
+# A root already seeded by an earlier step is skipped (the default dll_dirs
+# derives from MINGW_PREFIX and would otherwise repeat the MSYS2 root).
+# (--help exits before licensing starts, so it is never affected by a missing
+# MINGW_PREFIX.)
+license_roots=()
+[[ -n "${MINGW_PREFIX:-}" ]] && license_roots+=("$MINGW_PREFIX/share/licenses")
+license_roots+=("/opt/mosh-$arch/share/licenses")
 IFS=: read -r -a DLL_DIR_LIST <<<"$dll_dirs"
 for dll_dir in "${DLL_DIR_LIST[@]}"; do
   [[ -n "$dll_dir" ]] || continue
-  license_roots+=("$(dirname -- "$dll_dir")/share/licenses")
+  root="$(dirname -- "$dll_dir")/share/licenses"
+  # Skip a root already seeded above (default dll_dirs derives from MINGW_PREFIX).
+  [[ " ${license_roots[*]} " == *" $root "* ]] || license_roots+=("$root")
 done
 
 static_license_destination="$stage_dir/licenses/static"
