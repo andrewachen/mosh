@@ -1,8 +1,7 @@
-# ABOUTME: Cross-builds the Windows mosh engine dependencies for BOTH native
-#          Windows ARM64 and x64 in parallel.
-# ABOUTME: Two concurrent buildx stages (deps-arm64, deps-x64) compile the same
-#          dep recipes into /opt/mosh-arm64 and /opt/mosh-x64. Use with
-#          build-mosh-local.sh to select the arch at container run time.
+# ABOUTME: Cross-builds the Windows mosh engine dependencies (ARM64 and x64) as
+#          parallel buildx stages into /opt/mosh-arm64 and /opt/mosh-x64.
+# ABOUTME: deps-arm64/deps-x64 compile the shared docker/build-deps.sh; use the
+#          resulting mosh-win image with build-mosh-local.sh to pick the arch.
 
 FROM ubuntu:24.04 AS base
 
@@ -81,7 +80,9 @@ ENV TARGET=aarch64-w64-mingw32 CROSS_TRIPLE=aarch64-w64-mingw32 \
     AS=/usr/xcc/llvm-mingw/bin/aarch64-w64-mingw32-as \
     LD=/usr/xcc/llvm-mingw/bin/aarch64-w64-mingw32-ld \
     RANLIB=/usr/xcc/llvm-mingw/bin/aarch64-w64-mingw32-ranlib \
-    CMAKE_TOOLCHAIN_FILE=/usr/xcc/llvm-mingw/Toolchain.cmake
+    CMAKE_TOOLCHAIN_FILE=/usr/xcc/llvm-mingw/Toolchain.cmake \
+    PKG_CONFIG_LIBDIR=/opt/mosh-arm64/lib/pkgconfig \
+    PKG_CONFIG_SYSROOT_DIR=/
 RUN bash /usr/local/bin/build-deps.sh
 
 FROM base AS deps-x64
@@ -93,7 +94,9 @@ ENV TARGET=x86_64-w64-mingw32 CROSS_TRIPLE=x86_64-w64-mingw32 \
     AS=/usr/xcc/llvm-mingw/bin/x86_64-w64-mingw32-as \
     LD=/usr/xcc/llvm-mingw/bin/x86_64-w64-mingw32-ld \
     RANLIB=/usr/xcc/llvm-mingw/bin/x86_64-w64-mingw32-ranlib \
-    CMAKE_TOOLCHAIN_FILE=/usr/xcc/llvm-mingw/Toolchain.cmake
+    CMAKE_TOOLCHAIN_FILE=/usr/xcc/llvm-mingw/Toolchain.cmake \
+    PKG_CONFIG_LIBDIR=/opt/mosh-x64/lib/pkgconfig \
+    PKG_CONFIG_SYSROOT_DIR=/
 RUN bash /usr/local/bin/build-deps.sh
 
 FROM base AS final

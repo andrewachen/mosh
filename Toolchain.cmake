@@ -19,7 +19,11 @@ endif()
 
 set(CMAKE_C_COMPILER $ENV{CC})
 set(CMAKE_CXX_COMPILER $ENV{CXX})
-set(CMAKE_Fortran_COMPILER $ENV{FC})
+# No Fortran: llvm-mingw ships no gfortran and nothing here needs Fortran; only
+# set it if a caller actually exports FC.
+if(DEFINED ENV{FC})
+  set(CMAKE_Fortran_COMPILER $ENV{FC})
+endif()
 
 set(CMAKE_CXX_FLAGS "-I ${cross_root}/include/")
 
