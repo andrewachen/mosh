@@ -23,15 +23,15 @@ Severity is **high** for correctness, security, or resource-exhaustion consequen
 | `PLATFORM` | 8 |
 | `POLICY` | 3 |
 | `DEFERRED` | 0 |
-| `DEFECT` | 29 |
+| `DEFECT` | 26 |
 | `OPEN` | 3 |
-| **Total** | **43** |
+| **Total** | **40** |
 
-Twenty-five repaired or confirmed behavior records — connection-timeout shutdown, reader input ending, bare Ctrl-Z passthrough, interrupt control events versus a typed Ctrl-C, bounded close-handler restoration attempts, post-wait timestamp freezing, resize framebuffer ownership, UCRT wide-printf semantics, the retired command-line key channel, the bounded zero-length wait, the fresh-client-socket receive pass, `MOSH_NO_TERM_INIT`, `MOSH_ESCAPE_KEY`, `MOSH_PREDICTION_OVERWRITE`, the prediction display preference, the `[mosh] ` title prefix, transport verbosity, readable-socket identity (A29), recycled-socket re-arming (A30), unconnected UDP reset handling (A31), bootstrap drain cancellation (A35), failed reader waits (A42), reader input-handle teardown (A43), bounded reader-unwind teardown (A46), and astral-plane character decoding — are recorded at the end and are not counted as findings. The bounded zero-length wait is implemented rather than fully verified; the coverage it still owes is counted, as A26.
+Twenty-eight repaired or confirmed behavior records — connection-timeout shutdown, reader input ending, bare Ctrl-Z passthrough, interrupt control events versus a typed Ctrl-C, bounded close-handler restoration attempts, post-wait timestamp freezing, resize framebuffer ownership, UCRT wide-printf semantics, the retired command-line key channel, the bounded zero-length wait, the fresh-client-socket receive pass, `MOSH_NO_TERM_INIT`, `MOSH_ESCAPE_KEY`, `MOSH_PREDICTION_OVERWRITE`, the prediction display preference, the `[mosh] ` title prefix, transport verbosity, astral-plane character decoding, escape-shutdown wording and pre-connect behavior (A13), normal-exit cleanup (A14), exit-time diagnostics (A21), readable-socket identity (A29), recycled-socket re-arming (A30), unconnected UDP reset handling (A31), bootstrap drain cancellation (A35), failed reader waits (A42), reader input-handle teardown (A43), and bounded reader-unwind teardown (A46) — are recorded at the end and are not counted as findings. The bounded zero-length wait is implemented rather than fully verified; the coverage it still owes is counted, as A26.
 
 ## How the defects cluster
 
-Startup parsing is resolved for A1, A2, A3, and A25 through the shared `src/frontend/startup_config` module used by both frontends. A4's transport-verbosity tier is parsed independently by each frontend's getopt loop, and A20's presence check is independent in the Windows startup path; their behavior currently matches but can drift separately. The remaining configuration-adjacent defects are teardown behavior, not parsing: A13's escape-shutdown wording and A14's full normal-exit cleanup transition remain open, with A21 retaining the related exit diagnostics.
+Startup parsing is resolved for A1, A2, A3, and A25 through the shared `src/frontend/startup_config` module used by both frontends. A4's transport-verbosity tier is parsed independently by each frontend's getopt loop, and A20's presence check is independent in the Windows startup path; their behavior currently matches but can drift separately. The remaining configuration-adjacent defects are not parsing; the exit-path findings A13, A14, and A21 are repaired records below.
 
 The event-loop, timing, and diagnostics cluster is **A5, A6, A7, A8, A9, A12, A15, A22, A23, A24, A26, A27, and A32**. `STMClient::main()` was re-derived rather than extracted, so every ordering, exception-boundary, and poll-diagnostics decision was re-made independently; A27 is the unimplemented Select verbosity level-two-and-above tier of A4 and remains coupled to A26's wait seam. A32 is the status/cleanup reporting split. The final whole-branch review also found A33–A41 in bootstrap, locale, and console handling, and A47–A49 in the build and lifecycle bookkeeping. A29, A30, A31, A35, A42, A43, and A46 are repaired records in Confirmed parity; A32–A41 and A47–A49 remain deferred for later scheduling.
 
@@ -43,11 +43,11 @@ What must be settled first is the **behavioral contract**, not the code organiza
 
 Only the genuinely coupled findings wait on that contract: A5 and A9 (phase ordering) and A6, A7, and A15 (exception boundaries and retry timing). The cluster's former high-severity defect did not wait on it and is now repaired: the zero-wait throttle was an independent safety invariant with a local contract test, and holding a resource-exhaustion fix behind a speculative refactor would have been the wrong trade. The final whole-branch review added high-severity A29, A30, A31, A35, A42, A43, and A46; all are now repaired and recorded in Confirmed parity. S2 was reclassified from a release blocker to accepted-risk `POLICY` on 2026-08-12, matching the ecosystem's posture (see its record). A22 is local error-state bookkeeping and is likewise independently fixable.
 
-The remaining defects are exit-path omissions (A13, A14, A21), the loop's missing test boundary and level-two diagnostics gap (A26, A27), and the bootstrap, locale, console-lifecycle, and build defects A32–A41 and A47–A49. A28 is an open suspend-behavior decision alongside these defects. The final whole-branch review found the A29–A49 records; A29, A30, A31, A35, A42, A43, and A46 are repaired, while the remaining records are inventory entries for later scheduling.
+The remaining defects are the loop's missing test boundary and level-two diagnostics gap (A26, A27) and the bootstrap, locale, console-lifecycle, and build defects A32–A41 and A47–A49. A28 is an open suspend-behavior decision alongside these defects. The final whole-branch review found the A29–A49 records; A29, A30, A31, A35, A42, A43, and A46 are repaired, while the remaining records are inventory entries for later scheduling.
 
 ### The host loop, for reference
 
-Several findings below depend on the exact phase order, so it is stated once here. `ConsoleSession::Impl::run_loop()` (`win32/console_io.cc:1157`) runs:
+Several findings below depend on the exact phase order, so it is stated once here. `ConsoleSession::Impl::run_loop()` (`win32/console_io.cc:1169`) runs:
 
 ```
 tick  →  wait  →  refresh clock
@@ -71,7 +71,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### I1. Native-console terminal lifecycle replaces termios and terminfo
 
 * **Upstream:** `STMClient::init()` saves and raws `stdin` with termios and opens the terminal through the terminfo-configured `Display` (`src/frontend/stmclient.cc:82`); `Display(true)` consults terminfo including `smcup`/`rmcup` (`src/terminal/terminaldisplayinit.cc:83`).
-* **Port:** Constructs `Display(false)` and delegates raw mode, UTF-8 code pages, and VT output to `ConsoleSession` (`win32/mosh_core.cc:112`, `win32/console_io.cc:905`).
+* **Port:** Constructs `Display(false)` and delegates raw mode, UTF-8 code pages, and VT output to `ConsoleSession` (`win32/mosh_core.cc:114`, `win32/console_io.cc:907`).
 * **Consequence:** The executable uses the Windows Console VT contract rather than the user's terminfo.
 * **Class:** `PLATFORM`, low. Windows has no termios, and the native console requires `SetConsoleMode` plus VT escapes.
 
@@ -79,7 +79,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### I7. The executable is a standalone CLI, not a wrapper-invoked client
 
 * **Upstream:** `mosh-client` is wrapper-facing: it parses `-c`/`-v`, reads prediction settings from the environment, and returns `!success` (`src/frontend/mosh-client.cc:129`).
-* **Port:** A standalone executable that spawns `ssh` for a `<user@host>` target and reads the endpoint from the server's `MOSH CONNECT` reply, returning distinct `2`, `3`, or `4` for usage, frontend, and exception errors (`win32/mosh_main.cc:46`).
+* **Port:** A standalone executable that spawns `ssh` for a `<user@host>` target and reads the endpoint from the server's `MOSH CONNECT` reply, returning distinct `2`, `3`, or `4` for usage, frontend, and exception errors (`win32/mosh_main.cc:48`).
 * **Consequence:** Scripts written against `mosh-client` do not invoke `mosh.exe` compatibly, and error classes carry different numeric statuses. `mosh.exe` also collapses upstream's wrapper-plus-client pair into one process, so there is no separate client binary to invoke.
 * **Class:** `POLICY`, low. `mosh.exe` is deliberately standalone and is not required to mirror `mosh-client`'s invocation or exit statuses.
 * **Scope:** This finding covers invocation shape and exit status only. Credential transport is a separate question, recorded as S1 and now repaired — "standalone" does not imply "key on the command line."
@@ -88,10 +88,10 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 
 * **Upstream:** the wrapper discovers a client-visible address before starting the session. Its default `proxy` method installs a `ProxyCommand` of its own, pointing back at the wrapper's `--fake-proxy` mode, and pairs it with `-S none` (`scripts/mosh.pl:402`); `local` instead resolves the target client-side. Neither is a free lunch — `man/mosh.1` warns that the proxy method can fail with bastion hosts and that `local` ignores matching `ssh_config` stanzas — so upstream does not simply honor the user's configured route either. What it does have is a mechanism; the port has none.
 * **Port:** implements neither method, so the UDP target is always the server-reported `SSH_CONNECTION` address (`win32/mosh_bootstrap.cc:145`), and the bootstrap pins `ProxyJump` and `ProxyCommand` to none (`win32/mosh_bootstrap.cc:172`).
-* **Consequence:** behind NAT or a load balancer, `ssh` connects normally, `mosh-server` starts, and the address it reports is the server's own private one — so the UDP session times out with no diagnostic naming the address it tried, and a remote server is left running. The retired positional endpoint form was the only override, and it is gone.
+* **Consequence:** behind NAT or a load balancer, `ssh` connects normally, `mosh-server` starts, and the address it reports is the server's own private one — so the UDP session times out with a diagnostic naming the address it tried, and a remote server is left running. The retired positional endpoint form was the only override, and it is gone.
 * **Class:** `POLICY`, medium. Out of scope by decision: the supported case is a host the client can route to directly, and no discovery work is scheduled. Recorded as a finding because it is a user-visible behavioral difference from upstream, not because it is planned. Revisit if a supported deployment lands behind NAT or a load balancer; nothing else should reopen it. The decision was re-examined on 2026-08-05 with a full scope of the upstream-parity fix — the `proxy` fake-proxy is upstream's only non-experimental discovery method, and matching it costs roughly 400–750 LOC dominated by a Windows stdio↔socket relay and unverified Windows OpenSSH `ProxyCommand` quoting — and deferred again on that basis. The revisit scope, risks, pin interactions, and test plan are recorded in the wsltty repo at `docs/superpowers/plans/2026-08-05-mosh-remote-ip-parity-deferral.md`; read it before re-deriving anything.
 * **Fix, if the decision is revisited:** an override needs nothing secret on the command line — see the S1 record, which separates endpoint selection from key transport. Its shape is not settled here, and two values are involved that need not be equal: the port the server binds, which `mosh-server new -p PORT[:PORT2]` can already request (`src/frontend/mosh-server.cc:234`, forwarded by upstream as `--port`, `scripts/mosh.pl:159`) and this bootstrap does not expose, and the address and port the client aims at. An address rewrite alone covers only port-preserving translation. Implementing upstream's `local` or `proxy` discovery is the other path and keeps the interface unchanged.
-* **Related:** A21 covers the missing exit diagnostics. This is where they would matter most: a timeout that named the address it tried would turn an unexplained hang into an answer. I10 covers the proxy pins, which are a separate restriction.
+* **Related:** A21 (repaired) is where the exit diagnostics landed: a timeout now names the address it tried, turning an unexplained hang into an answer. I10 covers the proxy pins, which are a separate restriction.
 
 #### I10. Configured SSH routes are refused outright
 
@@ -127,14 +127,14 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### I2. Win32 waits on handles rather than `pselect` fds and POSIX signals
 
 * **Upstream:** Registers network fds and `STDIN_FILENO` and `pselect`s them, consuming SIGWINCH, SIGCONT, SIGTERM, SIGINT, SIGHUP, and SIGPIPE (`src/frontend/stmclient.cc:447`). `Select::select()` atomically unblocks signals for the wait (`src/util/select.h:143`).
-* **Port:** Waits with `WaitForMultipleObjects` on the reader event, the termination event, and `WSAEventSelect(FD_READ)` events (`win32/console_io.cc:1209`); the console handler translates control events into the termination event (`console_control_handler`, `win32/console_io.cc:655`).
+* **Port:** Waits with `WaitForMultipleObjects` on the reader event, the termination event, and `WSAEventSelect(FD_READ)` events (`win32/console_io.cc:1235`); the console handler translates control events into the termination event (`console_control_handler`, `win32/console_io.cc:655`).
 * **Consequence:** Control events and socket readiness are dispatched through handles rather than signals and fds.
 * **Class:** `PLATFORM`, low.
 
 #### A26. The event loop admits no test at its wait boundary
 
 * **Upstream:** `Select` is a mockable seam in practice — its `select()` takes the timeout as an argument, so a caller can be driven with any sequence of intervals and its behavior observed at the call.
-* **Port:** `run_loop()` computes the timeout from `core.tick()` and passes it to `WaitForMultipleObjects` inside the same function (`win32/console_io.cc:1201`, `win32/console_io.cc:1209`). Nothing external can supply the interval or observe the one the wait receives, and no harness can drive `MoshCore::tick()` to a chosen value: it returns the minimum of the transport's, the overlays', and the lifecycle's wait times (`win32/mosh_core.cc:425`).
+* **Port:** `run_loop()` computes the timeout from `core.tick()` and passes it to `WaitForMultipleObjects` inside the same function (`win32/console_io.cc:1227`, `win32/console_io.cc:1235`). Nothing external can supply the interval or observe the one the wait receives, and no harness can drive `MoshCore::tick()` to a chosen value: it returns the minimum of the transport's, the overlays', and the lifecycle's wait times (`win32/mosh_core.cc:423`).
 * **Consequence:** every per-iteration decision the loop makes about time is unverifiable by test. That is why the throttle repaired above is covered by a unit test on its arithmetic and a CI check on the source's shape rather than by the executable check its finding originally called for, and the same limit will apply to any later timing rule. The acceptance harness can start the loop and observe what it leaves behind; it cannot observe what the loop does per iteration.
 * **Class:** `DEFECT`, medium. Not `OPEN`: that a harness needs some way in is settled, and only where the boundary belongs is undecided.
 * **Fix:** a production step the loop calls through, which takes the requested interval and the active deadline, owns the throttle state, computes the effective timeout, hands it to a wait adapter, and returns what the loop should do next — dispatch, or restore now. An observable wait alone is not enough, and neither is a helper a test can call directly: that only re-proves the arithmetic. The seam has to be able to supply what `MoshCore::tick()` returns, to be the only route to a wait, and to make the post-wait decision observable, or the wiring stays exactly as unverified as it is today. Its adapter must also preserve the existing error contract, so that `WAIT_FAILED` and an out-of-range result keep propagating rather than being read as a timeout. The rule itself stays fixed at upstream's values; it is an invariant to preserve, not a policy to make configurable. Not a test-only injector, which would compile into the release build for one assertion. Where the boundary belongs is what the behavioral contract above has to answer, so settle it there rather than ahead of it.
@@ -143,21 +143,21 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### I3. Reader thread, CESU-8 conversion, bounded queue, and fair dispatch replace `read(stdin)`
 
 * **Upstream:** Reads up to 16 KiB synchronously from `STDIN_FILENO` once select reports it readable, then processes every returned byte in that pass (`STMClient::process_user_input`, `src/frontend/stmclient.cc:310`).
-* **Port:** A worker blocks in `ReadFile`, recombines conhost CESU-8 surrogate pairs, and queues up to `INPUT_QUEUE_CAP_BYTES` (4 MiB); the owner consumes at most `INPUT_BUDGET_BYTES` (64 KiB) per wakeup (`Reader::read_loop`, `win32/console_io.cc:340`; `win32/console_io.cc:1290`).
+* **Port:** A worker blocks in `ReadFile`, recombines conhost CESU-8 surrogate pairs, and queues up to `INPUT_QUEUE_CAP_BYTES` (4 MiB); the owner consumes at most `INPUT_BUDGET_BYTES` (64 KiB) per wakeup (`Reader::read_loop`, `win32/console_io.cc:340`; `win32/console_io.cc:1316`).
 * **Consequence:** A large paste is deliberately spread across loop iterations, so termination, resize, and socket work stay responsive; Windows input encoding is normalized before the shared parser sees it.
 * **Class:** `PLATFORM`, low. Console `ReadFile` does not provide selectable byte-stream semantics, and an unbounded drain would starve the other handle sources.
 
 #### I4. One readable socket is serviced per wakeup
 
 * **Upstream:** Inspects every fd in the ready set but records only a boolean, invoking `process_network_input()` once per loop (`src/frontend/stmclient.cc:476`).
-* **Port:** Re-tests the snapshot's WSA events, calls `core.on_readable()` for the first `FD_READ`, then breaks because the receive path can prune sockets (`win32/console_io.cc:1274`).
+* **Port:** Re-tests the snapshot's WSA events, calls `core.on_readable()` for the first `FD_READ`, then breaks because the receive path can prune sockets (`win32/console_io.cc:1300`).
 * **Consequence:** Both process one transport receive action per ordinary wakeup; the port additionally avoids dereferencing a snapshot invalidated by pruning.
 * **Class:** `PLATFORM`, low.
 
 #### A5. `tick()` runs before the wait, so frame generation sits between dispatch and transmission
 
 * **Upstream:** Processes ready network, input, and resize work and then calls `network->tick()` in the same pass (`src/frontend/stmclient.cc:486`).
-* **Port:** Calls `core.tick()` at the top of the iteration, before the wait (`win32/console_io.cc:1163`); dispatch happens after the wait, and the next `tick()` is reached only after `core.next_frame()` has been generated and written (`win32/console_io.cc:1295`).
+* **Port:** Calls `core.tick()` at the top of the iteration, before the wait (`win32/console_io.cc:1175`); dispatch happens after the wait, and the next `tick()` is reached only after `core.next_frame()` has been generated and written (`win32/console_io.cc:1321`).
 * **Consequence:** Bytes entered or state received in a wakeup are transmitted on the *next* iteration's tick rather than the current pass. Because no second wait intervenes, the added delay is the cost of frame generation and console output, not a poll interval — but that cost is unbounded under console output backpressure, and it is paid before every transmission.
 * **Class:** `DEFECT`, medium.
 * **Note:** The resize-poll cap does not add nearly 100 ms here: the loop returns directly to `tick()` after rendering.
@@ -165,7 +165,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A15. Up to 32 datagrams are drained per readable event, and a crypto error does not stop the drain
 
 * **Upstream:** `process_network_input()` calls `network->recv()` exactly once (`src/frontend/stmclient.cc:296`). Its crypto catch is around the whole main loop, so the first nonfatal `CryptoException` abandons the rest of that pass.
-* **Port:** Loops up to `MAX_DATAGRAMS_PER_READABLE` (32), breaking only on the synthetic `No packet received` condition or a network error (`MoshCore::Impl::process_network_input`, `win32/mosh_core.cc:197`). A nonfatal `CryptoException` executes `continue` (`win32/mosh_core.cc:212`), so the drain proceeds.
+* **Port:** Loops up to `MAX_DATAGRAMS_PER_READABLE` (32), breaking only on the synthetic `No packet received` condition or a network error (`MoshCore::Impl::process_network_input`, `win32/mosh_core.cc:199`). A nonfatal `CryptoException` executes `continue` (`win32/mosh_core.cc:218`), so the drain proceeds.
 * **Consequence:** Burst traffic is applied sooner, but input, frame, and termination work can queue behind up to 32 decrypt-and-apply operations, and overlay acknowledgement updates are repeated per datagram. Because crypto failures do not break the loop, a burst of 32 malformed datagrams costs 32 decrypt attempts and 32 overlay notification writes in one wakeup, where upstream would attempt one.
 * **Class:** `DEFECT`, medium.
 * **Why the drain is unnecessary:** `FD_READ` is level-triggered. `recvfrom` is the call that re-enables it, and Microsoft documents that "if the reenabling routine is called and the relevant network condition is still valid after the call, the network event is recorded and the associated event object is set," concluding that "a single recv in response to each `FD_READ` network event is appropriate." Queued datagrams therefore re-signal the event without a new packet arriving, so one receive per wakeup cannot strand them.
@@ -173,14 +173,14 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A6. A receive-side `NetworkException` has no retry delay
 
 * **Upstream:** Catches network exceptions around the entire loop, shows the error, sleeps 200 ms via `nanosleep`, and refreezes the clock (`src/frontend/stmclient.cc:562`).
-* **Port:** Catches receive exceptions inside `process_network_input()`, reports and breaks the drain (`win32/mosh_core.cc:204`); `MoshCore::on_readable` then continues into lifecycle processing (`win32/mosh_core.cc:360`). Only a *tick*-side exception requests any delay.
+* **Port:** Catches receive exceptions inside `process_network_input()`, reports and breaks the drain (`win32/mosh_core.cc:206`); `MoshCore::on_readable` then continues into lifecycle processing (`win32/mosh_core.cc:362`). Only a *tick*-side exception requests any delay.
 * **Consequence:** Repeated receive failures are retried at the normal event cadence rather than rate-limited, increasing wakeups and repeated error handling.
 * **Class:** `DEFECT`, medium. Introduced by moving exception boundaries.
 
 #### A22. A tick-side network error is cleared before it can be rendered
 
 * **Upstream:** A `NetworkException` from `network->tick()` unwinds to the catch outside the loop body (`src/frontend/stmclient.cc:562`), which sets the overlay network error and sleeps. The send-error block that would clear it (`src/frontend/stmclient.cc:553`) is skipped for that pass, so the error survives to the next frame.
-* **Port:** `MoshCore::tick()` catches the exception inline and sets the overlay network error (`win32/mosh_core.cc:400`), then falls through into the send-error block in the same call. When `get_send_error()` is empty — the normal case for a `tick()` throw — the `else` branch calls `clear_network_error()` (`win32/mosh_core.cc:417`), erasing the message before `next_frame()` ever runs.
+* **Port:** `MoshCore::tick()` catches the exception inline and sets the overlay network error (`win32/mosh_core.cc:398`), then falls through into the send-error block in the same call. When `get_send_error()` is empty — the normal case for a `tick()` throw — the `else` branch calls `clear_network_error()` (`win32/mosh_core.cc:415`), erasing the message before `next_frame()` ever runs.
 * **Consequence:** Transport errors raised by `tick()` are never shown to the user. Upstream displays them. This is a silent loss, not a timing difference: the notification is set and cleared within one function call.
 * **Reachable producer:** `Connection::send()` calls `hop_port()` on the client when *both* the last port choice and the last successful round trip are older than `PORT_HOP_INTERVAL` (10 s) — `src/network/network.cc:483`. `hop_port()` constructs a `Socket`, whose constructor throws `NetworkException` on `socket`, `ioctlsocket`, or `setsockopt` failure (`src/network/network.cc:159`). Note the second condition: a healthy client whose acknowledgements keep arriving never hops, so this fires only after roughly ten seconds without a successful round trip — when the connection is already in trouble and the user most needs to be told. That is also why an empty `send_error` is the normal case for a `tick()` throw: the `sendto` on that pass already succeeded, and the failure happens in the port hop afterwards.
 * **Class:** `DEFECT`, medium.
@@ -190,7 +190,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A7. A nonfatal crypto exception on the tick path requests a delay upstream does not
 
 * **Upstream:** Displays a nonfatal `CryptoException` and begins the next pass immediately; its crypto catch contains no sleep (`src/frontend/stmclient.cc:572`).
-* **Port:** Sets `retry_network_tick` and raises the returned wait time to at least 200 ms (`MoshCore::tick`, `win32/mosh_core.cc:427`).
+* **Port:** Sets `retry_network_tick` and raises the returned wait time to at least 200 ms (`MoshCore::tick`, `win32/mosh_core.cc:425`).
 * **Consequence:** The requested floor is not what the process actually waits. `run_loop()` caps the returned timeout at `RESIZE_POLL_CAP_MS` (100 ms) and any ready handle shortens it further, so the observable effect is that an otherwise shorter idle wait is raised to at most 100 ms. It is neither upstream's behavior (no delay) nor upstream's network-exception backoff (an unconditional 200 ms sleep).
 * **Class:** `DEFECT`, low.
 * **Fix:** A6 and A7 should be decided together — whether parity requires upstream's full-loop 200 ms pause or a network-only retry deadline. The current code splits the difference in a way that matches neither.
@@ -200,21 +200,21 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### I5. Resize is polled rather than SIGWINCH-gated
 
 * **Upstream:** Installs SIGWINCH and calls `process_resize()` only when that signal is consumed (`src/frontend/stmclient.cc:236`).
-* **Port:** Queries `GetConsoleScreenBufferInfo` after every wakeup — at most every 100 ms when idle, because of the `RESIZE_POLL_CAP_MS` cap — and calls `core.resize()` on a dimension change (`win32/console_io.cc:1258`).
+* **Port:** Queries `GetConsoleScreenBufferInfo` after every wakeup — at most every 100 ms when idle, because of the `RESIZE_POLL_CAP_MS` cap — and calls `core.resize()` on a dimension change (`win32/console_io.cc:1287`).
 * **Consequence:** Resize detection is delayed by up to the polling interval and costs a console round trip on idle wakeups.
 * **Class:** `PLATFORM`, low. There is no SIGWINCH equivalent for the native console.
 
 #### A8. During shutdown the port skips the prediction reset
 
 * **Upstream:** `process_resize()` guards only the `push_back` of the resize instruction on `!shutdown_in_progress()`; it calls `overlays.get_prediction_engine().reset()` unconditionally (`src/frontend/stmclient.cc:418`).
-* **Port:** `MoshCore::resize()` returns before both the enqueue and the reset when `finished` or `shutdown_in_progress()` (`win32/mosh_core.cc:378`).
+* **Port:** `MoshCore::resize()` returns before both the enqueue and the reset when `finished` or `shutdown_in_progress()` (`win32/mosh_core.cc:376`).
 * **Consequence:** A resize detected after graceful shutdown begins leaves stale local prediction overlays on screen until exit, where upstream invalidates them.
 * **Class:** `DEFECT`, low.
 
 #### A9. Initial and per-iteration frame timing differ
 
 * **Upstream:** Writes a full empty frame before entering its first select (`src/frontend/stmclient.cc:256`), and writes a frame before computing readiness on every pass thereafter (`src/frontend/stmclient.cc:450`).
-* **Port:** Writes the open sequence during setup (`win32/console_io.cc:951`) but calls `core.next_frame()` only after the wait and after dispatch (`win32/console_io.cc:1295`).
+* **Port:** Writes the open sequence during setup (`win32/console_io.cc:951`) but calls `core.next_frame()` only after the wait and after dispatch (`win32/console_io.cc:1321`).
 * **Consequence:** Initial screen initialization waits for the first wakeup — normally up to 100 ms — and there is no pre-wait frame emission.
 * **Class:** `DEFECT`, low.
 
@@ -232,7 +232,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A23. Session end has no producer
 
 * **Upstream:** SIGTERM and SIGHUP start network shutdown when a remote address exists (`src/frontend/stmclient.cc:508`).
-* **Port:** Defines `ShutdownCause::SESSION_END` and a cross-thread `request_shutdown()` entry point (`win32/console_io.h:67`, `win32/console_io.cc:1117`), but no hidden window or message pump publishes that cause from `WM_QUERYENDSESSION` or `WM_ENDSESSION`.
+* **Port:** Defines `ShutdownCause::SESSION_END` and a cross-thread `request_shutdown()` entry point (`win32/console_io.h:67`, `win32/console_io.cc:1129`), but no hidden window or message pump publishes that cause from `WM_QUERYENDSESSION` or `WM_ENDSESSION`.
 * **Consequence:** On logoff, the client has no protocol-shutdown path and the remote `mosh-server` can be left running.
 * **The producer cannot be scoped to `ConsoleSession`.** A session end can arrive during the SSH bootstrap — after `mosh-server` has started and returned its `MOSH CONNECT` reply, but before a `ConsoleSession` exists to receive `request_shutdown()`. In that window the notification has nothing to reach: the spawned `ssh` child is not reaped, the acquired key is not scrubbed, and the remote server is orphaned with no client that ever connected. Whatever owns the hidden window therefore has to outlive and precede the console session, and has to know which phase — bootstrapping, running, restoring — it is interrupting.
 * **Correcting this is not simply wiring the two messages to `request_shutdown()`.** `WM_QUERYENDSESSION` is a query that may be refused or cancelled, and a cancelled session end is followed by `WM_ENDSESSION` with `wParam == FALSE`. Transport shutdown is irreversible, so publishing on the query would destroy a session the user just kept. Only a committed `WM_ENDSESSION` may publish, exactly once. The attainable guarantee is a bounded best-effort shutdown attempt before the callback returns, not a stopped remote server: Windows may terminate the process once the callback returns, and the message budget for session end is not the `SPI_GETHUNGAPPTIMEOUT` value that governs `CTRL_CLOSE_EVENT`.
@@ -241,14 +241,14 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### I6c. Console restoration is not reliable during close handling
 
 * **Windows contract:** Microsoft's [HandlerRoutine documentation](https://learn.microsoft.com/windows/console/handlerroutine) states that console functions "may not work reliably" while processing `CTRL_CLOSE_EVENT`, `CTRL_LOGOFF_EVENT`, or `CTRL_SHUTDOWN_EVENT`, because console cleanup may already have run before the handler executes.
-* **Port:** The close path attempts to restore input and output modes before it signals `restored` (`Impl::restore`, `win32/console_io.cc:1031`, `win32/console_io.cc:1046`; `Impl::release_and_signal`, `win32/console_io.cc:973`, `win32/console_io.cc:982`, `win32/console_io.cc:984`). The completion event means only that the attempt completed; the cleanup report records whether it succeeded (`win32/mosh_main.cc:173`).
+* **Port:** The close path attempts to restore input and output modes before it signals `restored` (`Impl::restore`, `win32/console_io.cc:1033`, `win32/console_io.cc:1048`; `Impl::release_and_signal`, `win32/console_io.cc:975`, `win32/console_io.cc:984`, `win32/console_io.cc:986`). The completion event means only that the attempt completed; the cleanup report records whether it succeeded (`win32/mosh_main.cc:173`).
 * **Consequence:** Even when the handler waits within the close deadline, restoration can fail. The deadline machinery can bound the attempt; it cannot guarantee a restored console. Any user-visible cleanup report is best-effort because console output is itself among the operations documented as unreliable during close handling. Acceptance criteria for close must distinguish an attempt completing from restoration succeeding.
 * **Class:** `PLATFORM`, medium.
 
 #### A24. A blocked console write can consume the whole close deadline
 
 * **Upstream:** No analogue. POSIX imposes no forced-termination deadline on the client, so a slow terminal write delays shutdown without cutting it short.
-* **Port:** Every console write is a synchronous `WriteFile` on the owner thread — the open sequence during construction (`win32/console_io.cc:951`) and each frame in the loop (`win32/console_io.cc:1295`). Publishing a close deadline signals an event; it does not interrupt a write already in progress, and nothing cancels one.
+* **Port:** Every console write is a synchronous `WriteFile` on the owner thread — the open sequence during construction (`win32/console_io.cc:951`), each frame in the loop (`win32/console_io.cc:1321`), and the final transition frame on normal exit (`win32/console_io.cc:1206`). Publishing a close deadline signals an event; it does not interrupt a write already in progress, and nothing cancels one.
 * **Consequence:** If close arrives while the owner is inside a console write, the owner cannot reach `release_and_signal()`. The handler's wait expires, Windows terminates the process, and the console is left raw with no restoration *attempted* — the outcome the bounded close path exists to prevent. This is distinct from I6c, where the attempt runs and can fail; here it never starts. The `deadline-wedged-reader` mode does not cover it: it wedges the reader after the loop has regained control, not the writer, and not during construction.
 * **Class:** `DEFECT`, medium. A5 records the same unbounded write as a latency cost; this is its termination consequence.
 * **Fix:** Not chosen. Bounding it needs a cancellable output path — a dedicated writer whose handle can be cancelled, with a bounded join and a rule forbidding writes after restoration — or the close contract has to be stated as best-effort rather than bounded. That is a design decision, not a patch.
@@ -257,16 +257,9 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A12. Send errors become sticky final status messages
 
 * **Upstream:** Shows `get_send_error()` as a transient overlay network error, clears it, and clears the overlay when no error remains (`src/frontend/stmclient.cc:553`).
-* **Port:** Does the same overlay work but also copies every send error into `impl->status` (`MoshCore::tick`, `win32/mosh_core.cc:413`), which `mosh_main` prints at session end (`win32/mosh_main.cc:168`).
+* **Port:** Does the same overlay work but also copies every send error into `impl->status` (`MoshCore::tick`, `win32/mosh_core.cc:413`), which `mosh_main` prints at session end (`win32/mosh_main.cc:170-171`).
 * **Consequence:** A transient send error that fully recovered is still printed to stderr when the session later exits.
 * **Class:** `DEFECT`, low. `status` is never cleared on recovery.
-
-#### A13. Escape-shutdown wording and the pre-connect message differ
-
-* **Upstream:** Ctrl-^ `.` shows `Exiting on user request...`, starts shutdown only when connected, and otherwise returns false into the caller's pre-connect break path (`src/frontend/stmclient.cc:344`).
-* **Port:** `begin_shutdown()` shows `Exiting...`, and with no remote address sets the status `Exiting before connecting to server.` and finishes (`win32/mosh_core.cc:294`).
-* **Consequence:** The on-screen message differs, and the port prints a terse status where upstream prints its detailed firewall and UDP diagnostic (see A21).
-* **Class:** `DEFECT`, low.
 
 #### A16. The escape-suspend suspension mechanism is unavailable
 
@@ -284,25 +277,6 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 * **Class:** `OPEN`, low. A16 owns the platform limitation; choosing an unsupported notification versus literal pass-through has materially different remote-input semantics.
 * **Related:** A16 owns the unavailable suspension mechanism; A28 owns the unresolved substitute behavior.
 
-#### A14. Normal-exit cleanup is not one complete transition
-
-* **Upstream:** On a normal exit, `STMClient::shutdown()` clears the notification, marks the server heard, clears the title prefix, and renders one final frame through the ordinary render path (`src/frontend/stmclient.cc:153`, `src/frontend/stmclient.cc:156`, `src/frontend/stmclient.cc:157`, `src/frontend/stmclient.cc:158`, `src/frontend/stmclient.cc:159`).
-* **Port:** Restoration emits `close_sequence()` without a single MoshCore cleanup transition that performs the three explicit overlay mutations — notification clear, server-heard mark, and title-prefix clear — and then the final frame before restoration (`win32/console_io.cc:1031`, `win32/console_io.cc:1037`).
-* **Consequence:** Normal exits can retain stale notifications and title state on the last rendered screen, and cleanup responsibilities are split across unrelated paths. The final frame follows the ordinary cull/apply render path and does not imply a separate prediction reset.
-* **Class:** `DEFECT`, low. A14 owns the full normal-exit cleanup transition, including the final frame; it is not merely a missing frame.
-* **Timing rule:** For deadline-driven or failed-output exits, the final frame is skipped in favor of immediate restoration. A synchronous final frame must not consume the close-handler restoration reserve; see A24.
-* **Acceptance:** Cover local quit, peer-initiated shutdown, connection timeout, shutdown-ack timeout, fatal error, close-deadline termination, and output-write failure. The first six exercise the normal or immediate-restoration transition as applicable; output-write failure must verify restoration occurs without another frame attempt, and close-deadline termination must verify immediate restoration without a synchronous final frame.
-* **Source note:** `STMClient::shutdown()` explicitly performs only the three listed overlay mutations and `output_new_frame()`; prediction invalidation is not a separate shutdown operation.
-
-#### A21. Exit-time diagnostics and the exit banner are omitted
-
-* **Upstream:** After restoring the terminal, prints either detailed initial-connection troubleshooting (firewall, UDP port range, `-p`) or a warning that `mosh-server` may still be running (`src/frontend/stmclient.cc:220`), and finally `[mosh is exiting.]` (`src/frontend/mosh-client.cc:215`).
-* **Port:** `mosh_main` prints only `status_message()` when nonempty (`win32/mosh_main.cc:168`); there is no banner.
-* **Consequence:** A failed initial connection gives no firewall or UDP guidance, an unclean exit gives no server-still-running warning, and a clean exit has no banner.
-* **Class:** `DEFECT`, medium — the connection-failure guidance is the single most useful diagnostic upstream prints, and this is the platform where UDP is most likely to be firewalled.
-* **Note:** split from A14 because the owners differ. A14 is the session's cleanup transition; this is text `main` prints after restoration.
-* **Caution when implementing:** upstream's troubleshooting text recommends the `-p` option for selecting a UDP port. `mosh.exe` has no port selection of any kind — the endpoint comes from the server's `MOSH CONNECT` reply (I7) — so that sentence has no analogue and must be omitted rather than reworded. Do not reintroduce a positional port to give it one; whether client-side port selection should exist at all is a separate question this finding does not settle.
-
 #### A27. Select poll diagnostics are unimplemented above transport verbosity
 
 * **Upstream:** Repeatable `-vv` (verbosity greater than one) enables `Select` diagnostics, emitting per-poll and rate-limiting/throttle diagnostics (`src/util/select.h:128`, `src/util/select.h:132`, `src/util/select.h:137`). A single `-v` emits no Select diagnostics.
@@ -315,16 +289,16 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 
 #### A32. Remote logout does not set the user-quit status
 
-* **Upstream:** The exit path distinguishes user-requested shutdown from remote/session termination when selecting its final status and diagnostics (`src/frontend/stmclient.cc:344`, `src/frontend/stmclient.cc:508`).
-* **Port:** `begin_shutdown()` sets `status` to `"Exiting..."` for the local shutdown path (`win32/mosh_core.cc:295`, `win32/mosh_core.cc:306`), while `mosh_main` prints whatever status the session leaves behind (`win32/mosh_main.cc:180-184`). Remote logout can finish through the lifecycle paths without assigning that status.
-* **Consequence:** A user quit reports `Exiting...`, but a remotely initiated logout does not receive the same status transition or a corresponding status message.
+* **Upstream:** The exit path distinguishes user-requested shutdown from remote/session termination when selecting its final status and diagnostics (`src/frontend/stmclient.cc:296`, `src/frontend/stmclient.cc:457`).
+* **Port:** A local quit sets the `Exiting on user request...` notification and starts protocol shutdown (`win32/mosh_core.cc:296`, `win32/mosh_core.cc:306`, `win32/mosh_core.cc:307`); `mosh_main` prints the resulting status message when one exists (`win32/mosh_main.cc:170-171`). Remote logout can finish through the lifecycle paths without assigning a corresponding status message.
+* **Consequence:** User-requested and remotely initiated exits still expose different final diagnostics; the port does not provide a distinct remote-logout status transition beyond the repaired A21 exit banner.
 * **Class:** `DEFECT`, low — exit diagnostics.
 
 #### A33. Non-`ConsoleError` setup throws lose the cleanup report
 
 * **Upstream:** The frontend's outer exception handling preserves the terminal cleanup and reports the resulting failure after teardown (`src/frontend/mosh-client.cc:203-215`).
-* **Port:** `run_console_session()` assigns `*cleanup` only after `ConsoleSession` construction succeeds or inside the catch surrounding `session.run()` (`win32/mosh_main.cc:113-127`). Its outer `ConsoleError`, `NetworkException`, and `std::exception` handlers only scrub the key and set the message/status (`win32/mosh_main.cc:129-135`).
-* **Consequence:** A non-`ConsoleError` throw during session construction or setup can execute the console rollback path but return without its `CleanupReport`; `mosh_main` then cannot print the rollback failure or reader error (`win32/mosh_main.cc:182-190`).
+* **Port:** `run_console_session()` assigns `*cleanup` only after `ConsoleSession` construction succeeds or inside the catch surrounding `session.run()` (`win32/mosh_main.cc:115-127`). Its outer `ConsoleError`, `NetworkException`, and `std::exception` handlers only scrub the key and set the message/status (`win32/mosh_main.cc:120-125`).
+* **Consequence:** A non-`ConsoleError` throw during session construction or setup can execute the console rollback path but return without its `CleanupReport`; `mosh_main` then cannot print the rollback failure or reader error (`win32/mosh_main.cc:173-178`).
 * **Class:** `DEFECT`, medium — cleanup diagnostics.
 
 #### A34. `SearchPathW` receives raw `PATH` components
@@ -425,7 +399,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A20. `MOSH_NO_TERM_INIT` gates only the alternate-screen pair
 
 * **Upstream:** `Display::open()`/`close()` emit `smcup`/`rmcup` only when terminfo initialization was not suppressed; `MOSH_NO_TERM_INIT` suppresses it (`src/terminal/terminaldisplayinit.cc:83`).
-* **Port:** Reads `MOSH_NO_TERM_INIT` during startup parsing (`win32/mosh_main.cc:167`, `win32/startup_options.cc:53`) and gates the literal alternate-screen pair around `display.open()`/`display.close()` (`win32/mosh_core.cc:146`).
+* **Port:** Reads `MOSH_NO_TERM_INIT` during startup parsing (`win32/mosh_main.cc:150`, `win32/startup_options.cc:53`) and gates the literal alternate-screen pair around `display.open()`/`display.close()` (`win32/mosh_core.cc:147`).
 * **Consequence:** Setting `MOSH_NO_TERM_INIT` keeps the session on the primary screen buffer, matching upstream. Application-cursor mode is unaffected; only the alternate-screen pair is gated.
 * **Status:** parity. The Windows startup path gates the same alternate-screen pair; application-cursor mode remains unaffected.
 * **Verification:** `win32/test_startup_options.cc` covers absent/set `MOSH_NO_TERM_INIT` in `test_no_term_init()`; `test_console_lifecycle.exe no-term-init` covers the emitted alternate-screen behavior.
@@ -433,15 +407,15 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A1. `MOSH_ESCAPE_KEY` is parsed identically by both frontends
 
 * **Upstream:** Parses `MOSH_ESCAPE_KEY`, accepts one ASCII key or disables the parser on an empty value, derives the literal-pass spelling and line-start rule, and rejects dangerous controls (`src/frontend/startup_config.cc:42`).
-* **Port:** `parse_startup_options` uses the shared `parse_escape_key` result, and `MoshCore` consumes the parsed key, literal-pass keys, line-start rule, and help spelling (`win32/startup_options.cc:51`, `win32/mosh_core.cc:116`, `win32/mosh_core.cc:128`).
+* **Port:** `parse_startup_options` uses the shared `parse_escape_key` result, and `MoshCore` consumes the parsed key, literal-pass keys, line-start rule, and help spelling (`win32/startup_options.cc:51`, `win32/mosh_core.cc:117`, `win32/mosh_core.cc:129`).
 * **Consequence:** Windows accepts the same escape-key settings and disables the parser for an empty value, with the same literal-pass and line-start behavior as `STMClient`.
 * **Status:** parity. The parser is shared with `STMClient` via `src/frontend/startup_config`, so both frontends parse identically.
-* **Verification:** `win32/test_startup_options.cc::test_escape_key()` covers the parsed snapshot; `test_console_lifecycle.exe escape-key` covers custom, non-escape, and disabled parser behavior; default Ctrl-^ quit is covered by `win32/test_console_lifecycle.cc:1075` and `:1157`.
+* **Verification:** `win32/test_startup_options.cc::test_escape_key()` covers the parsed snapshot; `test_console_lifecycle.exe escape-key` covers custom, non-escape, and disabled parser behavior; default Ctrl-^ quit is covered by `win32/test_console_lifecycle.cc:975` and `:1331`.
 
 #### A2. `MOSH_PREDICTION_OVERWRITE=yes` is parsed identically by both frontends
 
 * **Upstream:** Enables insertion-overwrite prediction when the variable is exactly `yes` (`src/frontend/startup_config.cc:125`, used by `src/frontend/stmclient.h:114`).
-* **Port:** `parse_startup_options` parses the same value and `MoshCore` enables `PredictionEngine::set_predict_overwrite()` when it is true (`win32/startup_options.cc:50`, `win32/mosh_core.cc:123`).
+* **Port:** `parse_startup_options` parses the same value and `MoshCore` enables `PredictionEngine::set_predict_overwrite()` when it is true (`win32/startup_options.cc:50`, `win32/mosh_core.cc:124`).
 * **Consequence:** Insert and delete prediction use the same overwrite setting before the server echo arrives.
 * **Status:** parity. The parser is shared with `STMClient` via `src/frontend/startup_config`, so both frontends parse identically.
 * **Verification:** `win32/test_startup_options.cc::test_prediction_overwrite()` covers the `yes` snapshot; the startup-options test also covers the shared parser wiring used by both frontends.
@@ -449,7 +423,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A25. The prediction display preference is parsed identically by both frontends
 
 * **Upstream:** `STMClient` and the Windows startup path use the shared `parse_prediction_display` parser, accepting `always`, `never`, `adaptive`, and `experimental`, with an absent variable selecting `Adaptive` (`src/frontend/startup_config.cc:101`).
-* **Port:** Reads and validates `MOSH_PREDICTION_DISPLAY` before `mosh_bootstrap`, then passes the typed preference to `MoshCore` (`win32/mosh_main.cc:163`, `win32/startup_options.cc:45`, `win32/mosh_core.cc:123`).
+* **Port:** Reads and validates `MOSH_PREDICTION_DISPLAY` before `mosh_bootstrap`, then passes the typed preference to `MoshCore` (`win32/mosh_main.cc:163`, `win32/startup_options.cc:45`, `win32/mosh_core.cc:124`).
 * **Consequence:** Windows exposes the same four prediction display preferences and rejects invalid values before starting the remote server.
 * **Status:** parity. The parser is shared with `STMClient` via `src/frontend/startup_config`, so both frontends parse identically.
 * **Verification:** `win32/test_startup_options.cc::test_prediction_display()` covers absent, accepted, and invalid preference snapshots.
@@ -457,10 +431,32 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A3. The `[mosh] ` title prefix is applied like `STMClient`
 
 * **Upstream:** `STMClient::init()` sets the prefix unless `MOSH_TITLE_NOPREFIX` is set, and `STMClient::shutdown()` clears it before the final frame (`src/frontend/stmclient.cc:127`, `src/frontend/stmclient.cc:158`).
-* **Port:** The shared parser determines whether the prefix is wanted, `MoshCore` applies `[mosh] ` during construction, and `begin_shutdown()` clears it on a local quit (`win32/startup_options.cc:52`, `win32/mosh_core.cc:154`, `win32/mosh_core.cc:308`).
-* **Consequence:** Remote title updates are marked as mosh titles during the session and the prefix is cleared on a local quit. On a peer-initiated exit, the title can remain stale until A14's complete normal-exit cleanup transition is implemented; this is an accepted deferred coupling between A3 and A14.
-* **Status:** parity within the implemented lifecycle. The parser is shared with `STMClient` via `src/frontend/startup_config`, so both frontends parse identically; peer-initiated final cleanup remains deferred under A14.
-* **Verification:** `win32/test_startup_options.cc::test_title_prefix()` covers absent/set `MOSH_TITLE_NOPREFIX`; the A14 acceptance matrix must cover peer-initiated teardown timing.
+* **Port:** The shared parser determines whether the prefix is wanted, `MoshCore` applies `[mosh] ` during construction, and `shutdown_transition()` clears it before the final frame (`win32/startup_options.cc:52`, `win32/mosh_core.cc:457`).
+* **Consequence:** Remote title updates are marked as mosh titles during the session and the prefix is cleared before both local and peer-initiated final frames.
+* **Status:** parity. The parser is shared with `STMClient` via `src/frontend/startup_config`, so both frontends parse identically; final cleanup is covered under A14.
+* **Verification:** `win32/test_startup_options.cc::test_title_prefix()` covers absent/set `MOSH_TITLE_NOPREFIX`; `win32/test_console_lifecycle.cc:975` and `:1074` cover local and peer-initiated teardown timing.
+
+#### A13. Escape-shutdown wording and pre-connect behavior (repaired)
+
+* **Upstream:** Ctrl-^ followed by `.` displays `Exiting on user request...`; input loss displays `Exiting...`; and a delivered signal displays `Signal received, shutting down...` (`src/frontend/stmclient.cc:296`, `src/frontend/stmclient.cc:444`, `src/frontend/stmclient.cc:462`). Before the first remote state, the client still has a remote address from construction while `still_connecting()` remains true; quitting then takes the bounded transport shutdown path, leaves status empty, and selects the never-connected diagnostic at exit.
+* **Port:** `MoshCore::begin_shutdown()` accepts the cause-specific notification, while the escape-`.` path selects the user-request wording and `ConsoleSession::begin_graceful_shutdown()` maps `IO_LOSS` to `Exiting...` and control events to `Signal received, shutting down...` (`win32/mosh_core.cc:296`, `win32/mosh_core.cc:451`, `win32/console_io.cc:1147`). A quit before the first remote state runs the bounded shutdown path and preserves `still_connecting()` for the never-connected diagnostic (`win32/mosh_core.cc:301`, `win32/mosh_main.cc:111`).
+* **Status:** repaired. The three-way wording and pre-connect predicates are covered by the core and lifecycle paths; status remains empty until exit diagnostics are selected.
+
+#### A14. Normal-exit cleanup is one complete transition (repaired)
+
+* **Original defect:** Normal exits previously restored the console without one MoshCore transition to clear the notification, mark the server heard, clear the title prefix, and render one final frame through the ordinary path.
+* **Upstream:** `STMClient::shutdown()` performs those three overlay mutations and `output_new_frame()` (`src/frontend/stmclient.cc:153`, `src/frontend/stmclient.cc:156`, `src/frontend/stmclient.cc:157`, `src/frontend/stmclient.cc:158`, `src/frontend/stmclient.cc:159`).
+* **Port:** `MoshCore::shutdown_transition()` now performs the same mutations and returns `next_frame()` (`win32/mosh_core.cc:453`, `win32/mosh_core.cc:455`, `win32/mosh_core.cc:456`, `win32/mosh_core.cc:457`, `win32/mosh_core.cc:458`). `ConsoleSession::Impl::run_loop()` invokes it for a finished core with no termination deadline and re-checks the deadline immediately before the synchronous write (`win32/console_io.cc:1197`, `win32/console_io.cc:1198`, `win32/console_io.cc:1199`, `win32/console_io.cc:1202`, `win32/console_io.cc:1203`, `win32/console_io.cc:1206`); deadline-driven or output-failed exits restore without a final frame.
+* **Deviations:** Output-write-failure rows have no honest injection seam in the lifecycle harness. Fatal-error exits now run the transition and final-frame guard in `Impl::run()`'s catch; native injection-based testing of that path remains unavailable. Deadline scenarios prove immediate restoration with zero final-frame writes (`win32/test_console_lifecycle.cc:1158`, `win32/test_console_lifecycle.cc:1221`).
+* **Status:** repaired. Local quit, peer shutdown, connection timeout, upstream-length pre-connect quit, graceful-shutdown, and the fatal-error catch path require the normal transition and one final frame (`win32/test_console_lifecycle.cc:975`, `win32/test_console_lifecycle.cc:1074`, `win32/test_console_lifecycle.cc:1288`, `win32/test_console_lifecycle.cc:1331`, `win32/test_console_lifecycle.cc:1384`); the final-frame counter and restoration assertions are in those scenarios. The pre-connect quit's final frame is non-empty because the connecting notification is live by the first tick and clearing it renders a change.
+* **Source note:** Prediction invalidation is not a separate shutdown operation; the transition follows the upstream three mutations and ordinary frame render.
+
+#### A21. Exit-time diagnostics and the exit banner are emitted (repaired)
+
+* **Original defect:** After restoration, the port previously printed only `status_message()`, omitting upstream's initial-connection troubleshooting, unclean-exit warning, and exit banner.
+* **Upstream:** The connection-failure and unclean-exit strings mirror `src/frontend/stmclient.cc:169-182` (with the unsupported `-p` sentence omitted), and `[mosh is exiting.]` mirrors `src/frontend/mosh-client.cc:215`.
+* **Port:** `main()` selects the diagnostic after the session facts are available and prints it to stderr, then prints the exit banner to stdout (`win32/mosh_main.cc:180`, `win32/mosh_main.cc:181`, `win32/mosh_main.cc:184`, `win32/mosh_main.cc:187`). The literals are kept with their upstream citations in `win32/upstream_strings.h:8`, `win32/upstream_strings.h:13`, and `win32/upstream_strings.h:18`; selection is covered by `exit_diagnostic()` (`win32/exit_diagnostics.cc:10`). The port additionally prints its own `status_message()` line when one exists (`win32/mosh_main.cc:170-171`) — a pre-existing port channel this milestone retained deliberately, so a timeout exit shows both the status line and the upstream diagnostic where upstream shows only the diagnostic. Diagnostics and the banner are best-effort on `CTRL_CLOSE_EVENT`: once restoration is signaled the handler may return and Windows may terminate the process before post-session output completes (see I6b).
+* **Status:** repaired. `win32/test_exit_diagnostics.cc:42` covers the never-connected diagnostic and rejects `-p`, `:58` covers the connected-unclean warning, `:70` covers clean-exit suppression, and `:80` covers the exact banner.
 
 #### A4. Repeatable `-v` enables transport diagnostics
 
@@ -543,7 +539,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### Connection timeout enters graceful shutdown
 
 * **Upstream:** After more than 15,000 ms without a remote state, sets the notification and calls `network->start_shutdown()` (`src/frontend/stmclient.cc:539`); the transport then bounds shutdown by 16 packets or 10 seconds (`src/network/transportsender-impl.h:373`).
-* **Port:** Uses the same `CONNECTION_TIMEOUT = 15000` (`win32/mosh_core.cc:64`) and calls `network->start_shutdown()` after setting the notification (`MoshCore::Impl::update_lifecycle`, `win32/mosh_core.cc:184`, `win32/mosh_core.cc:187`).
+* **Port:** Uses the same `CONNECTION_TIMEOUT = 15000` (`win32/mosh_core.cc:67`) and calls `network->start_shutdown()` after setting the notification (`MoshCore::Impl::update_lifecycle`, `win32/mosh_core.cc:184`, `win32/mosh_core.cc:187`).
 * **Status:** parity. The 15-second detection threshold and the transition into the bounded shutdown protocol match.
 
 #### An interrupt control event enters protocol shutdown; a typed Ctrl-C does not
@@ -556,7 +552,7 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 
 #### The close control handler waits for the restoration attempt
 
-* **Port:** `console_control_handler` publishes the close deadline and waits for `control->restored` for the remaining OS budget (`win32/console_io.cc:655`, `win32/console_io.cc:676`, `win32/console_io.cc:681`); `Impl::release_and_signal` attempts restoration and signals that event (`win32/console_io.cc:973`, `win32/console_io.cc:982`, `win32/console_io.cc:984`).
+* **Port:** `console_control_handler` publishes the close deadline and waits for `control->restored` for the remaining OS budget (`win32/console_io.cc:655`, `win32/console_io.cc:676`, `win32/console_io.cc:681`); `Impl::release_and_signal` attempts restoration and signals that event (`win32/console_io.cc:975`, `win32/console_io.cc:984`, `win32/console_io.cc:986`).
 * **Status:** parity with the required bounded close-handling contract, for the paths that reach teardown. Returning `TRUE` alone cannot preserve the restoration-attempt window: Microsoft's [HandlerRoutine documentation](https://learn.microsoft.com/windows/console/handlerroutine) says the system terminates the process when `HandlerRoutine` returns `TRUE` or when the timeout expires. A signalled `restored` event means the attempt finished, not that it succeeded; the cleanup report holds that result. Waiting is therefore required, not defensive.
 * **Limit:** the handler bounds its own wait, which is not the same as bounding the owner. An owner blocked in a console write never reaches teardown at all — see A24.
 
@@ -601,10 +597,10 @@ There is no second wait between dispatch and the next `tick()`. Upstream's order
 #### A repeatedly requested zero wait is bounded (A18, implemented; loop-integration verification pending A26)
 
 * **Upstream:** `Select::select()` counts consecutive zero-timeout calls and raises the timeout to 1 ms from the tenth onward, clearing the count when a nonzero timeout appears (`src/util/select.h:131`, `MAX_POLLS = 10` at `src/util/select.h:230`).
-* **Port:** `PollThrottle::bound` applies the same rule — the first nine consecutive zero requests pass through, the tenth and every zero after it return 1 ms, and a nonzero request passes through and clears the count (`win32/console_io.cc:757`). `run_loop()` holds one per session and applies it to the interval the sources request (`win32/console_io.cc:1201`).
+* **Port:** `PollThrottle::bound` applies the same rule — the first nine consecutive zero requests pass through, the tenth and every zero after it return 1 ms, and a nonzero request passes through and clears the count (`win32/console_io.cc:757`). `run_loop()` holds one per session and applies it to the interval the sources request (`win32/console_io.cc:1227`).
 * **Status:** implemented, and behaviorally at parity on the rule — the two agree call for call over the range upstream defines. Verification is split deliberately: the rule is covered, its use by the loop is not, and A26 holds that. The record sits here rather than in the findings because the port no longer spins; a reader looking up whether the defect is live must not be told it is. One deliberate difference: the port's count saturates at ten where upstream's keeps incrementing a signed `int` that would eventually overflow. Saturation changes no result and hardens the port.
 * **Scope:** the throttle covers the requested interval only, and it bounds the timeout rather than the iteration rate — a wait whose handle is already signalled returns at once, as upstream's `pselect` does. The termination-deadline clamp below it is excluded on purpose, because it drives to zero as the restoration reserve approaches and a floor there would only delay the loop's exit: that zero costs a single wait, since `restoration_reserve_reached` applies the identical predicate to the same deadline (`win32/console_io.cc:1146`, `win32/console_io.cc:1205`) and is re-evaluated just past the wait, breaking the loop in that same iteration ahead of the resize, socket, input, and frame work (`win32/console_io.cc:1247`). It is not ahead of *everything*: the termination check precedes it (`win32/console_io.cc:1243`), so a shutdown request first observed on this wakeup performs its state transition — status, notification, `start_shutdown()` — inside the reserve before the break. Those are state assignments rather than I/O, and this ordering predates the throttle and is unchanged by it, but the reserve is a restoration budget and what may run inside it should be stated rather than assumed. The deadline it reads only ever tightens — the sole publisher takes the earlier of the two candidates (`win32/console_io.cc:157`) — so a clamp that has fired cannot be undone by a later publication. The reader's teardown wait is not throttled and does not need to be: it returns outright when its remaining budget reaches zero rather than waiting on it (`win32/console_io.cc:559`).
-* **Verification:** a unit test drives `PollThrottle` across the boundary, across a reset by a nonzero request both before and after the floor engages, and well past the boundary, which is what would catch a counter that wraps or resets itself into another burst of zero waits (`win32/test_console_lifecycle.cc:1187`). CI runs it on native ARM64, and a separate CI step asserts that the loop's sole wait takes its timeout from the throttle.
+* **Verification:** a unit test drives `PollThrottle` across the boundary, across a reset by a nonzero request both before and after the floor engages, and well past the boundary, which is what would catch a counter that wraps or resets itself into another burst of zero waits (`win32/test_console_lifecycle.cc:1473`). CI runs it on native ARM64, and a separate CI step asserts that the loop's sole wait takes its timeout from the throttle.
 * **Limit, and it is the substantive one:** nothing executable covers the loop's *use* of the throttle. The unit test proves arithmetic. The CI step compares source text against the four lines this wiring occupies, so it is a deletion alarm, not a proof: it does not establish data flow or ordering, and a rewrite that reaches a wait by another route defeats it. The finding's original acceptance criterion — drive the loop with sustained zero requests and observe the wait floor — is therefore **not met**, and no harness can meet it today. A26 holds that gap and the criterion that would close it.
 
 #### Astral-plane characters decode to one wide cell (repaired)
