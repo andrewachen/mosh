@@ -34,7 +34,9 @@
 /* ABOUTME: Restores the console before reporting any session or frontend failure. */
 
 #include "win32/console_io.h"
+#include "win32/exit_diagnostics.h"
 #include "win32/mosh_bootstrap.h"
+#include "win32/upstream_strings.h"
 #include "win32/startup_options.h"
 #include "src/network/network.h"
 
@@ -85,25 +87,35 @@ void scrub_key( std::string *key )   // idempotent
 
 int run_console_session( const char *ip, const char *port, std::string *key,
                          const StartupOptions &opts, int cols, int rows, std::string *message,
-                         CleanupReport *cleanup )
+                         CleanupReport *cleanup, bool *have_exit_facts, bool *never_connected,
+                         bool *clean_shutdown )
 {
   int session_rc = 1;
+  *have_exit_facts = false;
+  *never_connected = false;
+  *clean_shutdown = false;
   try {
     MoshCore core( ip, port, key->c_str(), cols, rows, opts );
     scrub_key( key );                          // base64 key consumed by the ctor
     /* The constructor performs every console mutation and writes the open
        sequence; by the time it returns the session is fully live. */
     ConsoleSession session( core );
+    *have_exit_facts = true;
+    *never_connected = core.still_connecting();
     try {
       session.run();
     } catch ( ... ) {
       /* run() restores before propagating, so the report is available
          here whether or not it threw. */
       *cleanup = session.cleanup_report();
+      *never_connected = core.still_connecting();
+      *clean_shutdown = core.exited_cleanly();
       throw;
     }
     *cleanup = session.cleanup_report();
-    session_rc = core.exited_cleanly() ? 0 : 1;
+    *never_connected = core.still_connecting();
+    *clean_shutdown = core.exited_cleanly();
+    session_rc = *clean_shutdown ? 0 : 1;
     *message = core.status_message();
   } catch ( const ConsoleError &error ) {
     scrub_key( key ); session_rc = FRONTEND_FAILURE_EXIT_CODE; *message = error.what();
@@ -149,8 +161,12 @@ int main( int argc, char *argv[] )
     const std::string err = mosh_bootstrap( destination, &ep );
     if ( !err.empty() ) { std::fprintf( stderr, "%s\n", err.c_str() ); return FRONTEND_FAILURE_EXIT_CODE; }
     std::string message;
+    bool have_exit_facts = false;
+    bool never_connected = false;
+    bool clean_shutdown = false;
     const int session_rc = run_console_session( ep.ip.c_str(), ep.port.c_str(), &ep.key, opts, cols, rows,
-                                                &message, &cleanup );
+                                                &message, &cleanup, &have_exit_facts, &never_connected,
+                                                &clean_shutdown );
     if ( !message.empty() ) {
       std::fprintf( stderr, "%s\n", message.c_str() );
     }
@@ -161,6 +177,14 @@ int main( int argc, char *argv[] )
       std::fprintf( stderr, "warning: %s failed while restoring the console (GetLastError=%lu)\n",
                     cleanup_op_name( cleanup.failed_op ), cleanup.first_error );
     }
+    if ( have_exit_facts ) {
+      const std::string diagnostic = exit_diagnostic( never_connected, clean_shutdown,
+                                                      ep.ip.c_str(), ep.port.c_str() );
+      if ( !diagnostic.empty() ) {
+        std::fputs( diagnostic.c_str(), stderr );
+      }
+    }
+    std::fputs( EXIT_BANNER, stdout );
     return session_rc;
   } catch ( const ConsoleError &error ) {
     std::fprintf( stderr, "%s\n", error.what() ); return FRONTEND_FAILURE_EXIT_CODE;

@@ -82,7 +82,7 @@ LIBS = src/crypto/libmoshcrypto.a src/protobufs/libmoshprotos.a src/util/libmosh
 
 .PHONY: all clean protobufs check config
 
-all: $(LIBS) mosh.exe test_loopback test_core test_socket_events test_console_lifecycle test_bootstrap test_startup_options test_terminal_width test_prediction_width bootstrap_child $(BUILD)/win32/console_io_include_check.o
+all: $(LIBS) mosh.exe test_loopback test_core test_socket_events test_console_lifecycle test_bootstrap test_startup_options test_exit_diagnostics test_terminal_width test_prediction_width bootstrap_child $(BUILD)/win32/console_io_include_check.o
 
 check: all
 	test -f mosh.exe
@@ -90,6 +90,7 @@ check: all
 	test -f test_socket_events.exe
 	test -f test_bootstrap.exe
 	test -f test_startup_options.exe
+	test -f test_exit_diagnostics.exe
 	test -f test_terminal_width.exe
 	test -f test_prediction_width.exe
 	# The test_*.exe binaries are executed by the native windows-11-arm CI steps,
@@ -152,14 +153,18 @@ src/network/libmoshnetwork.a: $(NETWORK_OBJS)
 src/frontend/libmoshfrontend.a: $(FRONTEND_OBJS)
 	$(AR) rcs $@ $^
 
-mosh.exe: $(BUILD)/win32/mosh_main.o $(BUILD)/win32/mosh_bootstrap.o $(BUILD)/win32/console_io.o $(BUILD)/win32/mosh_core.o $(BUILD)/win32/startup_options.o $(BUILD)/src/frontend/startup_config.o src/crypto/libmoshcrypto.a src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a src/frontend/libmoshfrontend.a src/network/libmoshnetwork.a $(BUILD)/win32/wincompat.o
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ $(BUILD)/win32/mosh_main.o $(BUILD)/win32/mosh_bootstrap.o $(BUILD)/win32/console_io.o $(BUILD)/win32/mosh_core.o $(BUILD)/win32/startup_options.o $(BUILD)/src/frontend/startup_config.o -Wl,--start-group src/crypto/libmoshcrypto.a $(BUILD)/win32/wincompat.o -Wl,-Bstatic $(shell pkg-config --libs --static protobuf) src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a src/frontend/libmoshfrontend.a src/network/libmoshnetwork.a -Wl,-Bdynamic -Wl,--end-group $(LDFLAGS) $(STATIC_C_LIBS_BEGIN) $(C_LIBS) $(STATIC_C_LIBS_END) -lws2_32 -luser32 -lcrypt32 -lbcrypt -l:libwinpthread.a -static-libstdc++ -static-libgcc
+mosh.exe: $(BUILD)/win32/mosh_main.o $(BUILD)/win32/mosh_bootstrap.o $(BUILD)/win32/console_io.o $(BUILD)/win32/mosh_core.o $(BUILD)/win32/startup_options.o $(BUILD)/win32/exit_diagnostics.o $(BUILD)/src/frontend/startup_config.o src/crypto/libmoshcrypto.a src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a src/frontend/libmoshfrontend.a src/network/libmoshnetwork.a $(BUILD)/win32/wincompat.o
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ $(BUILD)/win32/mosh_main.o $(BUILD)/win32/mosh_bootstrap.o $(BUILD)/win32/console_io.o $(BUILD)/win32/mosh_core.o $(BUILD)/win32/startup_options.o $(BUILD)/win32/exit_diagnostics.o $(BUILD)/src/frontend/startup_config.o -Wl,--start-group src/crypto/libmoshcrypto.a $(BUILD)/win32/wincompat.o -Wl,-Bstatic $(shell pkg-config --libs --static protobuf) src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a src/frontend/libmoshfrontend.a src/network/libmoshnetwork.a -Wl,-Bdynamic -Wl,--end-group $(LDFLAGS) $(STATIC_C_LIBS_BEGIN) $(C_LIBS) $(STATIC_C_LIBS_END) -lws2_32 -luser32 -lcrypt32 -lbcrypt -l:libwinpthread.a -static-libstdc++ -static-libgcc
 
 $(BUILD)/win32/console_io.o: win32/console_io.cc win32/console_io.h win32/socket_events.h win32/mosh_core.h src/include/config.h src/protobufs/transportinstruction.pb.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
 
-$(BUILD)/win32/mosh_main.o: win32/mosh_main.cc win32/console_io.h win32/mosh_bootstrap.h win32/mosh_core.h win32/startup_options.h src/frontend/startup_config.h src/include/config.h src/protobufs/transportinstruction.pb.h
+$(BUILD)/win32/mosh_main.o: win32/mosh_main.cc win32/console_io.h win32/exit_diagnostics.h win32/mosh_bootstrap.h win32/mosh_core.h win32/startup_options.h win32/upstream_strings.h src/frontend/startup_config.h src/include/config.h src/protobufs/transportinstruction.pb.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD)/win32/exit_diagnostics.o: win32/exit_diagnostics.cc win32/exit_diagnostics.h win32/upstream_strings.h src/include/config.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
 
@@ -249,6 +254,13 @@ $(BUILD)/win32/test_startup_options.o: win32/test_startup_options.cc win32/start
 test_startup_options: $(BUILD)/win32/test_startup_options.o $(BUILD)/win32/startup_options.o $(BUILD)/src/frontend/startup_config.o src/terminal/libmoshterminal.a src/protobufs/libmoshprotos.a src/util/libmoshutil.a
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ $(BUILD)/win32/test_startup_options.o $(BUILD)/win32/startup_options.o $(BUILD)/src/frontend/startup_config.o -Wl,--start-group src/terminal/libmoshterminal.a src/protobufs/libmoshprotos.a src/util/libmoshutil.a -Wl,--end-group -Wl,-Bstatic $(shell pkg-config --libs --static protobuf) -Wl,-Bdynamic $(LDFLAGS) $(STATIC_C_LIBS_BEGIN) $(NCURSES_LIBS) $(STATIC_C_LIBS_END) -lws2_32 -luser32 -static-libstdc++ -static-libgcc
 
+$(BUILD)/win32/test_exit_diagnostics.o: win32/test_exit_diagnostics.cc win32/exit_diagnostics.h win32/upstream_strings.h src/include/config.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
+
+test_exit_diagnostics: $(BUILD)/win32/test_exit_diagnostics.o $(BUILD)/win32/exit_diagnostics.o
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ $(BUILD)/win32/test_exit_diagnostics.o $(BUILD)/win32/exit_diagnostics.o $(LDFLAGS) -static-libstdc++ -static-libgcc
+
 $(BUILD)/win32/test_terminal_width.o: win32/test_terminal_width.cc src/include/config.h src/terminal/libmoshterminal.a
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
@@ -271,7 +283,7 @@ test_console_lifecycle: $(BUILD)/win32/test_console_lifecycle.o $(BUILD)/win32/c
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ $(BUILD)/win32/test_console_lifecycle.o $(BUILD)/win32/console_io.o $(BUILD)/win32/mosh_core.o $(BUILD)/win32/test_server.o -Wl,--start-group src/crypto/libmoshcrypto.a $(BUILD)/win32/wincompat.o src/protobufs/libmoshprotos.a src/util/libmoshutil.a src/terminal/libmoshterminal.a src/statesync/libmoshstatesync.a src/frontend/libmoshfrontend.a src/network/libmoshnetwork.a -Wl,--end-group -Wl,-Bstatic $(shell pkg-config --libs --static protobuf) -Wl,-Bdynamic $(LDFLAGS) $(STATIC_C_LIBS_BEGIN) $(C_LIBS) $(STATIC_C_LIBS_END) -lws2_32 -luser32 -lcrypt32 -lbcrypt -l:libwinpthread.a -static-libstdc++ -static-libgcc
 
 clean:
-	rm -rf $(BUILD) $(LIBS) mosh.exe test_loopback test_loopback.exe test_core test_core.exe test_socket_events test_socket_events.exe test_console_lifecycle test_console_lifecycle.exe test_bootstrap test_bootstrap.exe test_startup_options test_startup_options.exe test_terminal_width test_terminal_width.exe test_prediction_width test_prediction_width.exe bootstrap_child bootstrap_child.exe src/protobufs/*.pb.cc src/protobufs/*.pb.h src/include/config.h
+	rm -rf $(BUILD) $(LIBS) mosh.exe test_loopback test_loopback.exe test_core test_core.exe test_socket_events test_socket_events.exe test_console_lifecycle test_console_lifecycle.exe test_bootstrap test_bootstrap.exe test_startup_options test_startup_options.exe test_exit_diagnostics test_exit_diagnostics.exe test_terminal_width test_terminal_width.exe test_prediction_width test_prediction_width.exe bootstrap_child bootstrap_child.exe src/protobufs/*.pb.cc src/protobufs/*.pb.h src/include/config.h
 
 # Pull in the compiler-generated header dependencies (-MMD -MP above). The
 # wildcard is empty on a fresh tree; the leading dash makes that non-fatal.
