@@ -82,6 +82,12 @@ unresolved and tracked as I10. The retired direct-endpoint form was the workarou
 for the reachability half of it, and removing it is worth more than the
 topologies it covered.
 
+Width parity within that matrix is exact only when the host's `C.UTF-8` widths
+derive from the profile this client vendors: the client ships glibc 2.39's
+width data exactly (`win32/PARITY.md` finding A50), so a host whose widths
+derive from a different glibc version, musl, or a patched locale may still see
+this width corruption even though the matrix admits it.
+
 Crash-dump exposure is unchanged by all of that and is resolved as accepted
 risk: the Windows counterpart of `disable_dumping_core()` is a no-op and is
 never called, so a crash while the key is in memory can still persist it
@@ -302,11 +308,13 @@ per call, and the engine's `wchar_t` channel then truncated the decoded scalar
 to 16 bits (U+1F600 became U+F600). The repair decodes UTF-8 to Unicode
 scalars directly (`mosh_mbrtoc32`, rejecting overlong forms and encoded
 surrogates), carries `char32_t` end to end through the parser, emulator, and
-cell storage, and classifies astral width against a generated table that
-mirrors glibc 2.39 `C.UTF-8` `wcwidth` exactly — zero mismatches over every
-astral scalar, regenerated and drift-checked by
-`win32/gen_wcwidth_tables.sh --check`. Prediction classifies the scalar through
-the same table rather than truncating to 16 bits first. The regression test
+cell storage, and classifies width against a profile vendored from glibc 2.39's
+own `C.UTF-8` charmap (`win32/wcwidth_data_glibc_2_39.h`), searched by binary
+lookup in `win32/wcwidth.h` across the whole Unicode range rather than the
+astral plane alone, with the data validated against real glibc over every scalar
+by `win32/test_wcwidth_oracle.cc` on the `ubuntu-24.04` leg of `ci.yml`.
+Prediction classifies the scalar through the same lookup rather than truncating
+to 16 bits first. The regression test
 (`win32/test_terminal_width.cc`) drives a 4-byte emoji through the real parser
 into the emulator and asserts one wide cell and a two-column cursor advance;
 it runs natively in CI, and a RED-probe branch reverting the decode fails it.
@@ -597,7 +605,7 @@ replay guard, or direction-check logic was changed.
 | `src/util/select.h:42` | Includes `win32/posix_compat.h` under `_WIN32`. | The target has Winsock `fd_set` but no `<sys/select.h>` or POSIX signal-set API. |
 | `win32/posix_compat.h:1` | Supplies narrow `sigset_t` / `sigaction` no-op declarations around Winsock `select`. | Lets the utility archive compile; M1 must replace the event-loop signal model with Windows behavior. |
 | `src/util/pty_compat.cc:35` | Compiles POSIX pseudo-terminal fallback only outside Windows. | The target lacks `<sys/stropts.h>` and `<termios.h>`; mintty supplies the Windows terminal/PTY integration. |
-| `src/terminal/terminal.cc:41` | Supplies a BMP-only Windows `wcwidth` fallback. | The target CRT has no `wcwidth`; supplementary-plane width handling remains a later Windows-terminal fidelity item. |
+| `src/terminal/terminal.cc:41` | Includes `win32/wcwidth.h`, which supplies a full-range `wcwidth` matching the server's glibc profile. | The target CRT has no `wcwidth`; the vendored glibc 2.39 profile (`win32/wcwidth_data_glibc_2_39.h`) closes the gap across the full scalar range, and `win32/test_wcwidth_oracle.cc` validates it against real glibc. |
 
 ## Timestamp source verification
 
@@ -681,8 +689,12 @@ build.
   Required invariant: a `BCryptGenRandom` failure MUST **fail closed** (abort key
   generation) with no fallback entropy source — never degrade to a weaker RNG.
 
-- **wcwidth combining marks**: The BMP-only fallback in `src/terminal/terminal.cc`
-  returns 1 for combining marks; it should return 0.
+- **wcwidth combining marks**: Resolved. The M0-era BMP-only width fallback
+  returned width 1 for characters glibc attaches to the preceding cell; the
+  vendored glibc 2.39 profile (`win32/wcwidth_data_glibc_2_39.h`) carries the
+  width-0 and width-(-1) classes over the full range, `win32/test_wcwidth_profile.cc`
+  pins a combining case at width 0, and the width record in `win32/PARITY.md`
+  documents the repair.
 
 - **Locale API**: `src/util/locale_utils.cc` should use `GetACP()` instead of
   `LOCALE_IDEFAULTANSICODEPAGE`, and locale-variable clearing should use
