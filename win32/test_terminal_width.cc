@@ -184,6 +184,44 @@ int main()
   assert( emoji_fb.get_cell( 0, 0 )->debug_contents() == "'\xf0\x9f\x98\x80' [0xf0, 0x9f, 0x98, 0x80]" );
   assert( emoji_fb.get_cell( 0, 1 )->empty() );
 
+  /* A BMP emoji: the hand-written range list called U+2705 narrow while the
+     server's glibc calls it wide, so the client advanced one column where the
+     server advanced two and every following cell landed in the wrong place.
+     The reported corruption was exactly this scalar. */
+  Terminal::Emulator bmp_emoji( 8, 1 );
+  print_utf8( bmp_emoji, "\xe2\x9c\x85" ); /* U+2705 WHITE HEAVY CHECK MARK */
+  const Terminal::Framebuffer& bmp_fb = bmp_emoji.get_fb();
+  assert( bmp_fb.ds.get_cursor_col() == 2 );
+  assert( bmp_fb.get_cell( 0, 0 )->get_wide() );
+  assert( bmp_fb.get_cell( 0, 1 )->empty() );
+
+  /* The next character must land at column 2, which is where the server's
+     framebuffer has it. This states the desync directly. */
+  print_utf8( bmp_emoji, "x" );
+  assert( bmp_fb.get_cell( 0, 1 )->empty() );
+  assert( bmp_fb.get_cell( 0, 2 )->debug_contents() == "'x' [0x78]" );
+
+  /* The 1 -> 0 class: 1,335 BMP scalars the hand list called narrow that
+     glibc attaches to the preceding cell. U+302A is one of the 127 over-wide
+     scalars and also a combining mark, so it exercises both corrections at
+     once. It must attach without moving the cursor. */
+  Terminal::Emulator comb( 8, 1 );
+  print_utf8( comb, "e" );
+  print_utf8( comb, "\xe3\x80\xaa" ); /* U+302A IDEOGRAPHIC TONE MARK 1 */
+  const Terminal::Framebuffer& comb_fb = comb.get_fb();
+  assert( comb_fb.ds.get_cursor_col() == 1 );
+  assert( comb_fb.get_cell( 0, 0 )->debug_contents() == "'e\xe3\x80\xaa' [0x65, 0xe3, 0x80, 0xaa]" );
+  assert( comb_fb.get_cell( 0, 1 )->empty() );
+
+  /* The 1 -> -1 class: 1,331 scalars the hand list called narrow that glibc
+     drops. U+2EF4 is unassigned, so it must leave the cursor and framebuffer
+     untouched rather than painting a cell. */
+  Terminal::Emulator unp( 8, 1 );
+  print_utf8( unp, "\xe2\xbb\xb4" ); /* U+2EF4 <reserved> */
+  const Terminal::Framebuffer& unp_fb = unp.get_fb();
+  assert( unp_fb.ds.get_cursor_col() == 0 );
+  assert( unp_fb.get_cell( 0, 0 )->empty() );
+
   /* A BMP wide character still decodes to one wide cell through the same path. */
   Terminal::Emulator bmp_wide( 8, 1 );
   print_utf8( bmp_wide, "\xe4\xb8\x80" ); /* U+4E00 CJK 一 */
