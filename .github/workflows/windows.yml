@@ -100,6 +100,11 @@ jobs:
           make -f win32/Makefile.win test_terminal_width
           ./test_terminal_width.exe
 
+      - name: Build and run wcwidth profile test
+        run: |
+          make -f win32/Makefile.win test_wcwidth_profile
+          ./test_wcwidth_profile.exe
+
       - name: Build and run prediction width regression test
         run: |
           make -f win32/Makefile.win test_prediction_width
