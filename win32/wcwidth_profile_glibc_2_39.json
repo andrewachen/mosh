@@ -1,0 +1,12 @@
+{
+  "profile": "glibc-2.39",
+  "source": "glibc",
+  "source_revision": "glibc-2.39",
+  "source_path": "localedata/charmaps/UTF-8",
+  "source_url": "https://raw.githubusercontent.com/bminor/glibc/glibc-2.39/localedata/charmaps/UTF-8",
+  "source_sha256": "80ca20f5ba81376a4d30c719fc5f56717bc4d613a3442b15ecbfc527a0cdde0b",
+  "unicode_version": "15.1.0",
+  "width_entries": 482,
+  "unprintable_intervals": 710,
+  "licenses": ["LGPL-2.1-or-later", "Unicode-License-V3"]
+}
