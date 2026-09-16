@@ -5,6 +5,14 @@ on: [push, pull_request]
 jobs:
   build:
     runs-on: ${{ matrix.os }}
+    # The width-profile gate steps below run only on the 'ubuntu-24.04' leg,
+    # because only that runner's glibc matches the vendored profile. Publish
+    # their fact-of-run as a leg-keyed job output (the documented-safe matrix
+    # idiom: a uniquely-named output so no other leg can overwrite it) so a
+    # dependent guard can fail the workflow when no leg ran the gates, instead
+    # of the gates silently skipping.
+    outputs:
+      width_gates_ran_ubuntu_24_04: ${{ steps.width-gates.outputs.ran || '' }}
 
     strategy:
       matrix:
@@ -17,6 +25,25 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
+
+    - name: "verify the vendored width profile against real glibc"
+      id: width-gates
+      if: matrix.os == 'ubuntu-24.04'
+      run: |
+        echo "ran=true" >> "$GITHUB_OUTPUT"
+        c++ -std=c++17 -O2 -o /tmp/test_wcwidth_oracle win32/test_wcwidth_oracle.cc
+        /tmp/test_wcwidth_oracle win32/wcwidth_data_glibc_2_39.h
+
+    - name: "verify the vendored profile matches its recorded manifest"
+      if: matrix.os == 'ubuntu-24.04'
+      run: |
+        manifest_url=$(python3 -c 'import json;print(json.load(open("win32/wcwidth_profile_glibc_2_39.json"))["source_url"])')
+        manifest_sha=$(python3 -c 'import json;print(json.load(open("win32/wcwidth_profile_glibc_2_39.json"))["source_sha256"])')
+        curl -fsS -o /tmp/UTF-8-charmap.txt "$manifest_url"
+        echo "$manifest_sha  /tmp/UTF-8-charmap.txt" | sha256sum -c -
+        python3 win32/extract_glibc_profile.py /tmp/UTF-8-charmap.txt \
+          --manifest win32/wcwidth_profile_glibc_2_39.json \
+          --check win32/wcwidth_data_glibc_2_39.h
 
     - name: "setup linux build environment"
       if: ${{ startsWith(matrix.os, 'ubuntu') }}
@@ -37,3 +64,25 @@ jobs:
 
     - name: "test"
       run: make V=1 check
+
+  # Closes the silent-skip hole: the two 'verify the vendored width profile'
+  # steps run only when the build matrix contains 'ubuntu-24.04'. If that entry
+  # ever leaves the matrix (an upstream rebase bumping the Ubuntu images is a
+  # routine change), both steps skip, CI stays green, and the vendored glibc
+  # profile has zero coverage. This guard runs on every matrix composition and
+  # fails loudly when no leg ran the gates. Matches the gate steps' if: exactly.
+  width-gates-guard:
+    needs: build
+    if: ${{ always() && needs.build.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: "assert the width-profile gates ran"
+        run: |
+          if [ "${{ needs.build.outputs.width_gates_ran_ubuntu_24_04 }}" != "true" ]; then
+            echo "ERROR: the width-profile gates did not run on any matrix leg." >&2
+            echo "They are selected by: if: matrix.os == 'ubuntu-24.04'" >&2
+            echo "which matches no leg in the current build matrix. Without them," >&2
+            echo "the vendored glibc profile would go unvalidated." >&2
+            echo "Update the gate steps' if: condition to the 2.39-profile carrier leg." >&2
+            exit 1
+          fi
