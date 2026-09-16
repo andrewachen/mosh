@@ -515,6 +515,14 @@ awk '
 [[ -s "$openssl_exception" ]] || die 'could not extract the OpenSSL exception from debian/copyright'
 staged_sources["$openssl_exception"]="$repo_root/debian/copyright"
 
+# The vendored width data (win32/wcwidth_data_glibc_2_39.h) derives from glibc
+# (LGPL-2.1-or-later) and, transitively, from the Unicode Character Database
+# (Unicode License V3, whose terms require the copyright and permission notice
+# to travel with the data). Its two notices are repository-owned files under
+# win32/LICENSES/ that must ship in the bundle alongside mosh's own license.
+copy_staged "$repo_root/win32/LICENSES/wcwidth-glibc-LGPL-2.1.txt" "$stage_dir/licenses/wcwidth-glibc-LGPL-2.1.txt"
+copy_staged "$repo_root/win32/LICENSES/wcwidth-unicode-License-V3.txt" "$stage_dir/licenses/wcwidth-unicode-License-V3.txt"
+
 manifest="$stage_dir/MANIFEST.txt"
 manifest_tmp=$(mktemp "${TMPDIR:-/tmp}/mosh-package-manifest.XXXXXX")
 trap 'rm -f "$manifest_tmp"' EXIT

@@ -1,0 +1,20 @@
+Vendored character-width data staged in the mosh Windows bundle.
+
+Provenance: this data is NOT original to mosh. It is derived from the
+GNU C Library (glibc) 2.39 locale artifact through this chain:
+
+  Unicode Character Database files
+    (EastAsianWidth.txt, PropList.txt, UnicodeData.txt, Unicode 15.1.0)
+  -> glibc's localedata/unicode-gen/utf8_gen.py
+  -> localedata/charmaps/UTF-8
+       (sha256 80ca20f5ba81376a4d30c719fc5f56717bc4d613a3442b15ecbfc527a0cdde0b,
+        glibc 2.39)
+  -> win32/wcwidth_data_glibc_2_39.h
+
+Notice, as carried by win32/wcwidth_data_glibc_2_39.h:
+
+  1. ARTIFACT -- the GNU C Library (LGPL-2.1-or-later).
+     Source:      glibc git tag glibc-2.39, localedata/charmaps/UTF-8
+     Charmap SHA: 80ca20f5ba81376a4d30c719fc5f56717bc4d613a3442b15ecbfc527a0cdde0b
+     The LGPL v2.1 text is in the GNU C Library distribution and at
+     <https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html>.

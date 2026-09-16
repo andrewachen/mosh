@@ -180,6 +180,25 @@ if (-not (Test-Path -LiteralPath $resolvedTestCoreExe -PathType Leaf)) {
     throw "test_core.exe does not exist: $resolvedTestCoreExe"
 }
 
+# The vendored width data (win32/wcwidth_data_glibc_2_39.h) derives from glibc
+# (LGPL-2.1-or-later) and, transitively, from the Unicode Character Database
+# (Unicode License V3), whose terms require its copyright and permission notice
+# to travel with the data. package.sh stages both notices from win32/LICENSES/;
+# refuse the bundle if either is missing or empty.
+$requiredWidthNotices = @(
+    'licenses/wcwidth-glibc-LGPL-2.1.txt',
+    'licenses/wcwidth-unicode-License-V3.txt'
+)
+foreach ($relativePath in $requiredWidthNotices) {
+    $noticePath = Join-Path $resolvedBundleDir $relativePath
+    if (-not (Test-Path -LiteralPath $noticePath -PathType Leaf)) {
+        throw "bundle does not contain the vendored width-data notice: $noticePath (win32/package.sh must stage win32/LICENSES/)"
+    }
+    if ((Get-Item -LiteralPath $noticePath).Length -eq 0) {
+        throw "vendored width-data notice is empty: $noticePath"
+    }
+}
+
 $scratchRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("mosh-bundle-verify-" + [Guid]::NewGuid().ToString())
 $bundleA = Join-Path $scratchRoot 'bundle-a'
 $bundleB = Join-Path $scratchRoot 'bundle-b'
